@@ -1,1 +1,14 @@
-{"stage": "not_started", "percent": 0, "groups": {}, "checked_at": ""}
+{
+ "groups": {
+  "price": 1.0,
+  "institutional": 1.0,
+  "margin": 1.0,
+  "valuation": 1.0,
+  "misc": 1.0
+ },
+ "blocked": {},
+ "checked_at": "2026-10-25 05:41:22+08:00",
+ "percent": 1.0,
+ "complete": true,
+ "stage": "downloading"
+}
