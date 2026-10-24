@@ -1,0 +1,85 @@
+# ============================================================
+# 科斯托蘭尼量化選股實驗室 (Kosto Lab) — 預設設定
+# 修改本檔後重新執行「研究」即可；Streamlit 快速調整不會改寫本檔，
+# 但可下載當次設定 (config_used.yaml) 再貼回這裡。
+# ============================================================
+
+data:
+  start: "2017-01-01"        # 原始資料起點（需比回測起點早約 2 年，供「近2年法人買賣超」與 252 日因子暖機）
+  end: null                  # null = 抓到最新交易日
+  dir: data                  # 本機資料夾
+  pause_sec: 2.6             # 官方網站每次請求間隔（秒）。太快會被證交所暫時封鎖 IP
+  max_retries: 3
+  # 每種資料的來源優先順序；官方=證交所/櫃買/公開資訊觀測站整批（免費），finmind=逐檔 API
+  providers:
+    price: [official, finmind]
+    exright: [official, finmind]
+    institutional: [official, finmind]
+    margin: [official, finmind]
+    valuation: [official, finmind]
+    shares: [official, finmind]
+    revenue: [official, finmind]
+  finmind_hourly_quota: 550   # 免費 token 每小時 600 次，保留緩衝
+
+research:
+  start: "2019-01-01"        # 回測（訊號）起點
+  signal_step: 5             # 每 5 個交易日產生一次訊號（週頻）；中長線用多批次重疊持有
+  train_min_months: 24       # 走勢前進法：最少訓練月數
+  retrain_months: 6          # 每 6 個月重新估計權重
+  holdout_months: 12         # 最後 12 個月保留，不參與母池/模型挑選（盲測）
+  top_k: 10                  # 每次推薦 10 檔，等權
+  capital: 1000000           # 參考資金（計算容量限制）
+  max_participation: 0.02    # 單檔買進金額不超過 20 日均成交額的 2%
+  min_price: 10              # 母池基本門檻：股價
+  min_adv: 10000000          # 母池基本門檻：20 日均成交金額（元）
+  min_history: 120           # 母池基本門檻：上市交易滿 120 日
+  selection_weights:         # 開發期樣本外綜合評分（排名百分位加權）
+    cagr: 0.35
+    sharpe: 0.25
+    calmar: 0.25
+    worst_year: 0.15
+  lambdas: [0.25, 0.40, 0.55]          # 科斯托蘭尼因子族群最低權重候選（λ）
+  exposure_profiles: [none, soft, strict]
+  n0_shrink: 26              # 權重向先驗收縮強度（等效樣本數）
+  max_factor_weight: 0.35    # 單一因子在族群內權重上限
+
+costs:
+  fee: 0.001425              # 手續費（買賣各一次）
+  fee_discount: 0.6          # 券商折扣（6 折）
+  tax: 0.003                 # 證交稅（賣出）
+  slippage: 0.001            # 滑價（單邊）
+
+pools:
+  rules: [ADV, MCAP, INST2Y, KOSTO, BLEND]
+  sizes: [100, 150, 200, 300, 400, 500]
+
+horizons:
+  short:
+    days: 5
+    label: 短線(5日)
+    family_prior: {T: 0.30, C: 0.30, F: 0.05, K: 0.35}
+    hysteresis: 1.5          # 已持有個股排名仍在前 1.5×K 內就續抱（律3 耐心、戒6 不隨風吹草動）
+    stop_loss: null          # 短線持有期短，不設停損
+  mid:
+    days: 20
+    label: 中線(20日)
+    family_prior: {T: 0.20, C: 0.25, F: 0.15, K: 0.40}
+    hysteresis: 2.0
+    stop_loss: 0.12          # 戒3：不要想把賠掉的再賺回來
+  long:
+    days: 60
+    label: 長線(60日)
+    family_prior: {T: 0.15, C: 0.20, F: 0.25, K: 0.40}
+    hysteresis: 2.5
+    stop_loss: 0.18
+
+kostolany:
+  # 個股階段閘門（雞蛋理論）：A3 過熱、B1 開始下跌 → 不新買；B2 相隨下跌 → 等待
+  block_stages: [A3, B1, B2]
+  b3_requires_confirmation: true     # B3 恐慌逆向買進，需 W 底/止跌確認
+  block_double_top: true             # M 頭（多次攻不過）不買
+  # 市場雞蛋階段 → 持股水位
+  exposure:
+    none:   {A1: 1.0, A2: 1.0, A3: 1.0, B1: 1.0, B2: 1.0, B3: 1.0, UNKNOWN: 1.0}
+    soft:   {A1: 1.0, A2: 1.0, A3: 0.6, B1: 0.5, B2: 0.4, B3: 1.0, UNKNOWN: 0.8}
+    strict: {A1: 1.0, A2: 1.0, A3: 0.3, B1: 0.0, B2: 0.0, B3: 1.0, UNKNOWN: 0.5}
