@@ -184,6 +184,7 @@ def build_bundle(P: Panel, cfg: dict, log=print) -> Bundle:
          "STAGE": stg.astype(np.int8), "DTOP": dtop, "WSUP": wsup,
          "TRADE": trad[sig_rel], "CAP": inp["amt20"][:, cols].astype(np.float32),
          "CLOSE": inp["close"][:, cols].astype(np.float32),
+         "MCAP": inp["mcap"][:, cols].astype(np.float32),
          "BENCH": bench, "MKT": np.column_stack([mkt, mcode]).astype(np.float32),
          "MKT_DAILY": mk[list(STAGES) + ["confidence", "index", "drawdown", "turnover_ratio", "breadth"]]
          .reindex(days).to_numpy(np.float32),

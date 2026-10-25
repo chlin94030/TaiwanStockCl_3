@@ -27,6 +27,7 @@ from .optimize import PoolView, fit_weights, ic_matrix, pool_view
 
 
 HKEY = {"short": 0, "mid": 1, "long": 2}
+DEFAULT_BLOCK = ("A3", "B1", "B2")
 
 
 @dataclass
@@ -37,13 +38,26 @@ class Variant:
     exposure: str = "none"
     gates: bool = True
     hysteresis: float | None = None   # None → horizon default
-    stop: str = "default"             # default | off
+    stop: str = "default"             # default | off | on (= horizons.*.stop_loss_test)
     exclude: tuple = ()               # factors forced to weight 0 (ablation)
-    stage_gate: bool = True           # 個股雞蛋階段閘門
+    stage_gate: bool | None = None    # 個股雞蛋階段閘門：None=依設定檔，True=強制開(A3/B1/B2)，False=關
     dtop_gate: bool = True            # M頭閘門
 
     def label(self) -> str:
         return self.name
+
+
+def smooth_pool_scores(t: pd.DataFrame) -> pd.Series:
+    """Average each pool's score with its neighbouring sizes of the same rule (0.5 / 0.25 / 0.25).
+    A pool that only wins by itself while its neighbours lose is more likely luck than a real effect."""
+    out = pd.Series(np.nan, index=t.index)
+    for _, g in t.groupby("rule"):
+        g = g.sort_values("size")
+        sc = g["raw_score"].to_numpy()
+        for k, ix in enumerate(g.index):
+            nb = [sc[j] for j in (k - 1, k + 1) if 0 <= j < len(sc)]
+            out[ix] = 0.5 * sc[k] + 0.5 * float(np.mean(nb)) if nb else sc[k]
+    return out
 
 
 class Research:
@@ -128,14 +142,18 @@ class Research:
     # ------------------------------------------------------------------ evaluation
     def spec(self, h, v: Variant):
         kw = {"use_gates": v.gates}
-        if not v.stage_gate:
+        if v.stage_gate is False:
             kw.update(block_stages=(), b3_confirm=False)
+        elif v.stage_gate is True:
+            kw.update(block_stages=DEFAULT_BLOCK, b3_confirm=True)
         if not v.dtop_gate:
             kw["block_dtop"] = False
         if v.hysteresis is not None:
             kw["hysteresis"] = v.hysteresis
         if v.stop == "off":
             kw["stop_loss"] = None
+        elif v.stop == "on":
+            kw["stop_loss"] = self.cfg["horizons"][h].get("stop_loss_test") or self.cfg["horizons"][h]["stop_loss"]
         return spec_from_cfg(self.cfg, h, v.exposure, **kw)
 
     def segments(self, res):
@@ -163,7 +181,7 @@ class Research:
         return out
 
     def pool_ew(self, rule, size, h):
-        spec = spec_from_cfg(self.cfg, h, "none", equal_weight_all=True, use_gates=False)
+        spec = spec_from_cfg(self.cfg, h, "none", equal_weight_all=True, use_gates=False, stop_loss=None)
         res = run(self.B, self.view(rule, size), [None] * self.S, spec, start_i=self.first_oos)
         return res
 
@@ -171,7 +189,8 @@ class Research:
     def pool_study(self, h, rules=None, sizes=None, progress=None) -> pd.DataFrame:
         rules = rules or self.cfg["pools"]["rules"]
         sizes = sizes or self.cfg["pools"]["sizes"]
-        v = Variant("POOL_TEST", "opt", 0.40, "none", True)
+        lams = self.cfg["research"]["lambdas"]
+        v = Variant("POOL_TEST", "opt", float(lams[len(lams) // 2]), "none", True)
         rows = []
         for rule in rules:
             for size in sizes:
@@ -187,7 +206,8 @@ class Research:
                     progress(f"{h} 母池 {rule}{size}: 開發期CAGR {row.get('dev_cagr', np.nan):.1%} "
                              f"Sharpe {row.get('dev_sharpe', np.nan):.2f} ({time.time()-t0:.1f}s)")
         t = pd.DataFrame(rows)
-        t["score"] = selection_score(t.rename(columns=lambda c: c.replace("dev_", "")), self.cfg["research"]["selection_weights"])
+        t["raw_score"] = selection_score(t.rename(columns=lambda c: c.replace("dev_", "")), self.cfg["research"]["selection_weights"])
+        t["score"] = smooth_pool_scores(t) if self.cfg["research"].get("pool_smoothing", True) else t["raw_score"]
         return t.sort_values("score", ascending=False).reset_index(drop=True)
 
     def _composite_dev_ic(self, rule, size, h):
@@ -225,30 +245,42 @@ class Research:
         return t
 
     def ablation(self, h, rule, size, v: Variant) -> pd.DataFrame:
+        """Switch each Kostolany rule to the opposite state. 貢獻 = 績效(規則開) − 績效(規則關)：正＝這條規則有幫助."""
         from dataclasses import replace
         kf = [f for f, fam, hz in zip(self.B.factors, self.B.meta["families"], self.B.meta["horizons"])
               if fam == "K" and h in hz]
         zh = dict(zip(self.B.factors, self.B.meta["factor_zh"]))
-        cases = [("完整科斯托蘭尼模型", v),
-                 ("移除個股雞蛋階段閘門", replace(v, stage_gate=False)),
-                 ("移除M頭閘門", replace(v, dtop_gate=False)),
-                 ("移除個股雞蛋階段/M頭閘門", replace(v, gates=False)),
-                 ("移除市場階段持股水位", replace(v, exposure="none")),
-                 ("移除科斯托蘭尼因子(K族群)", replace(v, mode="data", lam=0.0)),
-                 ("移除耐心續抱(遲滯)", replace(v, hysteresis=1.0)),
-                 ("移除停損(戒3)", replace(v, stop="off"))]
+        stage_on = bool(self.cfg["kostolany"]["block_stages"]) if v.stage_gate is None else bool(v.stage_gate)
+        stop_on = (v.stop == "on") or (v.stop == "default" and bool(self.cfg["horizons"][h]["stop_loss"]))
+        can_stop = bool(self.cfg["horizons"][h].get("stop_loss_test") or self.cfg["horizons"][h]["stop_loss"])
+        # (key, label, variant, rule_is_on_in_base)
+        cases = [("base", "目前選定模型", v, None),
+                 ("stage_gate", "移除個股雞蛋階段閘門" if stage_on else "加回個股雞蛋階段閘門(A3/B1/B2不買)",
+                  replace(v, stage_gate=not stage_on), stage_on),
+                 ("dtop", "移除M頭閘門" if v.gates else "加回M頭閘門", replace(v, gates=True, dtop_gate=not v.gates) if not v.gates
+                  else replace(v, dtop_gate=False), v.gates),
+                 ("exposure", "移除市場階段持股水位" if v.exposure != "none" else "加入市場階段持股水位(soft)",
+                  replace(v, exposure="none" if v.exposure != "none" else "soft"), v.exposure != "none"),
+                 ("K", "移除科斯托蘭尼因子(K族群)", replace(v, mode="data", lam=0.0), v.mode in ("opt", "kpure")),
+                 ("hyst", "移除耐心續抱(遲滯)", replace(v, hysteresis=1.0), True)]
+        if can_stop:
+            cases.append(("stop", "移除停損(戒3)" if stop_on else "加回停損(戒3)", replace(v, stop="off" if stop_on else "on"), stop_on))
         if v.mode in ("opt", "kpure"):
-            cases += [(f"移除 {f}（{zh[f]}）", replace(v, exclude=(f,))) for f in kf]
+            cases += [(f, f"移除 {f}（{zh[f]}）", replace(v, exclude=tuple(v.exclude) + (f,)), True) for f in kf if f not in v.exclude]
         rows = []
-        for label, vv in cases:
+        for key, label, vv, on in cases:
             e = self.evaluate(rule, size, h, vv)
-            rows.append({"case": label, "dev_cagr": e.get("dev_cagr"), "dev_sharpe": e.get("dev_sharpe"),
+            rows.append({"key": key, "case": label, "rule_on": on, "dev_cagr": e.get("dev_cagr"), "dev_sharpe": e.get("dev_sharpe"),
                          "dev_mdd": e.get("dev_mdd"), "hold_cagr": e.get("hold_cagr"), "hold_mdd": e.get("hold_mdd"),
                          "turnover": e.get("turnover")})
         t = pd.DataFrame(rows)
         base = t.iloc[0]
-        t["貢獻(開發期CAGR)"] = base["dev_cagr"] - t["dev_cagr"]
-        return t
+        sign = t["rule_on"].map({True: 1.0, False: -1.0}).fillna(0.0)
+        t["貢獻(開發期CAGR)"] = (base["dev_cagr"] - t["dev_cagr"]) * sign
+        t["貢獻(盲測CAGR)"] = (base["hold_cagr"] - t["hold_cagr"]) * sign
+        t.loc[0, ["貢獻(開發期CAGR)", "貢獻(盲測CAGR)"]] = np.nan
+        t["目前"] = t["rule_on"].map({True: "啟用", False: "關閉"}).fillna("")
+        return t.drop(columns=["rule_on"])
 
     # ------------------------------------------------------------------ latest recommendations
     def latest(self, h, rule, size, v: Variant, res=None) -> dict:
@@ -277,7 +309,7 @@ class Research:
             neg = np.argsort(contrib)[:1]
             st = int(B.a["STAGE"][i, j])
             close = float(B.a["CLOSE"][i, j])
-            stop = self.cfg["horizons"][h]["stop_loss"]
+            stop = spec.stop_loss or self.cfg["horizons"][h].get("alert_loss")
             return {"ticker": B.tickers[j], "name": B.meta["names"][j], "sector": B.meta["sectors"][j],
                     "close": close, "score": float(smap.get(j, np.nan)), "stage": STAGE_NAMES[st],
                     "kept": j in prev, "w_support": bool(B.a["WSUP"][i, j]),
@@ -418,6 +450,7 @@ class Research:
         data_wins = bool(len(own) and vt[vt["mode"] == "data"]["score"].max() > own.max())
         ab = self.ablation(h, rule, size, v) if ablation else pd.DataFrame(
             columns=["case", "dev_cagr", "dev_sharpe", "dev_mdd", "hold_cagr", "hold_mdd", "turnover", "貢獻(開發期CAGR)"])
+        mix = self.mix_table(res, ew)
         lt = self.latest(h, rule, size, v, res)
         fit = self.final_fit(rule, size, h, v)
         ft = self.factor_table(h, rule, size, lt["weights"])
@@ -430,8 +463,30 @@ class Research:
             "yearly": yearly_table(res.nav, res.bench), "latest": lt,
             "nav": pd.DataFrame({"策略": res.nav, "0050": res.bench, "母池等權": ew.nav.reindex(res.nav.index),
                                  **{k.split()[0]: r.nav.reindex(res.nav.index) for k, r in base.items()}}),
-            "tranches": res.tranches, "turnover": res.turnover, "cost_drag": res.cost_drag,
+            "tranches": res.tranches, "turnover": res.turnover, "cost_drag": res.cost_drag, "mix": mix,
+            "vs_pool_ew": dict(mix.attrs.get("vs_pool_ew", {})),
         }
+
+    def mix_table(self, res, ew=None) -> pd.DataFrame:
+        """0050 core + model satellite (daily constant mix), and the model vs its own pool equal-weighted."""
+        rm = res.nav.pct_change().fillna(0)
+        rb = res.bench.reindex(res.nav.index).pct_change().fillna(0)
+        hd = self.B.sig_dates[min(self.holdout, self.S - 1)]
+        rows = []
+        cands = [("本模型 100%", 0.0)] + [(f"0050 {x:.0%} ＋ 本模型 {1 - x:.0%}", float(x))
+                                          for x in self.cfg["research"].get("core_mix", [0.5])] + [("0050 100%", 1.0)]
+        for label, x in cands:
+            nav = (1 + (1 - x) * rm + x * rb).cumprod()
+            seg = self.segments(type("R", (), {"nav": nav, "bench": res.bench})())
+            rows.append({"組合": label, **{f"{k}_{m}": seg[k].get(m) for k in ("dev", "holdout", "oos")
+                                          for m in ("cagr", "excess_cagr", "sharpe", "mdd")}})
+        t = pd.DataFrame(rows)
+        if ew is not None:
+            e = ew.nav.reindex(res.nav.index)
+            seg_m = self.segments(res)
+            seg_e = self.segments(type("R", (), {"nav": e / e.iloc[0], "bench": res.bench})())
+            t.attrs["vs_pool_ew"] = {k: (seg_m[k].get("cagr", np.nan) - seg_e[k].get("cagr", np.nan)) for k in ("dev", "holdout", "oos")}
+        return t
 
     def single(self, h, rule, size, v: Variant, ablation=True) -> dict:
         """Report-ready result for one user-chosen configuration (Streamlit quick test)."""

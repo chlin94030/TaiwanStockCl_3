@@ -36,6 +36,7 @@ class Spec:
     capital: float = 1_000_000
     max_participation: float = 0.02
     equal_weight_all: bool = False   # benchmark mode: hold every pool member, no costs/gates
+    weighting: str = "equal"         # equal | sqrt_cap（依市值平方根加權，單檔上限 2/K）
 
 
 def spec_from_cfg(cfg: dict, horizon: str, exposure_profile: str = "none", **kw) -> Spec:
@@ -133,6 +134,19 @@ def run(B, view: PoolView, weights: list, spec: Spec, start_i: int = 0) -> Resul
         filled = [j for j in picks if OK[e, j]]
         n_slots = len(picks) if spec.equal_weight_all else spec.top_k
         new_w = {j: expo / max(n_slots, 1) for j in filled}
+        if spec.weighting == "sqrt_cap" and filled and not spec.equal_weight_all and "MCAP" in B.a:
+            m = np.sqrt(np.nan_to_num(B.a["MCAP"][i, filled].astype(float), nan=0.0))
+            if m.sum() > 0:
+                budget = expo * len(filled) / max(n_slots, 1)
+                w = m / m.sum()
+                cap = 2.0 / max(n_slots, 1) / max(budget, 1e-9)
+                for _ in range(10):                      # cap and redistribute
+                    over = w > cap
+                    if not over.any():
+                        break
+                    w[over] = cap
+                    w[~over] *= (1 - w[over].sum()) / max(w[~over].sum(), 1e-12)
+                new_w = {j: budget * float(x) for j, x in zip(filled, w)}
         old_w = {j: v / V for j, v in old.items()} if V > 0 else {}
         sell = sum(max(0.0, old_w.get(j, 0) - new_w.get(j, 0)) for j in set(old_w) | set(new_w))
         buy = sum(max(0.0, new_w.get(j, 0) - old_w.get(j, 0)) for j in set(old_w) | set(new_w))

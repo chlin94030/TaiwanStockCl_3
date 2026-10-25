@@ -25,7 +25,7 @@ from kosto.remote import RESEARCH_TAG, dispatch, fetch_asset, latest_runs, relea
 from kosto.report import build_zip
 from kosto.research import Research, Variant
 from kosto.setup_page import (detect_repo, local_progress, local_running, on_streamlit_cloud, read_status,
-                              render_progress, start_local_build, tail_log)
+                              render_add_workflow, render_progress, start_local_build, tail_log, workflow_present)
 from kosto.universe import RULE_ZH, RULES
 
 st.set_page_config(page_title="Kosto Lab 台股選股", page_icon="🥚", layout="wide")
@@ -54,6 +54,11 @@ CLOUD = on_streamlit_cloud()
 @st.cache_data(ttl=300, show_spinner=False)
 def cached_status(repo, token):
     return read_status(repo, token)
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def cached_workflow_present(repo, token):
+    return workflow_present(repo, token)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -129,11 +134,13 @@ def setup_page():
         st.caption(f"Repo：{REPO}（{REPO_HOW}）")
         status = cached_status(REPO, TOKEN)
         if not status or status.get("stage") == "not_started":
-            st.info("尚未收到第一次執行的結果。上傳程式後約 1~10 分鐘會自動開始。")
-            st.markdown(f"""若超過 15 分鐘仍沒有進度，請檢查：
-1. 打開 [github.com/{REPO}](https://github.com/{REPO})，檔案列表裡要看得到 **`.github`** 資料夾（Mac 上傳前要先按 ⌘+Shift+. 顯示隱藏檔）。
-2. 打開 [Actions 頁面](https://github.com/{REPO}/actions)，若出現綠色按鈕「I understand my workflows, go ahead and enable them」請按下。
-3. 在 Actions 頁點左側「Kosto Lab 全自動流程」→ 右側「Run workflow」→ 綠色「Run workflow」。""")
+            if cached_workflow_present(REPO, TOKEN) is False:
+                render_add_workflow(st, REPO)
+            else:
+                st.info("尚未收到第一次執行的結果。上傳程式後約 1~10 分鐘會自動開始。")
+                st.markdown(f"""若超過 15 分鐘仍沒有進度：打開 [Actions 頁面](https://github.com/{REPO}/actions)，
+若出現綠色按鈕「I understand my workflows, go ahead and enable them」請按下；
+然後點左側「Kosto Lab 全自動流程」→ 右側「Run workflow」→ 綠色「Run workflow」。""")
         else:
             render_progress(st, status, REPO, False)
             st.info("這段期間不需要做任何事，GitHub 會自己一輪接一輪下載，完成後自動產生研究與報告。")
@@ -235,7 +242,7 @@ def default_choice(h):
 def picks_frame(items):
     return pd.DataFrame([{"代號": x["ticker"], "名稱": x["name"], "產業": x["sector"], "收盤": round(x["close"], 2),
                           "分數": round(x["score"], 3), "階段": x["stage"], "續抱": "✓" if x.get("kept") else "",
-                          "理由": "；".join(x["reasons"]), "停損價": x.get("stop_price")} for x in items])
+                          "理由": "；".join(x["reasons"]), "警戒價": x.get("stop_price")} for x in items])
 
 
 # ================================================================== 今日推薦
@@ -291,8 +298,10 @@ with tabs[1]:
         mode_lab = b1.selectbox("模型", list(MODES), index=list(MODES.values()).index(d_v.mode) if d_v.mode in MODES.values() else 0)
         lam = b2.slider("科斯托蘭尼族群最低權重 λ", 0.0, 0.9, float(d_v.lam if d_v.mode == "opt" else 0.4), 0.05)
         expo = b3.selectbox("市場階段持股水位", list(EXPO), index=list(EXPO).index(d_v.exposure), format_func=lambda x: EXPO[x])
-        c1, c2, c3, c4 = st.columns(4)
-        gates = c1.checkbox("個股雞蛋/M頭閘門", value=d_v.gates)
+        c0, c1, c2, c3, c4 = st.columns(5)
+        stage_on = c0.checkbox("個股雞蛋階段閘門", value=bool(CFG0["kostolany"]["block_stages"]),
+                               help="A3過熱/B1/B2 不買。v1.1 實測拖累績效，預設關閉")
+        dtop_on = c1.checkbox("M頭閘門", value=d_v.gates)
         hyst = c2.slider("續抱遲滯倍數", 1.0, 4.0, float(CFG0["horizons"][h]["hysteresis"]), 0.25)
         stop0 = CFG0["horizons"][h]["stop_loss"] or 0.0
         stop = c3.slider("停損（0=不停損）", 0.0, 0.4, float(stop0), 0.01)
@@ -314,7 +323,8 @@ with tabs[1]:
         cfg["horizons"][h]["stop_loss"] = stop or None
         cfg["research"]["top_k"] = int(topk)
         cfg["costs"]["fee_discount"] = disc
-        v = Variant(f"自訂 {mode_lab} λ={lam:.2f} 水位={expo}", MODES[mode_lab], lam, expo, gates)
+        v = Variant(f"自訂 {mode_lab} λ={lam:.2f} 水位={expo}", MODES[mode_lab], lam, expo, stage_on or dtop_on,
+                    stage_gate=stage_on, dtop_gate=dtop_on)
         R.cfg = cfg
         with st.spinner("回測中…"):
             ev = R.evaluate(rule, size, h, v, keep=True)

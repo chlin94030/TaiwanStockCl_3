@@ -67,21 +67,18 @@ def table(df: pd.DataFrame, fmts: dict | None = None, left=()) -> str:
 
 
 KOSTO_MAP = [
-    ("雞蛋理論 A1/B3 買、A2 等待、A3/B1 賣、B2 持現金（個股）", "個股雞蛋階段閘門＋k_egg 因子",
-     ["移除個股雞蛋階段閘門", "移除 k_egg"]),
-    ("雞蛋理論（大盤）：過熱減碼、恐慌加碼", "市場階段持股水位（none/soft/strict 三組比較）", ["移除市場階段持股水位"]),
-    ("固執的投資者 vs 猶豫的投資者（股票是否已付清）", "k_hands 籌碼轉移、k_paid 融資占股本、KOSTO 母池",
-     ["移除 k_hands", "移除 k_paid"]),
-    ("量價四象限（量小價漲有利、量增價跌近底…）", "k_vp 量價因子", ["移除 k_vp"]),
-    ("利空不跌＝近底、利多不漲＝近頂", "k_resilience", ["移除 k_resilience"]),
-    ("M 頭 / W 底", "k_mw 因子 + M 頭禁止買進 + B3 需 W 底/止跌確認", ["移除 k_mw", "移除M頭閘門"]),
-    ("戒1 不跟著建議跑、媒體過度樂觀", "k_calm 避開爆量急漲與融資暴增", ["移除 k_calm"]),
-    ("律3 耐心、戒6 不對風吹草動反應", "遲滯續抱（名次仍在前 K×遲滯倍數 就不換股）", ["移除耐心續抱(遲滯)"]),
-    ("戒3 不要想把賠掉的再賺回來", "持有期停損（中線12%、長線18%，可調）", ["移除停損(戒3)"]),
-    ("律6 新局面就賣出", "持股轉為 A3/B1/B2 或出現 M 頭 → 下次換股時不續抱", ["移除個股雞蛋階段/M頭閘門"]),
-    ("整體：科斯托蘭尼因子族群", "K 族群最低權重 λ", ["移除科斯托蘭尼因子(K族群)"]),
+    ("雞蛋理論 A1/B3 買、A2 等待、A3/B1 賣、B2 持現金（個股）", "個股雞蛋階段閘門＋k_egg 因子", ["stage_gate", "k_egg"]),
+    ("雞蛋理論（大盤）：過熱減碼、恐慌加碼", "市場階段持股水位（none/soft 比較）", ["exposure"]),
+    ("固執的投資者 vs 猶豫的投資者（股票是否已付清）", "k_hands 籌碼轉移、k_paid 融資占股本、KOSTO 母池", ["k_hands", "k_paid"]),
+    ("量價四象限（量小價漲有利、量增價跌近底…）", "k_vp 量價因子", ["k_vp"]),
+    ("利空不跌＝近底、利多不漲＝近頂", "k_resilience", ["k_resilience"]),
+    ("M 頭 / W 底", "k_mw 因子 + M 頭禁止買進", ["k_mw", "dtop"]),
+    ("戒1 不跟著建議跑、媒體過度樂觀", "k_calm 避開爆量急漲與融資暴增", ["k_calm"]),
+    ("律3 耐心、戒6 不對風吹草動反應", "遲滯續抱（名次仍在前 K×遲滯倍數 就不換股）", ["hyst"]),
+    ("戒3 不要想把賠掉的再賺回來", "持有期停損（v1.1 預設關閉，改為推薦表『警戒價』提醒）", ["stop"]),
+    ("整體：科斯托蘭尼因子族群", "K 族群最低權重 λ", ["K"]),
     ("律2 足夠資金免受壓力、律9 考慮所有風險", "不融資、等權10檔、流動性容量限制（買進金額≤20日均量2%）", []),
-    ("戒8 不要只想獲利就賣掉", "不設停利；只要階段與分數仍佳就續抱", []),
+    ("戒8 不要只想獲利就賣掉", "不設停利；只要分數仍佳就續抱", []),
 ]
 
 
@@ -100,13 +97,24 @@ def hints(H: dict) -> list[str]:
         ev = r["eval"]
         if r.get("data_beats_kostolany"):
             out.append(f"{lab}：純數據模型(DATA)在開發期綜合分數高於所有科斯托蘭尼版本 → 可試 λ=0.25 或檢視 K 因子 IC。")
-        ab = r["ablation"]
-        for _, row in ab.iloc[1:].sort_values("貢獻(開發期CAGR)").head(3).iterrows():
-            if np.isfinite(row["貢獻(開發期CAGR)"]) and row["貢獻(開發期CAGR)"] < -0.01:
-                out.append(f"{lab}：「{row['case']}」後開發期 CAGR 反而提高 {(-row['貢獻(開發期CAGR)'])*100:.1f}% → 此規則在本期間拖累績效，可考慮關閉或放寬。")
+        ab = r["ablation"].iloc[1:]
+        for _, row in ab.sort_values("貢獻(開發期CAGR)").head(3).iterrows():
+            c = row["貢獻(開發期CAGR)"]
+            if np.isfinite(c) and c < -0.01 and row.get("目前", "啟用") == "啟用":
+                out.append(f"{lab}：「{row['case']}」後開發期 CAGR 提高 {-c*100:.1f}% → 此規則在本期間拖累績效，可考慮關閉或放寬。")
+        for _, row in ab.sort_values("貢獻(開發期CAGR)", ascending=False).head(2).iterrows():
+            c = row["貢獻(開發期CAGR)"]
+            if np.isfinite(c) and c > 0.01 and row.get("目前") == "關閉":
+                out.append(f"{lab}：「{row['case']}」可讓開發期 CAGR 提高 {c*100:.1f}% → 可考慮在設定檔開啟。")
         dex, hex_ = ev.get("dev_excess_cagr"), ev.get("hold_excess_cagr")
         if dex is not None and hex_ is not None and np.isfinite(dex) and np.isfinite(hex_) and hex_ < dex - 0.10:
-            out.append(f"{lab}：盲測期超額報酬比開發期低 {(dex-hex_)*100:.0f} 個百分點 → 可能過度配適或市場風格改變，建議提高 n0_shrink 或縮小候選。")
+            vs = r.get("vs_pool_ew", {}).get("holdout", np.nan)
+            if np.isfinite(vs) and vs >= 0:
+                out.append(f"{lab}：盲測期超額報酬比開發期低 {(dex-hex_)*100:.0f} 個百分點，但選股仍勝過同母池等權 {vs*100:.1f}% → "
+                           "落後主因是 0050 權值股（台積電等）集中上漲，而非選股失靈；想貼近大盤可用「0050 核心＋本模型衛星」。")
+            else:
+                out.append(f"{lab}：盲測期超額報酬比開發期低 {(dex-hex_)*100:.0f} 個百分點，且輸給同母池等權 → "
+                           "可能過度配適或市場風格改變，建議提高 n0_shrink 或縮小候選。")
         rb = r["robust"]
         if rb.get("dsr") is not None and np.isfinite(rb["dsr"]) and rb["dsr"] < 0.5:
             out.append(f"{lab}：考慮 {rb['n_trials']} 次測試後的 Deflated Sharpe = {rb['dsr']:.2f}（<0.5）→ 優勢在統計上尚不顯著，請以小資金或紙上交易驗證。")
@@ -121,8 +129,35 @@ def hints(H: dict) -> list[str]:
             if np.isfinite(buy) and np.isfinite(sell) and buy < sell:
                 out.append(f"{lab}：市場判為 A1/B3(買點) 後的大盤報酬 {buy*100:.1f}% 低於 A3/B1(賣點) 後的 {sell*100:.1f}% → 市場雞蛋階段判斷在本資料不具預測力，建議水位用 none/soft。")
         if h == "short" and r["turnover"] > 0.5:
-            out.append(f"{lab}：每次換股周轉率 {r['turnover']:.0%}，交易成本吃掉不少報酬 → 可把 hysteresis 提高到 2.0~2.5。")
+            out.append(f"{lab}：每次換股周轉率 {r['turnover']:.0%}，年交易成本約占資金 {r['cost_drag']:.0%} → "
+                       "台股證交稅 0.3% 讓每週換股很難勝過 0050；建議短線清單只當中長線標的的『進場時機』參考，不單獨操作。")
     return out or ["本次未偵測到需要優先調整的項目。"]
+
+
+def _bench_sharpe(r: dict) -> float:
+    try:
+        b = r["nav"]["0050"].dropna().pct_change().dropna()
+        return float(b.mean() / b.std() * np.sqrt(245))
+    except Exception:
+        return np.nan
+
+
+def verdict(r: dict) -> str:
+    """Plain-language answer to 'does it beat 0050?' for one horizon."""
+    ev, rb = r["eval"], r["robust"]
+    dex, hex_, p = ev.get("dev_excess_cagr", np.nan), ev.get("hold_excess_cagr", np.nan), rb.get("p_positive", np.nan)
+    sh, bsh = ev.get("oos_sharpe", np.nan), np.nan
+    if not np.isfinite(dex):
+        return "資料不足"
+    if np.isfinite(p) and p >= 0.95 and dex > 0 and hex_ > 0:
+        return "顯著優於 0050（超額>0 機率≥95%，開發期與盲測期皆為正）"
+    if np.isfinite(p) and p <= 0.05:
+        return "顯著落後 0050（超額>0 機率≤5%）→ 不建議單獨使用"
+    if dex > 0 and (not np.isfinite(hex_) or hex_ > 0):
+        return "優於 0050，但統計上尚不顯著"
+    if dex > 0:
+        return "開發期優於 0050、盲測期落後 → 優勢不穩定，未達統計顯著"
+    return "未優於 0050（差異未達統計顯著）"
 
 
 def build_html(res: dict, cfg: dict, comparison: tuple | None = None) -> str:
@@ -140,20 +175,42 @@ def build_html(res: dict, cfg: dict, comparison: tuple | None = None) -> str:
         p.append("<div class='banner'>快速模式：只測試部分母池（ADV/KOSTO/INST2Y × 150/300）。完整測試請用 full 模式。</div>")
     # ---------------- summary
     p.append("<h2>1. 總覽：哪個模型、哪個母池</h2>")
-    rows = []
+    rows, vrows = [], []
     for h, r in H.items():
         ev, rb = r["eval"], r["robust"]
         rows.append({"期間": r["label"], "精選母池": f"{r['chosen_pool']['rule']}{r['chosen_pool']['size']}（{RULE_ZH[r['chosen_pool']['rule']]}）",
                      "選定模型": r["chosen"]["variant"], "開發期CAGR": ev.get("dev_cagr"), "0050同期": ev.get("dev_bench_cagr"),
                      "開發期Sharpe": ev.get("dev_sharpe"), "開發期MDD": ev.get("dev_mdd"), "盲測CAGR": ev.get("hold_cagr"),
-                     "盲測0050": ev.get("hold_bench_cagr"), "盲測MDD": ev.get("hold_mdd"), "PSR": rb.get("psr"), "DSR": rb.get("dsr"),
-                     "超額>0機率": rb.get("p_positive")})
+                     "盲測0050": ev.get("hold_bench_cagr"), "盲測MDD": ev.get("hold_mdd"), "DSR": rb.get("dsr")})
+        vrows.append({"期間": r["label"], "全樣本外CAGR": ev.get("oos_cagr"), "0050": ev.get("oos_bench_cagr"),
+                      "Sharpe": ev.get("oos_sharpe"), "0050 Sharpe": _bench_sharpe(r), "最大回撤": ev.get("oos_mdd"),
+                      "超額>0機率": rb.get("p_positive"), "選股力(勝母池等權/年)": r.get("vs_pool_ew", {}).get("oos"),
+                      "是否顯著優於0050": verdict(r)})
     p.append(table(pd.DataFrame(rows), {"開發期CAGR": "pct", "0050同期": "pct", "開發期MDD": "pct", "盲測CAGR": "pct",
                                         "盲測0050": "pct", "盲測MDD": "pct", "開發期Sharpe": "{:.2f}", "PSR": "{:.2f}",
-                                        "DSR": "{:.2f}", "超額>0機率": "pct0"}, left=("期間", "精選母池", "選定模型")))
+                                        "DSR": "{:.2f}"}, left=("期間", "精選母池", "選定模型")))
+    p.append("<h3>與台灣50（0050）比較：全部樣本外期間（開發期＋盲測）</h3>")
+    p.append(table(pd.DataFrame(vrows), {"全樣本外CAGR": "pct", "0050": "pct", "Sharpe": "{:.2f}", "0050 Sharpe": "{:.2f}",
+                                         "最大回撤": "pct", "超額>0機率": "pct0", "選股力(勝母池等權/年)": "pct"},
+                   left=("期間", "是否顯著優於0050")))
     p.append("<p class='mut'>開發期＝樣本外起點到盲測起點（用來挑母池與模型）；盲測＝最後 "
              f"{cfg['research']['holdout_months']} 個月，挑選時完全沒看。PSR＝夏普比大於 0 的機率；DSR＝扣除多次測試運氣後的機率；"
-             "超額>0機率＝區塊自助法估計年化超額報酬為正的機率。</p>")
+             "超額>0機率＝區塊自助法估計年化超額報酬為正的機率（≥95% 才算顯著優於 0050）。"
+             "選股力＝本模型減去『同一母池全部等權持有』的年化報酬，衡量挑股本身的價值（扣除母池效果）。</p>")
+    p.append("<h3>0050 核心＋本模型衛星（降低落後 0050 的風險）</h3>")
+    mix_rows = []
+    for h, r in H.items():
+        if "mix" in r and len(r["mix"]):
+            for _, m in r["mix"].iterrows():
+                mix_rows.append({"期間": r["label"], **m.to_dict()})
+    if mix_rows:
+        mt = pd.DataFrame(mix_rows)
+        keep = ["期間", "組合", "dev_cagr", "dev_sharpe", "dev_mdd", "holdout_cagr", "holdout_mdd", "oos_cagr", "oos_excess_cagr", "oos_sharpe", "oos_mdd"]
+        mt = mt[[c for c in keep if c in mt]].rename(columns={
+            "dev_cagr": "開發期CAGR", "dev_sharpe": "開發期Sharpe", "dev_mdd": "開發期MDD", "holdout_cagr": "盲測CAGR",
+            "holdout_mdd": "盲測MDD", "oos_cagr": "全樣本外CAGR", "oos_excess_cagr": "全期超額", "oos_sharpe": "全期Sharpe", "oos_mdd": "全期MDD"})
+        p.append(table(mt, {c: ("{:.2f}" if "Sharpe" in c else "pct") for c in mt.columns if c not in ("期間", "組合")}, left=("期間", "組合")))
+        p.append("<p class='mut'>每日固定比例再平衡的近似值（實務上每月再平衡即可）。0050 權重越高越貼近大盤、回撤也越接近大盤。</p>")
     # ---------------- today's picks
     first = next(iter(H.values()))
     lt0 = first["latest"]
@@ -165,8 +222,8 @@ def build_html(res: dict, cfg: dict, comparison: tuple | None = None) -> str:
         if lt["picks"]:
             df = pd.DataFrame([{"代號": x["ticker"], "名稱": x["name"], "產業": x["sector"], "收盤": x["close"],
                                 "分數": x["score"], "個股階段": x["stage"], "續抱": "✓" if x["kept"] else "",
-                                "主要理由": "；".join(x["reasons"]), "停損價": x["stop_price"]} for x in lt["picks"]])
-            p.append(table(df, {"收盤": "{:.2f}", "分數": "{:.3f}", "停損價": "{:.2f}"}, left=("名稱", "產業", "主要理由")))
+                                "主要理由": "；".join(x["reasons"]), "警戒價": x["stop_price"]} for x in lt["picks"]])
+            p.append(table(df, {"收盤": "{:.2f}", "分數": "{:.3f}", "警戒價": "{:.2f}"}, left=("名稱", "產業", "主要理由")))
         if lt["blocked"]:
             p.append("<p class='mut'>高分但被科斯托蘭尼規則排除：" + "、".join(f"{b['ticker']}{b['name']}（{b['why']}）" for b in lt["blocked"][:8]) + "</p>")
     # ---------------- market regime
@@ -204,9 +261,11 @@ def build_html(res: dict, cfg: dict, comparison: tuple | None = None) -> str:
             "dev_cagr": "pct", "dev_mdd": "pct", "dev_excess_cagr": "pct", "hold_cagr": "pct", "hold_mdd": "pct",
             "dev_sharpe": "{:.2f}", "turnover": "pct0", "score": "{:.2f}"}.items()}, left=("模型",)))
         p.append("<p class='mut'>挑選規則：只在科斯托蘭尼版本中挑開發期綜合分數最高者；DATA/PRIOR 為對照組。</p>")
-        p.append("<h3>科斯托蘭尼規則消融（關掉一項看績效變化）</h3>" + table(r["ablation"].rename(columns=ZH), {ZH.get(k, k): v for k, v in {
-            "dev_cagr": "pct", "dev_mdd": "pct", "hold_cagr": "pct", "hold_mdd": "pct", "dev_sharpe": "{:.2f}",
-            "turnover": "pct0", "貢獻(開發期CAGR)": "pct"}.items()}, left=("情境",)))
+        p.append("<h3>科斯托蘭尼規則消融（把一條規則切到相反狀態，看績效變化）</h3>" + table(
+            r["ablation"].drop(columns=["key"], errors="ignore").rename(columns=ZH), {ZH.get(k, k): v for k, v in {
+                "dev_cagr": "pct", "dev_mdd": "pct", "hold_cagr": "pct", "hold_mdd": "pct", "dev_sharpe": "{:.2f}",
+                "turnover": "pct0", "貢獻(開發期CAGR)": "pct", "貢獻(盲測CAGR)": "pct"}.items()}, left=("情境",)))
+        p.append("<p class='mut'>貢獻＝規則開啟 − 規則關閉的 CAGR（正＝有幫助）。盲測欄只供檢查，從未用來挑選。</p>")
         fw = r["family_final"]
         p.append("<h3>因子與權重（最新一次估計）</h3><p>族群權重：" + "、".join(f"{k}={v:.0%}" for k, v in fw.items())
                  + "（T技術、C籌碼、F基本、K科斯托蘭尼）</p>")
@@ -237,15 +296,17 @@ def build_html(res: dict, cfg: dict, comparison: tuple | None = None) -> str:
     for idea, impl, cases in KOSTO_MAP:
         contrib = []
         for h, r in H.items():
-            ab = r["ablation"].set_index("case")
-            vals = []
-            for c in cases:
-                hit = [k for k in ab.index if k == c or (c.startswith("移除 k_") and k.startswith(c + "（"))]
-                vals += [ab.loc[k, "貢獻(開發期CAGR)"] for k in hit]
-            if vals:
-                contrib.append(f"{r['label'][:2]} {pct(np.nansum(vals))}")
-        rows.append({"書中觀念": idea, "程式實作": impl, "關掉後CAGR少了(正=有幫助)": "；".join(contrib) or "（不可單獨關閉）"})
-    p.append(table(pd.DataFrame(rows), left=("書中觀念", "程式實作", "關掉後CAGR少了(正=有幫助)")))
+            ab = r["ablation"]
+            if "key" not in ab:
+                continue
+            ab = ab[ab["key"].isin(cases)]
+            if len(ab):
+                st = "/".join(sorted(set(ab["目前"]))) if "目前" in ab else ""
+                contrib.append(f"{r['label'][:2]} 開發{pct(np.nansum(ab['貢獻(開發期CAGR)']))} 盲測{pct(np.nansum(ab.get('貢獻(盲測CAGR)', np.nan)))}"
+                               + (f"（{st}）" if st else ""))
+        rows.append({"書中觀念": idea, "程式實作": impl, "規則對CAGR的貢獻(正=有幫助)": "；".join(contrib) or "（不可單獨關閉）"})
+    p.append(table(pd.DataFrame(rows), left=("書中觀念", "程式實作", "規則對CAGR的貢獻(正=有幫助)")))
+    p.append("<p class='mut'>貢獻＝規則開啟時的 CAGR − 關閉時的 CAGR。括號為目前預設狀態；『關閉』代表實測後預設不用，但仍列出若加回的影響。</p>")
     # ---------------- hints
     p.append("<h2>7. 自動調整建議</h2><ul>" + "".join(f"<li>{html.escape(x)}</li>" for x in hints(H)) + "</ul>")
     p.append("<p class='mut'>調整方式：修改 config/default.yaml（或 Streamlit「快速調整」頁），重新執行即可；每次報告都附 config_used.yaml 方便回溯。</p>")

@@ -30,6 +30,11 @@ def test_panel_total_return_on_exdividend_and_split(tmp_path):
         [d[1], "2222", "TWSE", 188, 189, 187, 188.64, 1e6, 1e8, 0.0, ""],
         [d[2], "2222", "TWSE", 47.5, 47.8, 47.3, 47.57, 1e6, 1e8, 0.41, ""],
         [d[3], "2222", "TWSE", 47.57, 47.6, 47.5, 47.57, 1e6, 1e8, 0.0, ""],
+        # 'X' printed on a non-dividend day (no ex-rights record, no change) → previous close is the reference
+        [d[0], "3333", "TWSE", 50, 50, 50, 50, 1e6, 1e8, 0.0, ""],
+        [d[1], "3333", "TWSE", 51, 52, 50, 52, 1e6, 1e8, np.nan, "X"],
+        [d[2], "3333", "TWSE", 52, 53, 52, 53, 1e6, 1e8, 1.0, ""],
+        [d[3], "3333", "TWSE", 53, 53, 53, 53, 1e6, 1e8, 0.0, ""],
     ], columns=["date", "ticker", "board", "open", "high", "low", "close", "volume", "amount", "change", "event"])
     st.append("price", price)
     st.append("exright", pd.DataFrame([[d[2], "1111", "TWSE", 100.0, 96.0]], columns=["date", "ticker", "board", "before", "ref"]))
@@ -39,6 +44,8 @@ def test_panel_total_return_on_exdividend_and_split(tmp_path):
     assert r.loc[d[2], "1111"] == pytest.approx(97 / 96 - 1, rel=1e-5)          # dividend reinvested
     assert r.loc[d[3], "1111"] == pytest.approx(98 / 97 - 1, rel=1e-5)
     assert r.loc[d[2], "2222"] == pytest.approx(47.57 / 47.16 - 1, rel=1e-5)    # split-safe
+    assert r.loc[d[1], "3333"] == pytest.approx(52 / 50 - 1, rel=1e-5)          # v1.1: not zeroed
+    assert P.quality["x_days_using_prev_close"] == 1
     assert P.quality["suspicious_returns"] == 0
     assert P["oc"].loc[d[2], "1111"] == pytest.approx(97 / 96.5 - 1, rel=1e-5)
 
@@ -165,9 +172,26 @@ def test_research_run_all_and_report(world, tmp_path):
     res = R.run_all(horizons=["mid"], progress=lambda *a: None)
     hb = res["horizons"]["mid"]
     assert len(hb["pool_table"]) == 4 and len(hb["latest"]["picks"]) <= world.cfg["research"]["top_k"]
-    assert {"開發期CAGR"} <= set(["開發期CAGR"])
+    ab = hb["ablation"]
+    assert {"key", "目前", "貢獻(開發期CAGR)", "貢獻(盲測CAGR)"} <= set(ab.columns)
+    assert ab.loc[ab["key"] == "stage_gate", "目前"].iloc[0] == "關閉"            # v1.1 default: stage gate off
+    assert len(hb["mix"]) == len(world.cfg["research"]["core_mix"]) + 2
+    assert set(hb["vs_pool_ew"]) == {"dev", "holdout", "oos"}
     z = build_zip(res, world.cfg)
     import io
     import zipfile
     names = zipfile.ZipFile(io.BytesIO(z)).namelist()
     assert {"report.html", "report.xlsx", "config_used.yaml", "picks_history_mid.csv"} <= set(names)
+
+
+def test_pool_smoothing_and_sqrt_cap_weighting():
+    from kosto.research import smooth_pool_scores
+    t = pd.DataFrame({"rule": ["A"] * 3 + ["B"] * 2, "size": [100, 200, 300, 100, 200],
+                      "raw_score": [1.0, 0.0, 0.0, 0.6, 0.6]})
+    sm = smooth_pool_scores(t)
+    assert sm[0] == pytest.approx(0.5) and sm[3] == pytest.approx(0.6)    # lone lucky cell is discounted
+    B, view, W = _toy_bundle()
+    B.a["MCAP"] = np.ones((len(B.sig_pos), B.a["R"].shape[1]), np.float32)
+    eq = run(B, view, W, Spec(H=5, step=5, top_k=1, buy_cost=0, sell_cost=0))
+    sq = run(B, view, W, Spec(H=5, step=5, top_k=1, buy_cost=0, sell_cost=0, weighting="sqrt_cap"))
+    assert sq.nav.iloc[-1] == pytest.approx(eq.nav.iloc[-1], rel=1e-9)  # one stock → identical to equal weight

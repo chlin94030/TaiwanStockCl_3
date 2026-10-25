@@ -5,5 +5,5 @@ Architecture (deliberately different from Alpha Radar V22):
   -> vectorised factor library (技術/籌碼/基本/科斯托蘭尼)  -> pool tests  -> IC-IR hierarchical weights
   -> tranche (overlapping) backtester  -> research bundle (.npz)  -> Streamlit (seconds-level re-tuning)
 """
-__version__ = "1.0.1"
+__version__ = "1.1.0"
 APP_NAME = "Kosto Lab 科斯托蘭尼量化選股實驗室"

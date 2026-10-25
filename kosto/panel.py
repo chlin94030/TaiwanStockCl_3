@@ -77,15 +77,16 @@ def build_panel(store: Store, start=None, end=None, min_names_per_day: int = 50)
     prev_close = close.ffill().shift(1)
     ref = close - P.m["change"]
     ref = ref.where(exref.isna(), exref)                      # official ex-rights reference wins
-    ref = ref.where(~(event & exref.isna()))                  # ex-day without reference → unknown
-    ref = ref.where(ref.notna() | ~close.notna() | event, prev_close)  # missing change → previous close
+    # TWSE also prints 'X' on non-dividend days (創新板, 全額交割, first day after a halt…). Real dividend days are
+    # in the ex-rights table; for the rest the previous close IS the reference (verified: 97% move < ±10%).
+    ref = ref.where(ref.notna() | ~close.notna(), prev_close)  # missing change → previous close
     ratio = ref / prev_close
     ref = ref.where((ratio > 0.02) & (ratio < 50) | prev_close.isna())
     ret = close / ref - 1
     first_days = close.notna().cumsum() <= 5                  # IPO honeymoon: no price limit
-    bad = (ret.abs() > 0.105) & ~first_days & ~event & exref.isna()
+    bad = (ret.abs() > 0.105) & ~first_days & exref.isna()
     P.quality["suspicious_returns"] = int(bad.to_numpy().sum())
-    P.quality["exday_without_reference"] = int((event & exref.isna()).to_numpy().sum())
+    P.quality["x_days_using_prev_close"] = int((event & exref.isna() & close.notna()).to_numpy().sum())
     ret = ret.where(~bad)
     P.m["ref"] = ref.astype(F32)
     P.m["ret"] = ret.fillna(0).astype(F32)                    # non-trading day = 0 return
@@ -102,6 +103,7 @@ def build_panel(store: Store, start=None, end=None, min_names_per_day: int = 50)
         bex = exr[exr["ticker"] == "0050"].set_index("date")["ref"].reindex(dates) if not exr.empty else None
         if bex is not None:
             bref = bref.where(bex.isna(), bex)
+        bref = bref.fillna(b["close"].ffill().shift(1))      # 'X' without a dividend → previous close
         P.bench = (b["close"] / bref - 1).fillna(0).clip(-0.2, 0.2)
     t = price[price["ticker"] == "TAIEX"].set_index("date").reindex(dates)
     if not t.empty and t["close"].notna().any():
