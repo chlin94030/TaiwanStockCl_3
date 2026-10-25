@@ -40,9 +40,9 @@ env:
 
 jobs:
   init:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: 建立資料存放區（第一次）
         env:
           GH_TOKEN: ${{ github.token }}
@@ -54,15 +54,15 @@ jobs:
 
   data:
     needs: init
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 355
     strategy:
       fail-fast: false
       matrix:
         group: [price, institutional, margin, valuation, misc]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
@@ -91,11 +91,11 @@ jobs:
   finish:
     needs: data
     if: ${{ always() }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
@@ -126,12 +126,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$RESEARCH_TAG" artifacts/bundle.npz artifacts/results.pkl artifacts/report.zip --clobber
-      - uses: actions/upload-artifact@v4
-        if: ${{ steps.research.outcome == 'success' }}
-        with:
-          name: kosto-report-${{ github.run_number }}
-          path: artifacts/report.zip
-          retention-days: 30
       - name: 資料還沒抓完 → 自動啟動下一輪
         if: ${{ steps.prog.outputs.complete != 'true' && env.MODE != 'data-only' }}
         env:
