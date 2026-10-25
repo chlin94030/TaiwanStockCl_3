@@ -155,14 +155,16 @@ def build_panel(store: Store, start=None, end=None, min_names_per_day: int = 50)
     names = price.dropna(subset=["name"]).groupby("ticker")["name"].last() if "name" in price else pd.Series(dtype=str)
     boards = price.groupby("ticker")["board"].last()
     P.info = pd.DataFrame(index=tickers)
-    P.info["name"] = names.reindex(tickers)
-    P.info["board"] = boards.reindex(tickers)
+    # plain strings (categoricals from the memory-saving read break fillna on pandas 2.x)
+    P.info["name"] = names.astype(object).reindex(tickers)
+    P.info["board"] = boards.astype(object).reindex(tickers)
     P.info["sector"] = "NA"
     if not info.empty:
         inf = info.drop_duplicates("ticker", keep="last").set_index("ticker")
-        P.info["name"] = P.info["name"].fillna(inf["name"].reindex(tickers))
-        P.info["sector"] = inf["sector"].reindex(tickers).fillna("NA")
+        P.info["name"] = P.info["name"].fillna(inf["name"].astype(object).reindex(tickers))
+        P.info["sector"] = inf["sector"].astype(object).reindex(tickers).fillna("NA")
     P.info["name"] = P.info["name"].fillna(pd.Series(tickers, index=tickers))
+    P.info = P.info.astype(object)
     return P
 
 

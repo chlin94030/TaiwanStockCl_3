@@ -165,7 +165,7 @@ def build_bundle(P: Panel, cfg: dict, log=print) -> Bundle:
     mcode = np.array([STAGE_CODES.get(s, 0) for s in mk["stage"].to_numpy()[pos]], np.float32)
     bench = P.bench.reindex(days).fillna(0).to_numpy(np.float32) if P.bench is not None else np.zeros(len(days), np.float32)
 
-    info = P.info.reindex(P.tickers[cols])
+    info = P.info.reindex(P.tickers[cols]).astype(object)
     meta = {
         "version": __version__, "built": pd.Timestamp.now(tz="Asia/Taipei").isoformat(timespec="seconds"),
         "synthetic": bool(P.synthetic), "sig_dates": [str(d.date()) for d in sig_dates],

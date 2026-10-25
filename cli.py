@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import warnings
 import pickle
 import sys
 import time
@@ -22,6 +23,7 @@ from pathlib import Path
 from kosto.config import HORIZON_KEYS, load_config
 
 ART = Path("artifacts")
+warnings.filterwarnings("ignore", category=RuntimeWarning)   # "mean of empty slice" etc. — harmless, keeps logs readable
 
 
 def log(msg):

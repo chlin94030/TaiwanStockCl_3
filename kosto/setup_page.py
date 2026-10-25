@@ -47,6 +47,43 @@ def detect_repo(secret_value: str = "", query_value: str = "") -> tuple[str, str
     return "", ""
 
 
+WORKFLOW_COPY = ROOT / "pipeline_workflow_COPY.txt"   # visible copy (Windows/Mac may hide or skip .github)
+WORKFLOW_PATH = ".github/workflows/pipeline.yml"
+
+
+def workflow_text() -> str:
+    for p in (ROOT / WORKFLOW_PATH, WORKFLOW_COPY):
+        if p.is_file():
+            return p.read_text(encoding="utf-8")
+    return ""
+
+
+def workflow_present(repo: str, token: str | None = None):
+    """True / False / None(unknown) — is the automation file on GitHub?"""
+    h = {"Authorization": f"Bearer {token}"} if token else {}
+    try:
+        for branch in ("HEAD", "main", "master"):
+            r = requests.get(f"https://raw.githubusercontent.com/{repo}/{branch}/{WORKFLOW_PATH}", headers=h, timeout=10)
+            if r.status_code == 200:
+                return True
+        return False
+    except requests.RequestException:
+        return None
+
+
+def render_add_workflow(st, repo: str) -> None:
+    """Three clicks: open GitHub's new-file page (path pre-filled) → copy → paste & commit."""
+    st.error("GitHub 上缺少自動流程檔（`.github` 資料夾沒有上傳成功，Windows/Mac 常會隱藏或略過它）。"
+             "請照下面 3 步補上，約 1 分鐘：")
+    st.markdown(f"**① 按這個連結**（會打開 GitHub「新增檔案」頁，檔名已自動填好）："
+                f"[➜ 在 GitHub 新增流程檔](https://github.com/{repo}/new/main?filename={WORKFLOW_PATH})")
+    st.markdown("**② 按下方框框右上角的「複製」圖示**，回到 GitHub 頁面，在大的編輯框按 **Ctrl+V（Mac：⌘+V）** 貼上")
+    st.code(workflow_text() or "（找不到流程檔內容：請改用 kosto-lab 資料夾中的 pipeline_workflow_COPY.txt）", language="yaml")
+    st.markdown("**③ 按 GitHub 右上角綠色「Commit changes…」→ 再按一次「Commit changes」**。"
+                "完成後約 1~5 分鐘會自動開始，本頁按「重新整理進度」即可看到進度條。")
+    st.caption(f"若連結打開後檔名欄是空的，請手動輸入：{WORKFLOW_PATH}（打「/」會自動變成資料夾）")
+
+
 def read_status(repo: str = "", token: str | None = None) -> dict:
     """Newest of: GitHub raw file (fresh) or the local checkout copy."""
     best = {}
