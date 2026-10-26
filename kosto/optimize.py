@@ -142,7 +142,9 @@ class FitResult:
 
 
 def fit_sparse(ic: np.ndarray, rows: np.ndarray, meta: dict, horizon: str, step: int, H: int,
-               k: int = 5, tmin: float = 1.0, kK: int = 0, lamK: float = 0.0, exclude=()) -> FitResult:
+               k: int = 5, tmin: float = 1.0, kK: int = 0, lamK: float = 0.0, exclude=(),
+               anchor: float = 0.0, anchor_weights: dict | None = None,
+               growth_blend: float = 0.0, growth_weights: dict | None = None) -> FitResult:
     """v1.2 精簡因子模型：只用訓練期 IC-IR t 值最高的 k 個因子（方向須與先驗一致、t > tmin），權重 ∝ |IC-IR|。
     kK > 0 時另外保留 K 族群最強的 kK 個因子，合計權重 lamK（科斯托蘭尼加強版）。
     實測（真實資料 2021-2025 開發期）：中線 30 個母池中 28 個、長線 29 個勝過階層式全因子權重。"""
@@ -183,17 +185,39 @@ def fit_sparse(ic: np.ndarray, rows: np.ndarray, meta: dict, horizon: str, step:
         if selK.any():
             wk = np.where(selK, np.abs(icir), 0.0)
             w = (1 - lamK) * w + lamK * wk / wk.sum()
-    fam_w = {f: float(w[fams == f].sum()) for f in FAMILIES if w[fams == f].sum() > 0}
-    return FitResult((w * sign).astype(np.float32), fam_w, stats, 1.0, int(n))
+    w = w * sign
+    if anchor > 0 and anchor_weights and np.abs(w).sum() > 0:
+        # v1.3 趨勢錨：固定權重的相對強度/動能組合（取自 V23.1 PRICE_RS），不參與估計 → 不會被資料過度配適
+        names = list(meta["factors"])
+        wa = np.zeros(F)
+        for f, x in anchor_weights.items():
+            if f in names and allowed[names.index(f)]:
+                wa[names.index(f)] = x * (dirs[names.index(f)] or 1)
+        if np.abs(wa).sum() > 0:
+            w = (1 - anchor) * w / np.abs(w).sum() + anchor * wa / np.abs(wa).sum()
+    if growth_blend > 0 and growth_weights and np.abs(w).sum() > 0:
+        # v1.3 成長動能假說（V23.1 GROWTH_NO_FLOW 的固定權重，研究前即宣告、未用我方資料調整）與精簡模型做模型平均
+        names = list(meta["factors"])
+        wg = np.zeros(F)
+        for f, x in growth_weights.items():
+            if f in names:
+                wg[names.index(f)] = x * (dirs[names.index(f)] or 1)
+        if np.abs(wg).sum() > 0:
+            w = (1 - growth_blend) * w / np.abs(w).sum() + growth_blend * wg / np.abs(wg).sum()
+    fam_w = {f: float(np.abs(w[fams == f]).sum()) for f in FAMILIES if np.abs(w[fams == f]).sum() > 0}
+    return FitResult(w.astype(np.float32), fam_w, stats, 1.0, int(n))
 
 
 def fit_weights(ic: np.ndarray, rows: np.ndarray, meta: dict, horizon: str, prior_family: dict,
                 lam: float, mode: str, n0: float, max_w: float, step: int, H: int,
                 view: PoolView | None = None, fwd: np.ndarray | None = None, exclude=(),
-                k: int = 5, tmin: float = 1.0, kK: int = 0, lamK: float = 0.0) -> FitResult:
+                k: int = 5, tmin: float = 1.0, kK: int = 0, lamK: float = 0.0,
+                anchor: float = 0.0, anchor_weights: dict | None = None,
+                growth_blend: float = 0.0, growth_weights: dict | None = None) -> FitResult:
     """mode: 'sparse' (精簡因子), 'opt' (IC-IR + λ floor), 'data' (no K family), 'kpure' (K only), 'prior' (no fitting)."""
     if mode == "sparse":
-        return fit_sparse(ic, rows, meta, horizon, step, H, k, tmin, kK, lamK, exclude)
+        return fit_sparse(ic, rows, meta, horizon, step, H, k, tmin, kK, lamK, exclude, anchor, anchor_weights,
+                          growth_blend, growth_weights)
     fams = np.array(meta["families"])
     dirs = np.array(meta["directions"])
     allowed = np.array([horizon in h for h in meta["horizons"]])

@@ -190,6 +190,9 @@ def test_research_run_all_and_report(world, tmp_path):
     assert ab.loc[ab["key"] == "stage_gate", "目前"].iloc[0] == "關閉"            # v1.1 default: stage gate off
     assert len(hb["mix"]) == len(world.cfg["research"]["core_mix"]) + 2
     assert set(hb["vs_pool_ew"]) == {"dev", "holdout", "oos"}
+    val = hb["validation"]
+    assert val["total"] >= 7 and {"閘門", "數值", "門檻", "通過"} <= set(val["gates"].columns)
+    assert len(val["folds"]) >= 2
     z = build_zip(res, world.cfg)
     import io
     import zipfile
@@ -208,3 +211,15 @@ def test_pool_smoothing_and_sqrt_cap_weighting():
     eq = run(B, view, W, Spec(H=5, step=5, top_k=1, buy_cost=0, sell_cost=0))
     sq = run(B, view, W, Spec(H=5, step=5, top_k=1, buy_cost=0, sell_cost=0, weighting="sqrt_cap"))
     assert sq.nav.iloc[-1] == pytest.approx(eq.nav.iloc[-1], rel=1e-9)  # one stock → identical to equal weight
+
+
+def test_benchmark_residual_and_overheat_gate():
+    B, view, W = _toy_bundle()
+    B.a["BENCH"] = np.full(B.a["R"].shape[0], 0.001, np.float32)
+    cash = run(B, view, W, Spec(H=5, step=5, top_k=1, buy_cost=0, sell_cost=0, sleeve=0.5))   # half the book idle
+    ben = run(B, view, W, Spec(H=5, step=5, top_k=1, buy_cost=0, sell_cost=0, sleeve=0.5, residual="bench", etf_cost=0.0))
+    assert ben.nav.iloc[-1] > cash.nav.iloc[-1]                                               # idle half earns 0050
+    B.a["RSI14"] = np.full((len(B.sig_pos), B.a["R"].shape[1]), 90, np.float32)
+    B.a["BIAS20"] = np.zeros_like(B.a["RSI14"])
+    hot = run(B, view, W, Spec(H=5, step=5, top_k=1, buy_cost=0, sell_cost=0, max_rsi=84))
+    assert hot.tranches["n_picks"].sum() == 0                                                  # all blocked as overheated

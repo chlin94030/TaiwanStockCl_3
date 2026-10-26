@@ -237,7 +237,8 @@ def default_choice(h):
         c = hb["chosen"]
         return hb["chosen_pool"]["rule"], hb["chosen_pool"]["size"], Variant(
             c["variant"], c["mode"], c["lam"], c["exposure"], c["gates"], k=int(c.get("k", 5)), tmin=float(c.get("tmin", 1.0)),
-            kK=int(c.get("kK", 0)), lamK=float(c.get("lamK", 0.0)), weighting=c.get("weighting"))
+            kK=int(c.get("kK", 0)), lamK=float(c.get("lamK", 0.0)), weighting=c.get("weighting"),
+            anchor=float(c.get("anchor", 0.0)), growth_blend=float(c.get("growth_blend", 0.0)))
     return "KOSTO", 300, Variant("KOSTO λ=0.40 水位=soft", "opt", 0.40, "soft", True)
 
 
@@ -315,6 +316,11 @@ with tabs[1]:
         WMODES = {"equal": "等權", "rank": "名次加權(1.5→0.5)", "sqrt_cap": "市值平方根加權"}
         w0 = getattr(d_v, "weighting", None) or CFG0["horizons"][h].get("weighting", "equal")
         wmode = s4.selectbox("持股權重", list(WMODES), index=list(WMODES).index(w0), format_func=lambda x: WMODES[x])
+        t1, t2, t3, t4 = st.columns(4)
+        anc = t1.slider("趨勢錨比例(相對強度/動能)", 0.0, 0.6, float(getattr(d_v, "anchor", 0.0)), 0.05)
+        gbl = t2.slider("成長動能假說比例(V23.1)", 0.0, 1.0, float(getattr(d_v, "growth_blend", 0.0)), 0.1)
+        to50 = t3.checkbox("沒買股票的資金放 0050", value=CFG0["horizons"][h].get("residual", "cash") == "bench")
+        ohot = t4.checkbox("不追高(RSI>84/乖離>14%不買)", value=bool(CFG0["kostolany"].get("overheat_gate", False)))
         with st.expander("進階：族群先驗權重 / 成本"):
             fp = CFG0["horizons"][h]["family_prior"]
             e1, e2, e3, e4, e5 = st.columns(5)
@@ -334,9 +340,11 @@ with tabs[1]:
         cfg["costs"]["fee_discount"] = disc
         v = Variant(f"自訂 {mode_lab} λ={lam:.2f} 水位={expo}", MODES[mode_lab], lam, expo, stage_on or dtop_on,
                     stage_gate=stage_on, dtop_gate=dtop_on, k=int(sk), tmin=float(stmin), kK=2 if kplus else 0,
-                    lamK=0.3 if kplus else 0.0, weighting=wmode)
+                    lamK=0.3 if kplus else 0.0, weighting=wmode, anchor=float(anc), growth_blend=float(gbl),
+                    residual="bench" if to50 else "cash", overheat=bool(ohot))
         if v.mode == "sparse":
-            v.name = f"自訂 精簡{sk}因子 t>{stmin:g}{'＋K' if kplus else ''} 水位={expo}"
+            v.name = (f"自訂 精簡{sk}因子 t>{stmin:g}{'＋K' if kplus else ''}{f'＋趨勢錨{anc:.0%}' if anc else ''}"
+                      f"{f'＋成長假說{gbl:.0%}' if gbl else ''} 水位={expo}")
         R.cfg = cfg
         with st.spinner("回測中…"):
             ev = R.evaluate(rule, size, h, v, keep=True)

@@ -46,7 +46,12 @@ class Variant:
     tmin: float = 1.0                 # sparse：t 值門檻
     kK: int = 0                       # sparse：另外保留的科斯托蘭尼因子數
     lamK: float = 0.0                 # sparse：科斯托蘭尼因子合計權重
+    anchor: float = 0.0               # sparse：趨勢錨（固定權重相對強度組合）占比
+    growth_blend: float = 0.0         # sparse：與「成長動能假說」(V23.1) 模型平均的占比
     weighting: str | None = None      # None → 依設定檔 horizons.*.weighting
+    overheat: bool | None = None      # 不追高閘門（RSI/乖離）：None=依設定檔
+    sleeve: float | None = None       # 個股部位比例：None=依設定檔
+    residual: str | None = None       # 未投入資金：cash | bench(0050)；None=依設定檔
 
     def label(self) -> str:
         return self.name
@@ -118,7 +123,7 @@ class Research:
     def schedule(self, rule, size, h, v: Variant):
         r0 = self.cfg["research"]
         key = (rule, size, h, v.mode, round(v.lam, 4), tuple(sorted(self.cfg["horizons"][h]["family_prior"].items())),
-               r0["n0_shrink"], r0["max_factor_weight"], tuple(v.exclude), v.k, v.tmin, v.kK, v.lamK)
+               r0["n0_shrink"], r0["max_factor_weight"], self._excl(v), v.k, v.tmin, v.kK, v.lamK, v.anchor, v.growth_blend)
         if key in self._sched:
             return self._sched[key]
         if len(self._sched) > 64:
@@ -132,7 +137,7 @@ class Research:
             rows = self.train_rows(a, h)
             fit = fit_weights(ic, rows, self.B.meta, h, self.cfg["horizons"][h]["family_prior"], v.lam, v.mode,
                               r["n0_shrink"], r["max_factor_weight"], r["signal_step"], self.H(h), view,
-                              self.B.a["FWD"][HKEY[h]], exclude=v.exclude, **self._sp(v))
+                              self.B.a["FWD"][HKEY[h]], exclude=self._excl(v), **self._sp(v))
             for i in range(a, b):
                 W[i] = fit.weights
             hist.append({"from": str(self.B.sig_dates[a].date()), "n_train": fit.n_rows, "alpha": round(fit.alpha, 3),
@@ -146,17 +151,29 @@ class Research:
         rows = self.train_rows(self.S, h)
         return fit_weights(self.ic(rule, size, h), rows, self.B.meta, h, self.cfg["horizons"][h]["family_prior"],
                            v.lam, v.mode, r["n0_shrink"], r["max_factor_weight"], r["signal_step"], self.H(h),
-                           self.view(rule, size), self.B.a["FWD"][HKEY[h]], exclude=v.exclude, **self._sp(v))
+                           self.view(rule, size), self.B.a["FWD"][HKEY[h]], exclude=self._excl(v), **self._sp(v))
 
-    @staticmethod
-    def _sp(v: Variant) -> dict:
-        return {"k": v.k, "tmin": v.tmin, "kK": v.kK, "lamK": v.lamK}
+    def _sp(self, v: Variant) -> dict:
+        return {"k": v.k, "tmin": v.tmin, "kK": v.kK, "lamK": v.lamK, "anchor": v.anchor,
+                "anchor_weights": self.cfg["research"].get("momentum_anchor"), "growth_blend": v.growth_blend,
+                "growth_weights": self.cfg["research"].get("growth_hypothesis")}
+
+    def _excl(self, v: Variant) -> tuple:
+        """Factors a sparse model may not *select* (they can still enter through the fixed anchor/hypothesis)."""
+        extra = tuple(self.cfg["research"].get("sparse_exclude") or ()) if v.mode == "sparse" else ()
+        return tuple(v.exclude) + extra
 
     # ------------------------------------------------------------------ evaluation
     def spec(self, h, v: Variant):
         kw = {"use_gates": v.gates}
-        wt = v.weighting or self.cfg["horizons"][h].get("weighting", "equal")
-        kw["weighting"] = wt
+        hc, kc = self.cfg["horizons"][h], self.cfg["kostolany"]
+        kw["weighting"] = v.weighting or hc.get("weighting", "equal")
+        oh = kc.get("overheat_gate", False) if v.overheat is None else v.overheat
+        if oh:
+            kw["max_rsi"] = kc.get("max_rsi", 84)
+            kw["max_bias20"] = kc.get("max_bias20", 0.14)
+        kw["sleeve"] = float(hc.get("sleeve", 1.0) if v.sleeve is None else v.sleeve)
+        kw["residual"] = v.residual or hc.get("residual", "cash")
         if self.cfg["research"].get("max_per_sector"):
             kw["max_per_sector"] = int(self.cfg["research"]["max_per_sector"])
         if v.stage_gate is False:
@@ -243,7 +260,8 @@ class Research:
         m.update(kw)
         mode = m.get("mode", "opt")
         v = Variant(name or "", mode, float(m.get("lam", 0.0 if mode == "sparse" else 0.25)), m.get("exposure", "none"), True,
-                    k=int(m.get("k", 5)), tmin=float(m.get("tmin", 1.0)), kK=int(m.get("kK", 0)), lamK=float(m.get("lamK", 0.0)))
+                    k=int(m.get("k", 5)), tmin=float(m.get("tmin", 1.0)), kK=int(m.get("kK", 0)), lamK=float(m.get("lamK", 0.0)),
+                    anchor=float(m.get("anchor", 0.0)), growth_blend=float(m.get("growth_blend", 0.0)))
         if not name:
             v.name = self.variant_label(v)
         return v
@@ -251,7 +269,10 @@ class Research:
     @staticmethod
     def variant_label(v: Variant) -> str:
         if v.mode == "sparse":
-            extra = f"＋K{v.kK}({v.lamK:.0%})" if v.kK else ""
+            extra = ((f"＋K{v.kK}({v.lamK:.0%})" if v.kK else "") + (f"＋趨勢錨{v.anchor:.0%}" if v.anchor else "")
+                     + (f"＋成長動能假說{v.growth_blend:.0%}" if v.growth_blend else ""))
+            if v.growth_blend >= 0.999:
+                return f"成長動能假說(V23.1 GROWTH，我方資料) 水位={v.exposure}"
             return f"精簡{v.k}因子 t>{v.tmin:g}{extra} 水位={v.exposure}"
         return f"KOSTO λ={v.lam:.2f} 水位={v.exposure}"
 
@@ -266,6 +287,12 @@ class Research:
                     if kk != base.k:
                         vs.append(self.model_variant(h, exposure=ex, k=kk))
                 vs.append(self.model_variant(h, exposure=ex, kK=2, lamK=0.3))      # 科斯托蘭尼加強版
+                alt = 0.0 if base.anchor else 0.3                                    # 有/無趨勢錨對照
+                vs.append(self.model_variant(h, exposure=ex, anchor=alt))
+                gb = 0.0 if base.growth_blend else 0.3                               # 有/無成長動能假說對照
+                vs.append(self.model_variant(h, exposure=ex, growth_blend=gb))
+                vs.append(self.model_variant(h, exposure=ex, growth_blend=0.5))
+                vs.append(self.model_variant(h, exposure=ex, growth_blend=1.0))      # V23.1 GROWTH 原假說
             for lam in r["lambdas"]:
                 vs.append(Variant(f"KOSTO λ={lam:.2f} 水位={ex}", "opt", lam, ex, True))
         vs.append(Variant("KOSTO_PURE 只用科斯托蘭尼因子", "kpure", 1.0, "soft", True))
@@ -451,7 +478,11 @@ class Research:
             progress(f"{h} 選定母池 {rule}{size}")
             vt = self.variant_study(h, rule, size, progress)
             kv = vt[~vt["is_baseline"]].sort_values("score", ascending=False)
-            v = next(x for x in self.variants(h) if x.name == kv.iloc[0]["variant"])
+            if self.cfg["research"].get("lock_model", False):
+                # v1.3：模型由多窗口研究決定並寫在設定檔（見 docs）；每次研究只重估權重、重挑母池，模型表僅供比較
+                v = self.model_variant(h, exposure=(self.cfg["horizons"][h].get("model") or {}).get("exposure", "none"))
+            else:
+                v = next(x for x in self.variants(h) if x.name == kv.iloc[0]["variant"])
             out["horizons"][h] = self.horizon_block(h, rule, size, v, pt, vt)
             ev = out["horizons"][h]["eval"]
             progress(f"{h} 完成：開發期CAGR {ev.get('dev_cagr', np.nan):.1%}，盲測CAGR {ev.get('hold_cagr', np.nan):.1%} "
@@ -498,6 +529,7 @@ class Research:
         ab = self.ablation(h, rule, size, v) if ablation else pd.DataFrame(
             columns=["case", "dev_cagr", "dev_sharpe", "dev_mdd", "hold_cagr", "hold_mdd", "turnover", "貢獻(開發期CAGR)"])
         mix = self.mix_table(res, ew)
+        val = self.validation(h, rule, size, v, res, ev, robust)
         lt = self.latest(h, rule, size, v, res)
         fit = self.final_fit(rule, size, h, v)
         ft = self.factor_table(h, rule, size, lt["weights"])
@@ -505,15 +537,90 @@ class Research:
             "label": self.cfg["horizons"][h]["label"], "days": self.H(h),
             "pool_table": pt, "chosen_pool": {"rule": rule, "size": size}, "variant_table": vt,
             "chosen": {"variant": v.name, "mode": v.mode, "lam": v.lam, "exposure": v.exposure, "gates": v.gates,
-                       "k": v.k, "tmin": v.tmin, "kK": v.kK, "lamK": v.lamK, "weighting": v.weighting},
+                       "k": v.k, "tmin": v.tmin, "kK": v.kK, "lamK": v.lamK, "weighting": v.weighting, "anchor": v.anchor,
+                       "growth_blend": v.growth_blend},
             "data_beats_kostolany": data_wins, "eval": ev, "fit_history": hist, "factor_table": ft,
             "family_final": fit.family, "robust": robust, "ablation": ab, "stage_table": self.stage_table(res),
             "yearly": yearly_table(res.nav, res.bench), "latest": lt,
             "nav": pd.DataFrame({"策略": res.nav, "0050": res.bench, "母池等權": ew.nav.reindex(res.nav.index),
                                  **{k.split()[0]: r.nav.reindex(res.nav.index) for k, r in base.items()}}),
             "tranches": res.tranches, "turnover": res.turnover, "cost_drag": res.cost_drag, "mix": mix,
-            "vs_pool_ew": dict(mix.attrs.get("vs_pool_ew", {})),
+            "vs_pool_ew": dict(mix.attrs.get("vs_pool_ew", {})), "validation": val,
         }
+
+    # ------------------------------------------------------------------ v1.3 validation (acceptance gates)
+    def folds_table(self, res, months=6) -> pd.DataFrame:
+        nav, bench = res.nav, res.bench
+        hd = self.B.sig_dates[min(self.holdout, self.S - 1)]
+        out, a = [], nav.index[0]
+        while a < nav.index[-1]:
+            b = a + pd.DateOffset(months=months)
+            s = nav[(nav.index >= a) & (nav.index < b)]
+            if len(s) > 20:
+                bb = bench.reindex(s.index)
+                out.append({"區塊": f"{s.index[0].date()}～{s.index[-1].date()}", "期間": "盲測" if s.index[0] >= hd else "開發",
+                            "策略": s.iloc[-1] / s.iloc[0] - 1, "0050": bb.iloc[-1] / bb.iloc[0] - 1})
+            a = b
+        f = pd.DataFrame(out)
+        if len(f):
+            f["超額"] = f["策略"] - f["0050"]
+        return f
+
+    def presample(self, h, rule, size, v: Variant) -> dict:
+        """Weights estimated ONLY on signals from the first OOS date onward, applied backwards to the earlier
+        years (2019-2020 on the default config). No pool, model or parameter choice ever looked at this period."""
+        if self.first_oos < 20:
+            return {}
+        r = self.cfg["research"]
+        sp = self.B.sig_pos
+        rows = np.where((np.arange(self.S) >= self.first_oos) & (sp + self.H(h) + 1 <= sp[-1]))[0]
+        fit = fit_weights(self.ic(rule, size, h), rows, self.B.meta, h, self.cfg["horizons"][h]["family_prior"], v.lam, v.mode,
+                          r["n0_shrink"], r["max_factor_weight"], r["signal_step"], self.H(h), self.view(rule, size),
+                          self.B.a["FWD"][HKEY[h]], exclude=self._excl(v), **self._sp(v))
+        W = [fit.weights] * self.S
+        res = run(self.B, self.view(rule, size), W, self.spec(h, v), start_i=0)
+        end = self.B.sig_dates[self.first_oos]
+        nav = res.nav[res.nav.index < end]
+        if len(nav) < 60:
+            return {}
+        m = perf(nav / nav.iloc[0], res.bench.reindex(nav.index))
+        return {"start": str(nav.index[0].date()), "end": str(nav.index[-1].date()), **m,
+                "nav": pd.DataFrame({"策略": nav / nav.iloc[0], "0050": res.bench.reindex(nav.index) / res.bench.reindex(nav.index).iloc[0]})}
+
+    def validation(self, h, rule, size, v: Variant, res, ev, robust) -> dict:
+        acc = self.cfg["research"].get("acceptance") or {}
+        folds = self.folds_table(res, acc.get("fold_months", 6))
+        st = acc.get("cost_stress", 0.005)
+        sp = self.spec(h, v)
+        sp.buy_cost += st / 2
+        sp.sell_cost += st / 2
+        W, _ = self.schedule(rule, size, h, v)
+        rs = run(self.B, self.view(rule, size), W, sp, start_i=self.first_oos)
+        stress = perf(rs.nav, rs.bench)
+        pre = self.presample(h, rule, size, v) if self.cfg["research"].get("presample_test", True) else {}
+        g = []
+
+        def gate(name, value, thr, ok, fmt="pct"):
+            g.append({"閘門": name, "數值": value, "門檻": thr, "通過": bool(ok) if value is not None and np.isfinite(value) else False, "fmt": fmt})
+        ex = ev.get("oos_excess_cagr", np.nan)
+        gate("全樣本外年化超額 ≥ 門檻", ex, acc.get("excess_cagr_min", 0.05), ex >= acc.get("excess_cagr_min", 0.05))
+        ir = ev.get("oos_info_ratio", np.nan)
+        gate("資訊比率 ≥ 門檻", ir, acc.get("ir_min", 0.5), ir >= acc.get("ir_min", 0.5), "num")
+        mdd_gap = ev.get("oos_mdd", np.nan) - min(res.bench / res.bench.cummax() - 1)
+        gate("最大回撤比 0050 多不超過", mdd_gap, -acc.get("max_extra_mdd", 0.10), mdd_gap >= -acc.get("max_extra_mdd", 0.10))
+        fw = float((folds["超額"] > 0).mean()) if len(folds) else np.nan
+        gate("半年區塊勝率 ≥ 門檻", fw, acc.get("min_fold_win", 0.5), fw >= acc.get("min_fold_win", 0.5))
+        se = stress.get("excess_cagr", np.nan)
+        gate(f"成本加壓（來回 +{st:.1%}）後超額 > 0", se, 0.0, se > 0)
+        pp = robust.get("p_positive", np.nan)
+        gate("自助法 超額>0 機率 ≥ 90%", pp, 0.9, pp >= 0.9)
+        he = ev.get("hold_excess_cagr", np.nan)
+        gate("盲測期超額 > 0", he, 0.0, he > 0)
+        if pre:
+            gate(f"未用期間 {pre['start'][:4]}-{pre['end'][:4]} 超額 > 0", pre.get("excess_cagr"), 0.0, pre.get("excess_cagr", -1) > 0)
+        gates = pd.DataFrame(g)
+        return {"gates": gates, "passed": int(gates["通過"].sum()), "total": len(gates), "folds": folds,
+                "stress_excess": se, "presample": pre}
 
     def mix_table(self, res, ew=None) -> pd.DataFrame:
         """0050 core + model satellite (daily constant mix), and the model vs its own pool equal-weighted."""

@@ -29,7 +29,7 @@ research:
   holdout_months: 12         # 最後 12 個月保留，不參與母池/模型挑選（盲測）
   top_k: 10                  # 每次推薦 10 檔，等權
   capital: 1000000           # 參考資金（計算容量限制）
-  max_participation: 0.02    # 單檔買進金額不超過 20 日均成交額的 2%
+  max_participation: 0.005   # 單檔買進金額不超過 20 日均成交額的 0.5%（v1.3 採 V23.1 的較嚴容量限制；實測不降反升）
   min_price: 10              # 母池基本門檻：股價
   min_adv: 10000000          # 母池基本門檻：20 日均成交金額（元）
   min_history: 120           # 母池基本門檻：上市交易滿 120 日
@@ -42,6 +42,28 @@ research:
   lambdas: [0.10, 0.25, 0.40]          # 階層式模型：科斯托蘭尼因子族群最低權重候選（λ）
   sparse_k_alternatives: [3, 8]        # 精簡因子模型：除了預設 k 之外也比較的因子數
   max_per_sector: null                 # 同產業最多幾檔（null=不限；實測 2/3 檔沒有穩定改善）
+  momentum_anchor:                     # v1.3 趨勢錨（固定權重，取自 V23.1 PRICE_RS；長線 30%）
+    t_rs120: 0.45
+    t_mom120x20: 0.30
+    t_high252: 0.25
+  acceptance:                          # v1.3 預先宣告的驗收閘門（參考 V23.1），報告逐項列出通過/未通過
+    excess_cagr_min: 0.05              #   年化超額報酬 ≥ 5 個百分點
+    ir_min: 0.5                        #   資訊比率 ≥ 0.5
+    max_extra_mdd: 0.10                #   最大回撤不得比 0050 深 10 個百分點以上
+    fold_months: 6                     #   每 6 個月一段的時序區塊
+    min_fold_win: 0.5                  #   至少一半區塊贏 0050
+    cost_stress: 0.005                 #   每次買賣來回多加 0.5% 成本後超額仍須 > 0
+  presample_test: true
+  lock_model: true                     # v1.3：使用設定檔指定的模型（多窗口「不退步原則」決定），不再只看開發期自動挑
+  sparse_exclude: [t_lowidio]          # 只給成長動能假說使用、不讓精簡模型自己挑的因子
+  growth_hypothesis:                   # V23.1 GROWTH_NO_FLOW 假說（ChatGPT 預先宣告；毛利率變化無資料 → 刪除後重新歸一）
+    f_rev_yoy3: 0.16
+    f_rev_accel: 0.20
+    f_eps_yoy: 0.14
+    t_rs120: 0.14
+    t_mom120x20: 0.13
+    t_high252: 0.10
+    t_lowidio: 0.06                 # 用 2021 年後資料訓練、回頭測 2019-2020（所有挑選都沒用過的期間）
   exposure_profiles: [none, soft]      # strict 在真實資料兩段期間都拖累績效，v1.1 移出候選
   core_mix: [0.3, 0.5, 0.7]  # 報告附「0050 核心＋本模型衛星」組合：0050 占比
   n0_shrink: 26              # 權重向先驗收縮強度（等效樣本數）
@@ -61,8 +83,9 @@ horizons:
   short:
     days: 5
     label: 短線(5日)
-    model: {mode: opt, lam: 0.25}      # 短線：精簡因子沒有改善 → 維持階層式 IC-IR
+    model: {mode: opt, lam: 0.40, exposure: soft}   # 短線：精簡因子沒有改善 → 維持階層式 IC-IR（不建議單獨操作）
     weighting: equal
+    residual: bench                    # v1.3 benchmark-first：沒買股票的資金放 0050（不是現金）
     family_prior: {T: 0.30, C: 0.30, F: 0.05, K: 0.35}
     hysteresis: 1.5          # 已持有個股排名仍在前 1.5×K 內就續抱（律3 耐心、戒6 不隨風吹草動）
     stop_loss: null          # 短線持有期短，不設停損
@@ -71,8 +94,10 @@ horizons:
     days: 20
     label: 中線(20日)
     # v1.2：精簡因子模型（每 6 個月挑 t 值最高的 5 個因子、t>2），10 個面向研究中最穩定的改善
-    model: {mode: sparse, k: 5, tmin: 2.0}
+    # v1.3：精簡5因子 70% ＋ 成長動能假說 30%（開發期 −1pp，盲測 +22pp、2019-20 未用期間 +1pp → 依「不退步原則」採用）
+    model: {mode: sparse, k: 5, tmin: 2.0, growth_blend: 0.3, exposure: none}
     weighting: equal
+    residual: bench
     family_prior: {T: 0.20, C: 0.25, F: 0.15, K: 0.40}
     hysteresis: 2.0
     stop_loss: null          # v1.1：實測機械式停損在開發期與盲測期都拖累績效 → 預設關閉（消融表會測「加回停損」）
@@ -81,8 +106,10 @@ horizons:
   long:
     days: 60
     label: 長線(60日)
-    model: {mode: sparse, k: 6, tmin: 1.0}
+    # v1.3：精簡6因子＋30% 趨勢錨（5 個母池 IR 全進步）；成長動能假說在 2019-20 未用期間退步 → 未採用（報告列為對照）
+    model: {mode: sparse, k: 6, tmin: 1.0, anchor: 0.3, exposure: soft}
     weighting: rank                    # 名次加權（第1名 1.5 倍 → 第10名 0.5 倍），4 個參考母池前後半段都進步
+    residual: bench                    # 市場階段減碼的資金改放 0050
     family_prior: {T: 0.15, C: 0.20, F: 0.25, K: 0.40}
     hysteresis: 2.5
     stop_loss: null
@@ -96,6 +123,9 @@ kostolany:
   block_stages: []
   b3_requires_confirmation: false    # B3 恐慌逆向買進，需 W 底/止跌確認
   block_double_top: true             # M 頭（多次攻不過）不買
+  overheat_gate: false               # 不追高閘門（RSI>84 或乖離20日>14% 不買；V23.1 規則）— 實測中線 −9%、長線 −3%/年 → 預設關
+  max_rsi: 84
+  max_bias20: 0.14
   # 市場雞蛋階段 → 持股水位
   exposure:
     none:   {A1: 1.0, A2: 1.0, A3: 1.0, B1: 1.0, B2: 1.0, B3: 1.0, UNKNOWN: 1.0}

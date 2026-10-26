@@ -26,7 +26,7 @@ import pandas as pd
 
 from . import __version__
 from .config import HORIZON_KEYS, STAGE_CODES, STAGES
-from .factors import REGISTRY, compute
+from .factors import REGISTRY, compute, rsi14
 from .kostolany import market_regime, mw_patterns, stage_codes
 from .panel import Panel
 from .optimize import avg_rank_cols
@@ -185,6 +185,9 @@ def build_bundle(P: Panel, cfg: dict, log=print) -> Bundle:
          "TRADE": trad[sig_rel], "CAP": inp["amt20"][:, cols].astype(np.float32),
          "CLOSE": inp["close"][:, cols].astype(np.float32),
          "MCAP": inp["mcap"][:, cols].astype(np.float32),
+         # raw overheat indicators at each signal date (v1.3 不追高閘門: RSI14 and 20-day bias)
+         "RSI14": rsi14(ctx).to_numpy(dtype=np.float32)[pos][:, cols],
+         "BIAS20": (ctx.adj / ctx.ma(20) - 1).to_numpy(dtype=np.float32)[pos][:, cols],
          "BENCH": bench, "MKT": np.column_stack([mkt, mcode]).astype(np.float32),
          "MKT_DAILY": mk[list(STAGES) + ["confidence", "index", "drawdown", "turnover_ratio", "breadth"]]
          .reindex(days).to_numpy(np.float32),

@@ -185,7 +185,8 @@ def build_html(res: dict, cfg: dict, comparison: tuple | None = None) -> str:
         vrows.append({"期間": r["label"], "全樣本外CAGR": ev.get("oos_cagr"), "0050": ev.get("oos_bench_cagr"),
                       "Sharpe": ev.get("oos_sharpe"), "0050 Sharpe": _bench_sharpe(r), "最大回撤": ev.get("oos_mdd"),
                       "超額>0機率": rb.get("p_positive"), "選股力(勝母池等權/年)": r.get("vs_pool_ew", {}).get("oos"),
-                      "是否顯著優於0050": verdict(r)})
+                      "是否顯著優於0050": verdict(r),
+                      "驗收閘門": (f"{r['validation']['passed']}/{r['validation']['total']} 通過" if r.get("validation") else "—")})
     p.append(table(pd.DataFrame(rows), {"開發期CAGR": "pct", "0050同期": "pct", "開發期MDD": "pct", "盲測CAGR": "pct",
                                         "盲測0050": "pct", "盲測MDD": "pct", "開發期Sharpe": "{:.2f}", "PSR": "{:.2f}",
                                         "DSR": "{:.2f}"}, left=("期間", "精選母池", "選定模型")))
@@ -235,6 +236,24 @@ def build_html(res: dict, cfg: dict, comparison: tuple | None = None) -> str:
     # ---------------- per horizon
     for h, r in H.items():
         p.append(f"<h2>4-{r['label']}：回測細節</h2>")
+        val = r.get("validation")
+        if val:
+            gt = val["gates"].copy()
+            gt["數值"] = [("—" if x is None or not np.isfinite(x) else (f"{x:+.1%}" if f == "pct" else f"{x:.2f}"))
+                         for x, f in zip(gt["數值"], gt["fmt"])]
+            gt["門檻"] = [(f"{x:+.0%}" if f == "pct" else f"{x:.2f}") for x, f in zip(gt["門檻"], gt["fmt"])]
+            gt["通過"] = gt["通過"].map({True: "✅", False: "❌"})
+            p.append(f"<h3>驗收閘門（預先宣告，{val['passed']}/{val['total']} 通過）</h3>" + table(gt.drop(columns=["fmt"]), left=("閘門",)))
+            p.append("<p class='mut'>閘門門檻寫在 config 的 research.acceptance，研究前就固定；未全數通過＝不能宣稱穩定勝過 0050。</p>")
+            fd = val["folds"]
+            if len(fd):
+                p.append("<h3>時序區塊（每 6 個月）</h3>" + table(fd, {"策略": "pct", "0050": "pct", "超額": "pct"}, left=("區塊", "期間")))
+            pre = val.get("presample") or {}
+            if pre:
+                p.append(f"<h3>未用期間測試 {pre['start']}～{pre['end']}（只用之後的資料訓練，回頭驗證）</h3>")
+                p.append(line_chart({c: pre["nav"][c] for c in pre["nav"].columns}, "未用期間淨值", log=True))
+                p.append(f"<p>策略年化 {pct(pre.get('cagr'))}、0050 {pct(pre.get('bench_cagr'))}、超額 {pct(pre.get('excess_cagr'))}、"
+                         f"最大回撤 {pct(pre.get('mdd'))}。這段期間（含 2020 疫情崩跌）從未被任何母池、模型或參數選擇看過。</p>")
         nav = r["nav"]
         p.append(line_chart({c: nav[c] for c in nav.columns}, f"{r['label']} 淨值（樣本外，含交易成本）", log=True))
         yt = r["yearly"]
@@ -356,6 +375,9 @@ def build_excel(res: dict, comparison=None) -> bytes:
             wh.to_excel(xw, sheet_name=_xls_name(f"{tag}_權重歷程"), index=False)
             r["stage_table"].to_excel(xw, sheet_name=_xls_name(f"{tag}_階段績效"), index=False)
             r["yearly"].to_excel(xw, sheet_name=_xls_name(f"{tag}_年度"))
+            if r.get("validation"):
+                r["validation"]["gates"].drop(columns=["fmt"]).to_excel(xw, sheet_name=_xls_name(f"{tag}_驗收閘門"), index=False)
+                r["validation"]["folds"].to_excel(xw, sheet_name=_xls_name(f"{tag}_時序區塊"), index=False)
             tr = r["tranches"].copy()
             tr["picks"] = tr["picks"].map(lambda x: "|".join(x))
             tr.to_excel(xw, sheet_name=_xls_name(f"{tag}_每期推薦紀錄"), index=False)
@@ -376,6 +398,7 @@ def summary_json(res: dict) -> dict:
             "eval": {k: (float(v) if isinstance(v, (np.floating, float)) else v) for k, v in r["eval"].items()
                      if isinstance(v, (int, float, np.floating, str, bool))},
             "robust": r["robust"], "family_final": r["family_final"], "latest": r["latest"],
+            "gates": (r["validation"]["gates"].drop(columns=["fmt"]).to_dict("records") if r.get("validation") else None),
         }
     return json.loads(json.dumps(out, default=lambda o: o.item() if hasattr(o, "item") else str(o)))
 

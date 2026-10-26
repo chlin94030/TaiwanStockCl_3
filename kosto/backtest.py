@@ -38,6 +38,11 @@ class Spec:
     equal_weight_all: bool = False   # benchmark mode: hold every pool member, no costs/gates
     weighting: str = "equal"         # equal | sqrt_cap（依市值平方根加權，單檔上限 2/K） | rank（名次加權 1.5→0.5）
     max_per_sector: int | None = None  # 同產業最多幾檔（None = 不限）
+    max_rsi: float | None = None     # 不追高閘門：RSI14 高於此值不買（V23.1 用 84）
+    max_bias20: float | None = None  # 不追高閘門：股價高於 20 日均線超過此比例不買（V23.1 用 14%）
+    sleeve: float = 1.0              # 個股部位比例（其餘依 residual 放 0050 或現金）
+    residual: str = "cash"           # cash | bench：未投入個股的資金放現金或 0050（benchmark-first）
+    etf_cost: float = 0.001425 * 0.6 + 0.0005   # 0050 單邊成本（賣出另加 0.1% 證交稅）
 
 
 def spec_from_cfg(cfg: dict, horizon: str, exposure_profile: str = "none", **kw) -> Spec:
@@ -74,6 +79,10 @@ def choose(B, view: PoolView, i: int, w, prev: list, spec: Spec):
     valid = np.ones(len(idx), bool)
     cap = B.a["CAP"][i, idx]
     valid &= np.nan_to_num(cap) * spec.max_participation >= spec.capital / spec.top_k
+    if spec.max_rsi is not None and "RSI14" in B.a:
+        valid &= ~(B.a["RSI14"][i, idx] > spec.max_rsi)
+    if spec.max_bias20 is not None and "BIAS20" in B.a:
+        valid &= ~(B.a["BIAS20"][i, idx] > spec.max_bias20)
     if spec.use_gates:
         st = B.a["STAGE"][i, idx]
         block = [STAGE_CODES[s] for s in spec.block_stages]
@@ -139,7 +148,7 @@ def run(B, view: PoolView, weights: list, spec: Spec, start_i: int = 0) -> Resul
         V = st["value"]
         old = st["hold"]                                    # {j: value at open e}
         stage = market_stage(B, i)
-        expo = float(spec.exposure.get(stage, 1.0))
+        expo = float(spec.exposure.get(stage, 1.0)) * spec.sleeve
         if spec.equal_weight_all:
             picks = view.members[i].tolist()
             expo = 1.0
@@ -167,18 +176,27 @@ def run(B, view: PoolView, weights: list, spec: Spec, start_i: int = 0) -> Resul
                     w[over] = cap
                     w[~over] *= (1 - w[over].sum()) / max(w[~over].sum(), 1e-12)
                 new_w = {j: budget * float(x) for j, x in zip(filled, w)}
+        if spec.residual == "bench" and not spec.equal_weight_all:
+            bw = 1.0 - sum(new_w.values())
+            if bw > 1e-9:
+                new_w[-1] = bw                              # -1 = 0050 sleeve
         old_w = {j: v / V for j, v in old.items()} if V > 0 else {}
-        sell = sum(max(0.0, old_w.get(j, 0) - new_w.get(j, 0)) for j in set(old_w) | set(new_w))
-        buy = sum(max(0.0, new_w.get(j, 0) - old_w.get(j, 0)) for j in set(old_w) | set(new_w))
-        cost = 0.0 if spec.equal_weight_all else sell * spec.sell_cost + buy * spec.buy_cost
+        keys = set(old_w) | set(new_w)
+        sell = sum(max(0.0, old_w.get(j, 0) - new_w.get(j, 0)) for j in keys if j != -1)
+        buy = sum(max(0.0, new_w.get(j, 0) - old_w.get(j, 0)) for j in keys if j != -1)
+        db = new_w.get(-1, 0.0) - old_w.get(-1, 0.0)
+        etf = abs(db) * spec.etf_cost + max(0.0, -db) * 0.001
+        cost = 0.0 if spec.equal_weight_all else sell * spec.sell_cost + buy * spec.buy_cost + etf
         V_start = V
         V = V * (1 - cost)
         costs += V_start * cost
         turnovers.append((sell + buy) / 2)
+        BEN = B.a["BENCH"]
+        bv = V * new_w.pop(-1, 0.0)
         js = np.array(list(new_w), int)
         pv = V * np.array([new_w[j] for j in js]) if len(js) else np.zeros(0)
         base = pv.copy()
-        cash = V - pv.sum()
+        cash = V - pv.sum() - bv
         alive = np.ones(len(js), bool)
         pending = np.zeros(len(js), bool)
         last = min(x - 1, D - 1)
@@ -200,17 +218,21 @@ def run(B, view: PoolView, weights: list, spec: Spec, start_i: int = 0) -> Resul
                     with np.errstate(invalid="ignore", divide="ignore"):
                         breach = alive & ~pending & (pv / np.where(base > 0, base, np.nan) <= 1 - spec.stop_loss)
                     pending |= breach
-            slot_val[sl, d] = cash + pv.sum()
+            if bv:
+                bv *= 1 + float(BEN[d])
+            slot_val[sl, d] = cash + pv.sum() + bv
         hold = {}
         if x < D:
             if len(js):
                 pv = np.where(alive, pv * (1 + GAP[x, js]), pv)
-            V_end = cash + pv.sum()
+            V_end = cash + pv.sum() + bv
             hold = {int(j): float(v) for j, v in zip(js, pv) if v > 0}
+            if bv > 0:
+                hold[-1] = float(bv)
             st.update(value=V_end, hold=hold, last=x - 1)
             ret = V_end / V_start - 1
         else:
-            V_end = cash + pv.sum()
+            V_end = cash + pv.sum() + bv
             st.update(value=V_end, hold={int(j): float(v) for j, v in zip(js, pv) if v > 0}, last=last)
             ret = np.nan  # still open
         st["prev"] = picks

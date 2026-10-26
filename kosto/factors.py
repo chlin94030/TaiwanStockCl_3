@@ -113,8 +113,12 @@ def _t_mom20(c): return c.mom(20)
 def _t_mom60(c): return c.mom(60)
 
 
-@factor("t_mom120x20", "T", 1, ("long",), "中期動能(120日扣近20日)")
+@factor("t_mom120x20", "T", 1, ("mid", "long"), "中期動能(120日扣近20日)")
 def _t_mom120(c): return c.mom(120, 20)
+
+
+@factor("t_rs120", "T", 1, ("mid", "long"), "相對0050強度(120日)")
+def _t_rs120(c): return c.mom(120)   # cross-sectional rank = rank of (stock − 0050) 120-day return (V23.1 rs_0050_120)
 
 
 @factor("t_rev5", "T", 1, ("short",), "短期反轉(近5日跌多)")
@@ -167,6 +171,16 @@ def _t_rsi(c):
 
 @factor("t_lowvol", "T", 1, ("mid", "long"), "低波動")
 def _t_lowvol(c): return -c.P["ret"].astype(float).where(c.P["tradable"]).rolling(60, min_periods=40).std()
+
+
+@factor("t_lowidio", "T", 1, ("mid", "long"), "低特異波動(60日，扣除大盤)")
+def _t_lowidio(c):
+    """V23.1 residual_lowvol60: volatility of the part of daily returns not explained by the equal-weight market."""
+    ret = c.P["ret"].astype(float).where(c.P["tradable"])
+    mkt = ret.mean(axis=1)
+    mm, mv = mkt.rolling(60, min_periods=40).mean(), mkt.rolling(60, min_periods=40).var()
+    beta = (ret.mul(mkt, axis=0).rolling(60, min_periods=40).mean() - ret.rolling(60, min_periods=40).mean().mul(mm, axis=0)).div(mv, axis=0)
+    return -ret.sub(beta.mul(mkt, axis=0)).rolling(60, min_periods=40).std()
 
 
 @factor("t_vol_surge", "T", 0, ("short",), "量能放大(5/60日量比)")
@@ -301,6 +315,27 @@ def _f_dy(c): return c.P["dy"].astype(float)
 def _f_roe(c):
     pe, pb = c.P["pe"].astype(float), c.P["pb"].astype(float)
     return (pb / pe).where(pe.notna(), -0.05).where(_valuation_present(c)).clip(-0.5, 1.0)
+
+
+def eps_ttm(c):
+    """Trailing-4Q EPS implied by the exchange's daily P/E (close / PE). PE is blank when EPS ≤ 0 → NaN.
+    The exchange updates PE after each quarterly report, so this is point-in-time without a separate
+    financial-statement feed (v1.3, idea taken from Alpha Radar V23.1's eps_growth_yoy)."""
+    return c.get("eps_ttm", lambda: (c.P["close"].astype(float) / c.P["pe"].astype(float)).where(c.P["pe"] > 0))
+
+
+@factor("f_eps_yoy", "F", 1, ("mid", "long"), "EPS年增(由本益比推算)")
+def _f_eps_yoy(c):
+    e = eps_ttm(c)
+    prev = e.shift(250)
+    return (e / prev - 1).where((prev > 0) & (e > 0)).clip(-1, 5)
+
+
+def rsi14(c):
+    d = c.adj.diff()
+    up = d.clip(lower=0).ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
+    dn = (-d.clip(upper=0)).ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
+    return c.get("rsi14", lambda: 100 * up / (up + dn).where(up + dn > 0))
 
 
 @factor("f_size", "F", 0, ("mid", "long"), "小市值(−log市值)")
