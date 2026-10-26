@@ -141,10 +141,59 @@ class FitResult:
     n_rows: int
 
 
+def fit_sparse(ic: np.ndarray, rows: np.ndarray, meta: dict, horizon: str, step: int, H: int,
+               k: int = 5, tmin: float = 1.0, kK: int = 0, lamK: float = 0.0, exclude=()) -> FitResult:
+    """v1.2 精簡因子模型：只用訓練期 IC-IR t 值最高的 k 個因子（方向須與先驗一致、t > tmin），權重 ∝ |IC-IR|。
+    kK > 0 時另外保留 K 族群最強的 kK 個因子，合計權重 lamK（科斯托蘭尼加強版）。
+    實測（真實資料 2021-2025 開發期）：中線 30 個母池中 28 個、長線 29 個勝過階層式全因子權重。"""
+    fams = np.array(meta["families"])
+    dirs = np.array(meta["directions"])
+    F = len(fams)
+    allowed = np.array([horizon in h for h in meta["horizons"]])
+    if exclude:
+        allowed &= ~np.isin(np.array(meta["factors"]), list(exclude))
+    X = ic[rows] if len(rows) else np.zeros((0, F))
+    if len(X):
+        X = np.nan_to_num(X[np.isfinite(X).any(axis=1)], nan=0.0)
+    n = len(X)
+    n_eff = n * step / max(H, step)
+    mean = X.mean(0) if n else np.zeros(F)
+    sd = X.std(0, ddof=1) if n > 2 else np.full(F, np.nan)
+    icir = np.where(sd > 0, mean / np.where(sd > 0, sd, 1), 0)
+    tstat = icir * np.sqrt(max(n_eff, 1))
+    sign = np.where(dirs != 0, dirs, np.where(np.abs(tstat) > 1.0, np.sign(mean), 0)).astype(float)
+    sign = np.where(allowed, sign, 0)
+    at = tstat * sign
+    stats = {"mean_ic": mean, "icir": icir, "t": tstat, "sign": sign, "allowed": allowed}
+    if n < 8:
+        return FitResult(np.zeros(F, np.float32), {}, stats, 0.0, int(n))
+    isK = fams == "K"
+    ok = (at > tmin) & (sign != 0)
+    base_ok = ok & ~isK if kK else ok
+    sel = np.zeros(F, bool)
+    sel[np.argsort(-np.where(base_ok, at, -np.inf))[:k]] = True
+    sel &= base_ok
+    w = np.where(sel, np.abs(icir), 0.0)
+    w = w / w.sum() if w.sum() > 0 else w
+    if kK and w.sum() > 0:
+        okK = (at > 0) & isK & (sign != 0)
+        selK = np.zeros(F, bool)
+        selK[np.argsort(-np.where(okK, at, -np.inf))[:kK]] = True
+        selK &= okK
+        if selK.any():
+            wk = np.where(selK, np.abs(icir), 0.0)
+            w = (1 - lamK) * w + lamK * wk / wk.sum()
+    fam_w = {f: float(w[fams == f].sum()) for f in FAMILIES if w[fams == f].sum() > 0}
+    return FitResult((w * sign).astype(np.float32), fam_w, stats, 1.0, int(n))
+
+
 def fit_weights(ic: np.ndarray, rows: np.ndarray, meta: dict, horizon: str, prior_family: dict,
                 lam: float, mode: str, n0: float, max_w: float, step: int, H: int,
-                view: PoolView | None = None, fwd: np.ndarray | None = None, exclude=()) -> FitResult:
-    """mode: 'opt' (IC-IR + λ floor), 'data' (no K family), 'kpure' (K only), 'prior' (no fitting)."""
+                view: PoolView | None = None, fwd: np.ndarray | None = None, exclude=(),
+                k: int = 5, tmin: float = 1.0, kK: int = 0, lamK: float = 0.0) -> FitResult:
+    """mode: 'sparse' (精簡因子), 'opt' (IC-IR + λ floor), 'data' (no K family), 'kpure' (K only), 'prior' (no fitting)."""
+    if mode == "sparse":
+        return fit_sparse(ic, rows, meta, horizon, step, H, k, tmin, kK, lamK, exclude)
     fams = np.array(meta["families"])
     dirs = np.array(meta["directions"])
     allowed = np.array([horizon in h for h in meta["horizons"]])

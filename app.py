@@ -35,7 +35,7 @@ div[data-testid="stMetricValue"]{font-size:1.25rem}
 </style>""", unsafe_allow_html=True)
 
 HZ = {"short": "短線 5日", "mid": "中線 20日", "long": "長線 60日"}
-MODES = {"KOSTO 最佳化(λ下限)": "opt", "純數據(無科斯托蘭尼)": "data", "只用科斯托蘭尼因子": "kpure", "先驗權重(不最佳化)": "prior"}
+MODES = {"精簡因子(v1.2 中長線預設)": "sparse", "KOSTO 最佳化(λ下限)": "opt", "純數據(無科斯托蘭尼)": "data", "只用科斯托蘭尼因子": "kpure", "先驗權重(不最佳化)": "prior"}
 EXPO = {"none": "不調整(全持股)", "soft": "溫和(A3 60%、B1 50%、B2 40%)", "strict": "嚴格(A3 30%、B1/B2 0%)"}
 
 
@@ -235,7 +235,9 @@ def default_choice(h):
     if RES and h in RES.get("horizons", {}):
         hb = RES["horizons"][h]
         c = hb["chosen"]
-        return hb["chosen_pool"]["rule"], hb["chosen_pool"]["size"], Variant(c["variant"], c["mode"], c["lam"], c["exposure"], c["gates"])
+        return hb["chosen_pool"]["rule"], hb["chosen_pool"]["size"], Variant(
+            c["variant"], c["mode"], c["lam"], c["exposure"], c["gates"], k=int(c.get("k", 5)), tmin=float(c.get("tmin", 1.0)),
+            kK=int(c.get("kK", 0)), lamK=float(c.get("lamK", 0.0)), weighting=c.get("weighting"))
     return "KOSTO", 300, Variant("KOSTO λ=0.40 水位=soft", "opt", 0.40, "soft", True)
 
 
@@ -306,6 +308,13 @@ with tabs[1]:
         stop0 = CFG0["horizons"][h]["stop_loss"] or 0.0
         stop = c3.slider("停損（0=不停損）", 0.0, 0.4, float(stop0), 0.01)
         topk = c4.slider("持股檔數", 5, 20, CFG0["research"]["top_k"])
+        s1, s2, s3, s4 = st.columns(4)
+        sk = s1.slider("精簡因子數 k", 2, 12, int(getattr(d_v, "k", 5)))
+        stmin = s2.select_slider("因子 t 值門檻", [0.5, 1.0, 1.5, 2.0, 2.5], value=float(getattr(d_v, "tmin", 1.0)))
+        kplus = s3.checkbox("科斯托蘭尼加強(另保留2個K因子30%)", value=bool(getattr(d_v, "kK", 0)))
+        WMODES = {"equal": "等權", "rank": "名次加權(1.5→0.5)", "sqrt_cap": "市值平方根加權"}
+        w0 = getattr(d_v, "weighting", None) or CFG0["horizons"][h].get("weighting", "equal")
+        wmode = s4.selectbox("持股權重", list(WMODES), index=list(WMODES).index(w0), format_func=lambda x: WMODES[x])
         with st.expander("進階：族群先驗權重 / 成本"):
             fp = CFG0["horizons"][h]["family_prior"]
             e1, e2, e3, e4, e5 = st.columns(5)
@@ -324,7 +333,10 @@ with tabs[1]:
         cfg["research"]["top_k"] = int(topk)
         cfg["costs"]["fee_discount"] = disc
         v = Variant(f"自訂 {mode_lab} λ={lam:.2f} 水位={expo}", MODES[mode_lab], lam, expo, stage_on or dtop_on,
-                    stage_gate=stage_on, dtop_gate=dtop_on)
+                    stage_gate=stage_on, dtop_gate=dtop_on, k=int(sk), tmin=float(stmin), kK=2 if kplus else 0,
+                    lamK=0.3 if kplus else 0.0, weighting=wmode)
+        if v.mode == "sparse":
+            v.name = f"自訂 精簡{sk}因子 t>{stmin:g}{'＋K' if kplus else ''} 水位={expo}"
         R.cfg = cfg
         with st.spinner("回測中…"):
             ev = R.evaluate(rule, size, h, v, keep=True)

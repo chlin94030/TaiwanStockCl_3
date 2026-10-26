@@ -36,7 +36,8 @@ class Spec:
     capital: float = 1_000_000
     max_participation: float = 0.02
     equal_weight_all: bool = False   # benchmark mode: hold every pool member, no costs/gates
-    weighting: str = "equal"         # equal | sqrt_cap（依市值平方根加權，單檔上限 2/K）
+    weighting: str = "equal"         # equal | sqrt_cap（依市值平方根加權，單檔上限 2/K） | rank（名次加權 1.5→0.5）
+    max_per_sector: int | None = None  # 同產業最多幾檔（None = 不限）
 
 
 def spec_from_cfg(cfg: dict, horizon: str, exposure_profile: str = "none", **kw) -> Spec:
@@ -88,6 +89,19 @@ def choose(B, view: PoolView, i: int, w, prev: list, spec: Spec):
     K = spec.top_k
     buf = set(order[: max(K, int(round(K * spec.hysteresis)))].tolist())
     keep = sorted([j for j in prev if j in buf], key=lambda j: -smap[j])[:K]
+    if spec.max_per_sector and "SECTOR" in B.a:
+        sec = B.a["SECTOR"]
+        cnt, picks = {}, []
+        for j in keep + [j for j in order.tolist() if j not in keep]:
+            g = int(sec[j])
+            if g >= 0 and cnt.get(g, 0) >= spec.max_per_sector:
+                continue
+            cnt[g] = cnt.get(g, 0) + 1
+            picks.append(j)
+            if len(picks) >= K:
+                break
+        picks = sorted(picks, key=lambda j: -smap[j])
+        return picks, order.tolist(), smap
     rest = [j for j in order.tolist() if j not in keep]
     picks = keep + rest[: K - len(keep)]
     return picks, order.tolist(), smap
@@ -134,6 +148,12 @@ def run(B, view: PoolView, weights: list, spec: Spec, start_i: int = 0) -> Resul
         filled = [j for j in picks if OK[e, j]]
         n_slots = len(picks) if spec.equal_weight_all else spec.top_k
         new_w = {j: expo / max(n_slots, 1) for j in filled}
+        if spec.weighting == "rank" and len(filled) > 1 and not spec.equal_weight_all:
+            _, _, smap = choose(B, view, i, weights[i], [], spec) if weights[i] is not None else ([], [], {})
+            fs = sorted(filled, key=lambda j: -smap.get(j, 0))
+            lin = np.linspace(1.5, 0.5, len(fs))
+            budget = expo * len(filled) / max(n_slots, 1)
+            new_w = {j: budget * float(x) / lin.sum() for j, x in zip(fs, lin)}
         if spec.weighting == "sqrt_cap" and filled and not spec.equal_weight_all and "MCAP" in B.a:
             m = np.sqrt(np.nan_to_num(B.a["MCAP"][i, filled].astype(float), nan=0.0))
             if m.sum() > 0:

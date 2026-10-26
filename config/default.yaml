@@ -39,7 +39,9 @@ research:
     sharpe: 0.20
     calmar: 0.20
   pool_smoothing: true       # 母池分數與相鄰大小平均（0.5/0.25/0.25），避免挑到單一幸運格
-  lambdas: [0.10, 0.25, 0.40]          # 科斯托蘭尼因子族群最低權重候選（λ）
+  lambdas: [0.10, 0.25, 0.40]          # 階層式模型：科斯托蘭尼因子族群最低權重候選（λ）
+  sparse_k_alternatives: [3, 8]        # 精簡因子模型：除了預設 k 之外也比較的因子數
+  max_per_sector: null                 # 同產業最多幾檔（null=不限；實測 2/3 檔沒有穩定改善）
   exposure_profiles: [none, soft]      # strict 在真實資料兩段期間都拖累績效，v1.1 移出候選
   core_mix: [0.3, 0.5, 0.7]  # 報告附「0050 核心＋本模型衛星」組合：0050 占比
   n0_shrink: 26              # 權重向先驗收縮強度（等效樣本數）
@@ -59,6 +61,8 @@ horizons:
   short:
     days: 5
     label: 短線(5日)
+    model: {mode: opt, lam: 0.25}      # 短線：精簡因子沒有改善 → 維持階層式 IC-IR
+    weighting: equal
     family_prior: {T: 0.30, C: 0.30, F: 0.05, K: 0.35}
     hysteresis: 1.5          # 已持有個股排名仍在前 1.5×K 內就續抱（律3 耐心、戒6 不隨風吹草動）
     stop_loss: null          # 短線持有期短，不設停損
@@ -66,6 +70,9 @@ horizons:
   mid:
     days: 20
     label: 中線(20日)
+    # v1.2：精簡因子模型（每 6 個月挑 t 值最高的 5 個因子、t>2），10 個面向研究中最穩定的改善
+    model: {mode: sparse, k: 5, tmin: 2.0}
+    weighting: equal
     family_prior: {T: 0.20, C: 0.25, F: 0.15, K: 0.40}
     hysteresis: 2.0
     stop_loss: null          # v1.1：實測機械式停損在開發期與盲測期都拖累績效 → 預設關閉（消融表會測「加回停損」）
@@ -74,6 +81,8 @@ horizons:
   long:
     days: 60
     label: 長線(60日)
+    model: {mode: sparse, k: 6, tmin: 1.0}
+    weighting: rank                    # 名次加權（第1名 1.5 倍 → 第10名 0.5 倍），4 個參考母池前後半段都進步
     family_prior: {T: 0.15, C: 0.20, F: 0.25, K: 0.40}
     hysteresis: 2.5
     stop_loss: null

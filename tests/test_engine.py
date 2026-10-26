@@ -156,6 +156,19 @@ def test_optimizer_finds_planted_signals_and_respects_prior(world):
     assert all(abs(v) < 1e-12 for f, v in zip(world.B.factors, data.weights) if f.startswith("k_"))
 
 
+def test_sparse_model_selects_few_prior_consistent_factors(world):
+    from kosto.research import Research, Variant
+    R = Research(world.B, world.cfg)
+    fit = R.final_fit("ADV", 100, "mid", Variant("s", "sparse", 0.0, k=3, tmin=0.5))
+    w = fit.weights
+    assert 0 < (np.abs(w) > 0).sum() <= 3
+    assert (np.sign(w) * np.array(world.B.meta["directions"]) >= 0).all()
+    assert abs(np.abs(w).sum() - 1) < 1e-5
+    fk = R.final_fit("ADV", 100, "mid", Variant("s", "sparse", 0.0, k=3, tmin=0.5, kK=2, lamK=0.3))
+    kw = sum(abs(x) for f, x in zip(world.B.factors, fk.weights) if f.startswith("k_"))
+    assert kw >= 0.3 - 1e-6                                              # Kostolany boost keeps ≥30% in K
+
+
 def test_walk_forward_uses_only_matured_labels(world):
     from kosto.research import Research
     R = Research(world.B, world.cfg)

@@ -42,6 +42,11 @@ class Variant:
     exclude: tuple = ()               # factors forced to weight 0 (ablation)
     stage_gate: bool | None = None    # 個股雞蛋階段閘門：None=依設定檔，True=強制開(A3/B1/B2)，False=關
     dtop_gate: bool = True            # M頭閘門
+    k: int = 5                        # sparse：使用的因子數
+    tmin: float = 1.0                 # sparse：t 值門檻
+    kK: int = 0                       # sparse：另外保留的科斯托蘭尼因子數
+    lamK: float = 0.0                 # sparse：科斯托蘭尼因子合計權重
+    weighting: str | None = None      # None → 依設定檔 horizons.*.weighting
 
     def label(self) -> str:
         return self.name
@@ -77,6 +82,10 @@ class Research:
             self.retrain.append(i)
             d = d + pd.DateOffset(months=r["retrain_months"])
         self._views, self._ics, self._sched = {}, {}, {}
+        if "SECTOR" not in B.a:   # integer sector codes for the per-sector cap (NA → -1 = no cap)
+            secs = B.meta.get("sectors") or ["NA"] * len(B.tickers)
+            uniq = {x: k for k, x in enumerate(sorted({x for x in secs if x not in ("NA", "", None)}))}
+            B.a["SECTOR"] = np.array([uniq.get(x, -1) for x in secs], np.int32)
 
     # ------------------------------------------------------------------ cached pieces
     def view(self, rule: str, size: int) -> PoolView:
@@ -109,7 +118,7 @@ class Research:
     def schedule(self, rule, size, h, v: Variant):
         r0 = self.cfg["research"]
         key = (rule, size, h, v.mode, round(v.lam, 4), tuple(sorted(self.cfg["horizons"][h]["family_prior"].items())),
-               r0["n0_shrink"], r0["max_factor_weight"], tuple(v.exclude))
+               r0["n0_shrink"], r0["max_factor_weight"], tuple(v.exclude), v.k, v.tmin, v.kK, v.lamK)
         if key in self._sched:
             return self._sched[key]
         if len(self._sched) > 64:
@@ -123,7 +132,7 @@ class Research:
             rows = self.train_rows(a, h)
             fit = fit_weights(ic, rows, self.B.meta, h, self.cfg["horizons"][h]["family_prior"], v.lam, v.mode,
                               r["n0_shrink"], r["max_factor_weight"], r["signal_step"], self.H(h), view,
-                              self.B.a["FWD"][HKEY[h]], exclude=v.exclude)
+                              self.B.a["FWD"][HKEY[h]], exclude=v.exclude, **self._sp(v))
             for i in range(a, b):
                 W[i] = fit.weights
             hist.append({"from": str(self.B.sig_dates[a].date()), "n_train": fit.n_rows, "alpha": round(fit.alpha, 3),
@@ -137,11 +146,19 @@ class Research:
         rows = self.train_rows(self.S, h)
         return fit_weights(self.ic(rule, size, h), rows, self.B.meta, h, self.cfg["horizons"][h]["family_prior"],
                            v.lam, v.mode, r["n0_shrink"], r["max_factor_weight"], r["signal_step"], self.H(h),
-                           self.view(rule, size), self.B.a["FWD"][HKEY[h]], exclude=v.exclude)
+                           self.view(rule, size), self.B.a["FWD"][HKEY[h]], exclude=v.exclude, **self._sp(v))
+
+    @staticmethod
+    def _sp(v: Variant) -> dict:
+        return {"k": v.k, "tmin": v.tmin, "kK": v.kK, "lamK": v.lamK}
 
     # ------------------------------------------------------------------ evaluation
     def spec(self, h, v: Variant):
         kw = {"use_gates": v.gates}
+        wt = v.weighting or self.cfg["horizons"][h].get("weighting", "equal")
+        kw["weighting"] = wt
+        if self.cfg["research"].get("max_per_sector"):
+            kw["max_per_sector"] = int(self.cfg["research"]["max_per_sector"])
         if v.stage_gate is False:
             kw.update(block_stages=(), b3_confirm=False)
         elif v.stage_gate is True:
@@ -189,8 +206,7 @@ class Research:
     def pool_study(self, h, rules=None, sizes=None, progress=None) -> pd.DataFrame:
         rules = rules or self.cfg["pools"]["rules"]
         sizes = sizes or self.cfg["pools"]["sizes"]
-        lams = self.cfg["research"]["lambdas"]
-        v = Variant("POOL_TEST", "opt", float(lams[len(lams) // 2]), "none", True)
+        v = self.model_variant(h, name="POOL_TEST")
         rows = []
         for rule in rules:
             for size in sizes:
@@ -221,11 +237,41 @@ class Research:
         m = np.abs(np.nanmean(ic[rows][:, ok], 0))
         return float(np.nanmean(np.sort(m)[-5:]))
 
-    def variants(self) -> list[Variant]:
+    def model_variant(self, h, name=None, **kw) -> Variant:
+        """The horizon's default model from config (horizons.*.model)."""
+        m = dict(self.cfg["horizons"][h].get("model") or {"mode": "opt", "lam": 0.25})
+        m.update(kw)
+        mode = m.get("mode", "opt")
+        v = Variant(name or "", mode, float(m.get("lam", 0.0 if mode == "sparse" else 0.25)), m.get("exposure", "none"), True,
+                    k=int(m.get("k", 5)), tmin=float(m.get("tmin", 1.0)), kK=int(m.get("kK", 0)), lamK=float(m.get("lamK", 0.0)))
+        if not name:
+            v.name = self.variant_label(v)
+        return v
+
+    @staticmethod
+    def variant_label(v: Variant) -> str:
+        if v.mode == "sparse":
+            extra = f"＋K{v.kK}({v.lamK:.0%})" if v.kK else ""
+            return f"精簡{v.k}因子 t>{v.tmin:g}{extra} 水位={v.exposure}"
+        return f"KOSTO λ={v.lam:.2f} 水位={v.exposure}"
+
+    def variants(self, h=None) -> list[Variant]:
         r = self.cfg["research"]
-        vs = [Variant(f"KOSTO λ={lam:.2f} 水位={ex}", "opt", lam, ex, True) for lam in r["lambdas"]
-              for ex in r["exposure_profiles"]]
+        vs = []
+        for ex in r["exposure_profiles"]:
+            if h is not None and (self.cfg["horizons"][h].get("model") or {}).get("mode") == "sparse":
+                base = self.model_variant(h, exposure=ex)
+                vs.append(base)
+                for kk in r.get("sparse_k_alternatives", []):
+                    if kk != base.k:
+                        vs.append(self.model_variant(h, exposure=ex, k=kk))
+                vs.append(self.model_variant(h, exposure=ex, kK=2, lamK=0.3))      # 科斯托蘭尼加強版
+            for lam in r["lambdas"]:
+                vs.append(Variant(f"KOSTO λ={lam:.2f} 水位={ex}", "opt", lam, ex, True))
         vs.append(Variant("KOSTO_PURE 只用科斯托蘭尼因子", "kpure", 1.0, "soft", True))
+        for v in vs:
+            if v.mode == "sparse":
+                v.name = self.variant_label(v)
         return vs
 
     def baselines(self) -> list[Variant]:
@@ -234,7 +280,7 @@ class Research:
 
     def variant_study(self, h, rule, size, progress=None) -> pd.DataFrame:
         rows = []
-        for v in self.variants() + self.baselines():
+        for v in self.variants(h) + self.baselines():
             row = self.evaluate(rule, size, h, v)
             row["is_baseline"] = v.mode in ("data", "prior")
             rows.append(row)
@@ -261,11 +307,12 @@ class Research:
                   else replace(v, dtop_gate=False), v.gates),
                  ("exposure", "移除市場階段持股水位" if v.exposure != "none" else "加入市場階段持股水位(soft)",
                   replace(v, exposure="none" if v.exposure != "none" else "soft"), v.exposure != "none"),
-                 ("K", "移除科斯托蘭尼因子(K族群)", replace(v, mode="data", lam=0.0), v.mode in ("opt", "kpure")),
+                 ("K", "移除科斯托蘭尼因子(K族群)", replace(v, exclude=tuple(v.exclude) + tuple(kf), kK=0) if v.mode == "sparse"
+                  else replace(v, mode="data", lam=0.0), v.mode in ("opt", "kpure", "sparse")),
                  ("hyst", "移除耐心續抱(遲滯)", replace(v, hysteresis=1.0), True)]
         if can_stop:
             cases.append(("stop", "移除停損(戒3)" if stop_on else "加回停損(戒3)", replace(v, stop="off" if stop_on else "on"), stop_on))
-        if v.mode in ("opt", "kpure"):
+        if v.mode in ("opt", "kpure", "sparse"):
             cases += [(f, f"移除 {f}（{zh[f]}）", replace(v, exclude=tuple(v.exclude) + (f,)), True) for f in kf if f not in v.exclude]
         rows = []
         for key, label, vv, on in cases:
@@ -404,7 +451,7 @@ class Research:
             progress(f"{h} 選定母池 {rule}{size}")
             vt = self.variant_study(h, rule, size, progress)
             kv = vt[~vt["is_baseline"]].sort_values("score", ascending=False)
-            v = next(x for x in self.variants() if x.name == kv.iloc[0]["variant"])
+            v = next(x for x in self.variants(h) if x.name == kv.iloc[0]["variant"])
             out["horizons"][h] = self.horizon_block(h, rule, size, v, pt, vt)
             ev = out["horizons"][h]["eval"]
             progress(f"{h} 完成：開發期CAGR {ev.get('dev_cagr', np.nan):.1%}，盲測CAGR {ev.get('hold_cagr', np.nan):.1%} "
@@ -457,7 +504,8 @@ class Research:
         return {
             "label": self.cfg["horizons"][h]["label"], "days": self.H(h),
             "pool_table": pt, "chosen_pool": {"rule": rule, "size": size}, "variant_table": vt,
-            "chosen": {"variant": v.name, "mode": v.mode, "lam": v.lam, "exposure": v.exposure, "gates": v.gates},
+            "chosen": {"variant": v.name, "mode": v.mode, "lam": v.lam, "exposure": v.exposure, "gates": v.gates,
+                       "k": v.k, "tmin": v.tmin, "kK": v.kK, "lamK": v.lamK, "weighting": v.weighting},
             "data_beats_kostolany": data_wins, "eval": ev, "fit_history": hist, "factor_table": ft,
             "family_final": fit.family, "robust": robust, "ablation": ab, "stage_table": self.stage_table(res),
             "yearly": yearly_table(res.nav, res.bench), "latest": lt,
