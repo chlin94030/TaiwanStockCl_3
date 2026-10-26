@@ -56,6 +56,9 @@ research:
   presample_test: true
   lock_model: true                     # v1.3：使用設定檔指定的模型（多窗口「不退步原則」決定），不再只看開發期自動挑
   sparse_exclude: [t_lowidio]          # 只給成長動能假說使用、不讓精簡模型自己挑的因子
+  score_hypotheses:                    # v1.4：ChatGPT V24 預先宣告的價格領先假說（固定權重）
+    PRICE_ALPHA_8_BALANCED: {t_rs120: 0.40, t_mom120x20: 0.25, t_high252: 0.20, t_lowidio: 0.15}
+    PRICE_ALPHA_5_LEADERS: {t_rs120: 0.60, t_mom120x20: 0.25, t_high252: 0.15}
   growth_hypothesis:                   # V23.1 GROWTH_NO_FLOW 假說（ChatGPT 預先宣告；毛利率變化無資料 → 刪除後重新歸一）
     f_rev_yoy3: 0.16
     f_rev_accel: 0.20
@@ -95,7 +98,8 @@ horizons:
     label: 中線(20日)
     # v1.2：精簡因子模型（每 6 個月挑 t 值最高的 5 個因子、t>2），10 個面向研究中最穩定的改善
     # v1.3：精簡5因子 70% ＋ 成長動能假說 30%（開發期 −1pp，盲測 +22pp、2019-20 未用期間 +1pp → 依「不退步原則」採用）
-    model: {mode: sparse, k: 5, tmin: 2.0, growth_blend: 0.3, exposure: none}
+    # v1.4：v1.3 模型 50% ＋ V24 PRICE_ALPHA_8_BALANCED 50%（預先宣告的三窗口名次規則選出；見 docs）
+    model: {mode: sparse, k: 5, tmin: 2.0, growth_blend: 0.3, exposure: none, hyp_blend: 0.5, hypothesis: PRICE_ALPHA_8_BALANCED}
     weighting: equal
     residual: bench
     family_prior: {T: 0.20, C: 0.25, F: 0.15, K: 0.40}
@@ -107,7 +111,8 @@ horizons:
     days: 60
     label: 長線(60日)
     # v1.3：精簡6因子＋30% 趨勢錨（5 個母池 IR 全進步）；成長動能假說在 2019-20 未用期間退步 → 未採用（報告列為對照）
-    model: {mode: sparse, k: 6, tmin: 1.0, anchor: 0.3, exposure: soft}
+    # v1.4：v1.3 模型 50% ＋ V24 PRICE_ALPHA_5_LEADERS 50%（報酬較高但回撤較深；保守者可把 hyp_blend 改 0 回到 v1.3）
+    model: {mode: sparse, k: 6, tmin: 1.0, anchor: 0.3, exposure: soft, hyp_blend: 0.5, hypothesis: PRICE_ALPHA_5_LEADERS}
     weighting: rank                    # 名次加權（第1名 1.5 倍 → 第10名 0.5 倍），4 個參考母池前後半段都進步
     residual: bench                    # 市場階段減碼的資金改放 0050
     family_prior: {T: 0.15, C: 0.20, F: 0.25, K: 0.40}

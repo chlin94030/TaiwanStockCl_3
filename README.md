@@ -109,7 +109,7 @@ Windows 10 →「檢視」→ 勾選「隱藏的項目」；Mac Finder 按 `⌘ 
 
 ## 更新程式版本（例如修正錯誤時）
 
-1. 解壓縮收到的更新包（例如 `kosto_update_v1.3.0`），裡面會有 `kosto`、`config` 兩個資料夾和 `app.py`、`cli.py`。
+1. 解壓縮收到的更新包（例如 `kosto_update_v1.4.0`），裡面會有 `kosto`、`config` 兩個資料夾和 `app.py`、`cli.py`。
 2. 打開 GitHub 的 repo 首頁 → **Add file → Upload files**。
 3. 打開更新包資料夾，**全選裡面所有東西**拖進網頁（同名檔案會自動覆蓋）。
 4. 按 **Commit changes**。GitHub 會自動重跑（已下載的資料會保留，只補新資料再做研究，約 20~40 分鐘）；
@@ -119,7 +119,7 @@ Windows 10 →「檢視」→ 勾選「隱藏的項目」；Mac Finder 按 `⌘ 
 
 | 狀況 | 怎麼辦 |
 |---|---|
-| 想知道各版本改了什麼、為什麼 | 見 `docs/technical.md` 最後幾節（v1.1 變更紀錄、v1.2 十面向研究、v1.3 截長補短） |
+| 想知道各版本改了什麼、為什麼 | 見 `docs/technical.md` 最後幾節（v1.1 變更紀錄、v1.2 十面向研究、v1.3/v1.4 與 ChatGPT 截長補短） |
 | Actions 的 finish 出現紅色 ✗、訊息 `Process completed with exit code 1` | v1.0.0 的已知錯誤（GitHub 用 pandas 2.3 時名稱欄位格式衝突），已於 v1.0.1 修正，照上方「更新程式版本」上傳即可；資料不用重抓 |
 | Actions 出現黃色 “Node.js 20 is deprecated” 或 “ubuntu-latest will migrate” | 只是提醒、不影響結果；v1.0.1 的流程檔已更新（可選，見更新說明） |
 | 網頁出現紅色「GitHub 上缺少自動流程檔」 | 照網頁上的 3 步（連結 → 複製 → 貼上 Commit），見第 1 步的「做法 A」 |

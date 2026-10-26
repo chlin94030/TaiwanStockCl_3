@@ -144,7 +144,8 @@ class FitResult:
 def fit_sparse(ic: np.ndarray, rows: np.ndarray, meta: dict, horizon: str, step: int, H: int,
                k: int = 5, tmin: float = 1.0, kK: int = 0, lamK: float = 0.0, exclude=(),
                anchor: float = 0.0, anchor_weights: dict | None = None,
-               growth_blend: float = 0.0, growth_weights: dict | None = None) -> FitResult:
+               growth_blend: float = 0.0, growth_weights: dict | None = None,
+               hyp_blend: float = 0.0, hyp_weights: dict | None = None) -> FitResult:
     """v1.2 精簡因子模型：只用訓練期 IC-IR t 值最高的 k 個因子（方向須與先驗一致、t > tmin），權重 ∝ |IC-IR|。
     kK > 0 時另外保留 K 族群最強的 kK 個因子，合計權重 lamK（科斯托蘭尼加強版）。
     實測（真實資料 2021-2025 開發期）：中線 30 個母池中 28 個、長線 29 個勝過階層式全因子權重。"""
@@ -204,6 +205,15 @@ def fit_sparse(ic: np.ndarray, rows: np.ndarray, meta: dict, horizon: str, step:
                 wg[names.index(f)] = x * (dirs[names.index(f)] or 1)
         if np.abs(wg).sum() > 0:
             w = (1 - growth_blend) * w / np.abs(w).sum() + growth_blend * wg / np.abs(wg).sum()
+    if hyp_blend > 0 and hyp_weights and np.abs(w).sum() > 0:
+        # v1.4 與 ChatGPT V24 預先宣告的價格領先假說做 50/50 模型平均（固定權重，不用我方資料估計）
+        names = list(meta["factors"])
+        wh = np.zeros(F)
+        for f, x in hyp_weights.items():
+            if f in names:
+                wh[names.index(f)] = x * (dirs[names.index(f)] or 1)
+        if np.abs(wh).sum() > 0:
+            w = (1 - hyp_blend) * w / np.abs(w).sum() + hyp_blend * wh / np.abs(wh).sum()
     fam_w = {f: float(np.abs(w[fams == f]).sum()) for f in FAMILIES if np.abs(w[fams == f]).sum() > 0}
     return FitResult(w.astype(np.float32), fam_w, stats, 1.0, int(n))
 
@@ -213,11 +223,12 @@ def fit_weights(ic: np.ndarray, rows: np.ndarray, meta: dict, horizon: str, prio
                 view: PoolView | None = None, fwd: np.ndarray | None = None, exclude=(),
                 k: int = 5, tmin: float = 1.0, kK: int = 0, lamK: float = 0.0,
                 anchor: float = 0.0, anchor_weights: dict | None = None,
-                growth_blend: float = 0.0, growth_weights: dict | None = None) -> FitResult:
+                growth_blend: float = 0.0, growth_weights: dict | None = None,
+                hyp_blend: float = 0.0, hyp_weights: dict | None = None) -> FitResult:
     """mode: 'sparse' (精簡因子), 'opt' (IC-IR + λ floor), 'data' (no K family), 'kpure' (K only), 'prior' (no fitting)."""
     if mode == "sparse":
         return fit_sparse(ic, rows, meta, horizon, step, H, k, tmin, kK, lamK, exclude, anchor, anchor_weights,
-                          growth_blend, growth_weights)
+                          growth_blend, growth_weights, hyp_blend, hyp_weights)
     fams = np.array(meta["families"])
     dirs = np.array(meta["directions"])
     allowed = np.array([horizon in h for h in meta["horizons"]])

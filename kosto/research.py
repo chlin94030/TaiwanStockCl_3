@@ -48,6 +48,8 @@ class Variant:
     lamK: float = 0.0                 # sparse：科斯托蘭尼因子合計權重
     anchor: float = 0.0               # sparse：趨勢錨（固定權重相對強度組合）占比
     growth_blend: float = 0.0         # sparse：與「成長動能假說」(V23.1) 模型平均的占比
+    hyp_blend: float = 0.0            # sparse：與 V24 價格領先假說平均的占比
+    hypothesis: str | None = None     # research.score_hypotheses 的名稱
     weighting: str | None = None      # None → 依設定檔 horizons.*.weighting
     overheat: bool | None = None      # 不追高閘門（RSI/乖離）：None=依設定檔
     sleeve: float | None = None       # 個股部位比例：None=依設定檔
@@ -123,7 +125,8 @@ class Research:
     def schedule(self, rule, size, h, v: Variant):
         r0 = self.cfg["research"]
         key = (rule, size, h, v.mode, round(v.lam, 4), tuple(sorted(self.cfg["horizons"][h]["family_prior"].items())),
-               r0["n0_shrink"], r0["max_factor_weight"], self._excl(v), v.k, v.tmin, v.kK, v.lamK, v.anchor, v.growth_blend)
+               r0["n0_shrink"], r0["max_factor_weight"], self._excl(v), v.k, v.tmin, v.kK, v.lamK, v.anchor, v.growth_blend,
+               v.hyp_blend, v.hypothesis)
         if key in self._sched:
             return self._sched[key]
         if len(self._sched) > 64:
@@ -156,7 +159,8 @@ class Research:
     def _sp(self, v: Variant) -> dict:
         return {"k": v.k, "tmin": v.tmin, "kK": v.kK, "lamK": v.lamK, "anchor": v.anchor,
                 "anchor_weights": self.cfg["research"].get("momentum_anchor"), "growth_blend": v.growth_blend,
-                "growth_weights": self.cfg["research"].get("growth_hypothesis")}
+                "growth_weights": self.cfg["research"].get("growth_hypothesis"), "hyp_blend": v.hyp_blend,
+                "hyp_weights": (self.cfg["research"].get("score_hypotheses") or {}).get(v.hypothesis or "")}
 
     def _excl(self, v: Variant) -> tuple:
         """Factors a sparse model may not *select* (they can still enter through the fixed anchor/hypothesis)."""
@@ -261,7 +265,8 @@ class Research:
         mode = m.get("mode", "opt")
         v = Variant(name or "", mode, float(m.get("lam", 0.0 if mode == "sparse" else 0.25)), m.get("exposure", "none"), True,
                     k=int(m.get("k", 5)), tmin=float(m.get("tmin", 1.0)), kK=int(m.get("kK", 0)), lamK=float(m.get("lamK", 0.0)),
-                    anchor=float(m.get("anchor", 0.0)), growth_blend=float(m.get("growth_blend", 0.0)))
+                    anchor=float(m.get("anchor", 0.0)), growth_blend=float(m.get("growth_blend", 0.0)),
+                    hyp_blend=float(m.get("hyp_blend", 0.0)), hypothesis=m.get("hypothesis"))
         if not name:
             v.name = self.variant_label(v)
         return v
@@ -270,7 +275,8 @@ class Research:
     def variant_label(v: Variant) -> str:
         if v.mode == "sparse":
             extra = ((f"＋K{v.kK}({v.lamK:.0%})" if v.kK else "") + (f"＋趨勢錨{v.anchor:.0%}" if v.anchor else "")
-                     + (f"＋成長動能假說{v.growth_blend:.0%}" if v.growth_blend else ""))
+                     + (f"＋成長動能假說{v.growth_blend:.0%}" if v.growth_blend else "")
+                     + (f"＋{v.hypothesis}{v.hyp_blend:.0%}" if v.hyp_blend else ""))
             if v.growth_blend >= 0.999:
                 return f"成長動能假說(V23.1 GROWTH，我方資料) 水位={v.exposure}"
             return f"精簡{v.k}因子 t>{v.tmin:g}{extra} 水位={v.exposure}"
@@ -293,6 +299,8 @@ class Research:
                 vs.append(self.model_variant(h, exposure=ex, growth_blend=gb))
                 vs.append(self.model_variant(h, exposure=ex, growth_blend=0.5))
                 vs.append(self.model_variant(h, exposure=ex, growth_blend=1.0))      # V23.1 GROWTH 原假說
+                if base.hyp_blend:
+                    vs.append(self.model_variant(h, exposure=ex, hyp_blend=0.0))       # v1.3（無 V24 假說）對照
             for lam in r["lambdas"]:
                 vs.append(Variant(f"KOSTO λ={lam:.2f} 水位={ex}", "opt", lam, ex, True))
         vs.append(Variant("KOSTO_PURE 只用科斯托蘭尼因子", "kpure", 1.0, "soft", True))
@@ -538,7 +546,7 @@ class Research:
             "pool_table": pt, "chosen_pool": {"rule": rule, "size": size}, "variant_table": vt,
             "chosen": {"variant": v.name, "mode": v.mode, "lam": v.lam, "exposure": v.exposure, "gates": v.gates,
                        "k": v.k, "tmin": v.tmin, "kK": v.kK, "lamK": v.lamK, "weighting": v.weighting, "anchor": v.anchor,
-                       "growth_blend": v.growth_blend},
+                       "growth_blend": v.growth_blend, "hyp_blend": v.hyp_blend, "hypothesis": v.hypothesis},
             "data_beats_kostolany": data_wins, "eval": ev, "fit_history": hist, "factor_table": ft,
             "family_final": fit.family, "robust": robust, "ablation": ab, "stage_table": self.stage_table(res),
             "yearly": yearly_table(res.nav, res.bench), "latest": lt,

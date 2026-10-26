@@ -238,7 +238,8 @@ def default_choice(h):
         return hb["chosen_pool"]["rule"], hb["chosen_pool"]["size"], Variant(
             c["variant"], c["mode"], c["lam"], c["exposure"], c["gates"], k=int(c.get("k", 5)), tmin=float(c.get("tmin", 1.0)),
             kK=int(c.get("kK", 0)), lamK=float(c.get("lamK", 0.0)), weighting=c.get("weighting"),
-            anchor=float(c.get("anchor", 0.0)), growth_blend=float(c.get("growth_blend", 0.0)))
+            anchor=float(c.get("anchor", 0.0)), growth_blend=float(c.get("growth_blend", 0.0)),
+            hyp_blend=float(c.get("hyp_blend", 0.0)), hypothesis=c.get("hypothesis"))
     return "KOSTO", 300, Variant("KOSTO λ=0.40 水位=soft", "opt", 0.40, "soft", True)
 
 
@@ -341,7 +342,8 @@ with tabs[1]:
         v = Variant(f"自訂 {mode_lab} λ={lam:.2f} 水位={expo}", MODES[mode_lab], lam, expo, stage_on or dtop_on,
                     stage_gate=stage_on, dtop_gate=dtop_on, k=int(sk), tmin=float(stmin), kK=2 if kplus else 0,
                     lamK=0.3 if kplus else 0.0, weighting=wmode, anchor=float(anc), growth_blend=float(gbl),
-                    residual="bench" if to50 else "cash", overheat=bool(ohot))
+                    residual="bench" if to50 else "cash", overheat=bool(ohot),
+                    hyp_blend=float(getattr(d_v, "hyp_blend", 0.0)), hypothesis=getattr(d_v, "hypothesis", None))
         if v.mode == "sparse":
             v.name = (f"自訂 精簡{sk}因子 t>{stmin:g}{'＋K' if kplus else ''}{f'＋趨勢錨{anc:.0%}' if anc else ''}"
                       f"{f'＋成長假說{gbl:.0%}' if gbl else ''} 水位={expo}")
