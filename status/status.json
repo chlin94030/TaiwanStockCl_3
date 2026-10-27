@@ -7,13 +7,13 @@
   "misc": 1.0
  },
  "blocked": {},
- "checked_at": "2026-10-27 00:11:34+08:00",
+ "checked_at": "2026-10-27 22:40:10+08:00",
  "percent": 0.9997,
  "complete": true,
  "stage": "done",
  "research": {
-  "last_date": "2026-10-22",
-  "built": "2026-10-27T00:07:10+08:00",
+  "last_date": "2026-10-27",
+  "built": "2026-10-27T22:38:33+08:00",
   "synthetic": false
  }
 }
