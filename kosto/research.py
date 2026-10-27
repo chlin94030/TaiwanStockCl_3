@@ -20,7 +20,7 @@ import pandas as pd
 
 from .backtest import choose, market_stage, run, spec_from_cfg
 from .bundle import Bundle
-from .config import HORIZON_KEYS, STAGE_NAMES
+from .config import HORIZON_KEYS, STAGE_CODES, STAGE_NAMES
 from .metrics import (block_bootstrap_excess, deflated_sharpe, perf, probabilistic_sharpe, selection_score,
                       tranche_stats, yearly_table)
 from .optimize import PoolView, fit_weights, ic_matrix, pool_view
@@ -28,6 +28,21 @@ from .optimize import PoolView, fit_weights, ic_matrix, pool_view
 
 HKEY = {"short": 0, "mid": 1, "long": 2}
 DEFAULT_BLOCK = ("A3", "B1", "B2")
+
+
+OPPOSITE = {"f_size": "大市值", "t_lowvol": "波動較大", "t_lowidio": "個股波動較大", "t_rev5": "近5日強勢",
+            "c_short_ratio": "券資比低", "k_paid": "融資比重高", "k_calm": "交易熱絡", "t_high252": "離一年新高較遠",
+            "t_rs120": "相對大盤偏弱", "t_mom120x20": "中期動能偏弱", "f_rev_accel": "營收成長放緩", "f_rev_high": "營收未創新高",
+            "f_ep": "本益比偏高", "f_dy": "殖利率偏低", "f_bp": "股價淨值比偏高", "f_rev_yoy": "月營收年減",
+            "f_rev_yoy3": "近3月營收衰退", "f_eps_yoy": "EPS衰退", "f_roe": "ROE偏低", "f_rev_streak": "營收成長中斷"}
+
+
+def factor_phrase(B, f: int, z: float) -> str:
+    """因子在該股是「高」還是「低」：z<0 時改用反義描述（例：小市值 → 大市值）。"""
+    name, zh = B.factors[f], B.meta["factor_zh"][f]
+    if z >= 0:
+        return zh
+    return OPPOSITE.get(name, f"{zh}偏低")
 
 
 @dataclass
@@ -50,6 +65,7 @@ class Variant:
     growth_blend: float = 0.0         # sparse：與「成長動能假說」(V23.1) 模型平均的占比
     hyp_blend: float = 0.0            # sparse：與 V24 價格領先假說平均的占比
     hypothesis: str | None = None     # research.score_hypotheses 的名稱
+    label_h: str | None = None        # 用哪個期間的報酬估計權重（v1.5 短線：用中線標籤＝「快調慢α」）
     weighting: str | None = None      # None → 依設定檔 horizons.*.weighting
     overheat: bool | None = None      # 不追高閘門（RSI/乖離）：None=依設定檔
     sleeve: float | None = None       # 個股部位比例：None=依設定檔
@@ -124,23 +140,24 @@ class Research:
     # ------------------------------------------------------------------ weights
     def schedule(self, rule, size, h, v: Variant):
         r0 = self.cfg["research"]
-        key = (rule, size, h, v.mode, round(v.lam, 4), tuple(sorted(self.cfg["horizons"][h]["family_prior"].items())),
+        hz = v.label_h or h
+        key = (rule, size, h, hz, v.mode, round(v.lam, 4), tuple(sorted(self.cfg["horizons"][hz]["family_prior"].items())),
                r0["n0_shrink"], r0["max_factor_weight"], self._excl(v), v.k, v.tmin, v.kK, v.lamK, v.anchor, v.growth_blend,
                v.hyp_blend, v.hypothesis)
         if key in self._sched:
             return self._sched[key]
         if len(self._sched) > 64:
             self._sched.clear()
-        view, ic = self.view(rule, size), self.ic(rule, size, h)
+        view, ic = self.view(rule, size), self.ic(rule, size, hz)
         r = self.cfg["research"]
         W = [None] * self.S
         hist = []
         pts = self.retrain + [self.S]
         for a, b in zip(pts[:-1], pts[1:]):
-            rows = self.train_rows(a, h)
-            fit = fit_weights(ic, rows, self.B.meta, h, self.cfg["horizons"][h]["family_prior"], v.lam, v.mode,
-                              r["n0_shrink"], r["max_factor_weight"], r["signal_step"], self.H(h), view,
-                              self.B.a["FWD"][HKEY[h]], exclude=self._excl(v), **self._sp(v))
+            rows = self.train_rows(a, hz)
+            fit = fit_weights(ic, rows, self.B.meta, hz, self.cfg["horizons"][hz]["family_prior"], v.lam, v.mode,
+                              r["n0_shrink"], r["max_factor_weight"], r["signal_step"], self.H(hz), view,
+                              self.B.a["FWD"][HKEY[hz]], exclude=self._excl(v), **self._sp(v))
             for i in range(a, b):
                 W[i] = fit.weights
             hist.append({"from": str(self.B.sig_dates[a].date()), "n_train": fit.n_rows, "alpha": round(fit.alpha, 3),
@@ -151,10 +168,11 @@ class Research:
 
     def final_fit(self, rule, size, h, v: Variant):
         r = self.cfg["research"]
-        rows = self.train_rows(self.S, h)
-        return fit_weights(self.ic(rule, size, h), rows, self.B.meta, h, self.cfg["horizons"][h]["family_prior"],
-                           v.lam, v.mode, r["n0_shrink"], r["max_factor_weight"], r["signal_step"], self.H(h),
-                           self.view(rule, size), self.B.a["FWD"][HKEY[h]], exclude=self._excl(v), **self._sp(v))
+        hz = v.label_h or h
+        rows = self.train_rows(self.S, hz)
+        return fit_weights(self.ic(rule, size, hz), rows, self.B.meta, hz, self.cfg["horizons"][hz]["family_prior"],
+                           v.lam, v.mode, r["n0_shrink"], r["max_factor_weight"], r["signal_step"], self.H(hz),
+                           self.view(rule, size), self.B.a["FWD"][HKEY[hz]], exclude=self._excl(v), **self._sp(v))
 
     def _sp(self, v: Variant) -> dict:
         return {"k": v.k, "tmin": v.tmin, "kK": v.kK, "lamK": v.lamK, "anchor": v.anchor,
@@ -266,7 +284,7 @@ class Research:
         v = Variant(name or "", mode, float(m.get("lam", 0.0 if mode == "sparse" else 0.25)), m.get("exposure", "none"), True,
                     k=int(m.get("k", 5)), tmin=float(m.get("tmin", 1.0)), kK=int(m.get("kK", 0)), lamK=float(m.get("lamK", 0.0)),
                     anchor=float(m.get("anchor", 0.0)), growth_blend=float(m.get("growth_blend", 0.0)),
-                    hyp_blend=float(m.get("hyp_blend", 0.0)), hypothesis=m.get("hypothesis"))
+                    hyp_blend=float(m.get("hyp_blend", 0.0)), hypothesis=m.get("hypothesis"), label_h=m.get("label_horizon"))
         if not name:
             v.name = self.variant_label(v)
         return v
@@ -395,8 +413,8 @@ class Research:
             return {"ticker": B.tickers[j], "name": B.meta["names"][j], "sector": B.meta["sectors"][j],
                     "close": close, "score": float(smap.get(j, np.nan)), "stage": STAGE_NAMES[st],
                     "kept": j in prev, "w_support": bool(B.a["WSUP"][i, j]),
-                    "reasons": [f"{fz[f]}(+{contrib[f]:.3f})" for f in top if contrib[f] > 0],
-                    "risk": [f"{fz[f]}({contrib[f]:.3f})" for f in neg if contrib[f] < 0],
+                    "reasons": [f"{factor_phrase(B, f, Z[k][f])}(+{contrib[f]:.3f})" for f in top if contrib[f] > 0],
+                    "risk": [f"{factor_phrase(B, f, Z[k][f])}({contrib[f]:.3f})" for f in neg if contrib[f] < 0],
                     "stop_price": round(close * (1 - stop), 2) if stop else None}
 
         blocked = []
@@ -425,6 +443,58 @@ class Research:
                 "weights": {f: float(w) for f, w in zip(B.factors, fit.weights) if abs(w) > 1e-6},
                 "family": fit.family}
 
+    # ------------------------------------------------------------------ full ranking (個股診斷用)
+    def rank_table(self, h, rule, size, v: Variant) -> pd.DataFrame:
+        """最新訊號日：母池內每一檔的模型分數、名次（只計可買標的）、被排除原因與前三大加分因子。"""
+        B = self.B
+        fit = self.final_fit(rule, size, h, v)
+        spec = self.spec(h, v)
+        i = self.S - 1
+        view = self.view(rule, size)
+        idx = view.members[i]
+        cols = ["ticker", "j", "score", "pct", "rank", "n_valid", "valid", "why", "reasons", "risk"]
+        if fit.weights is None or len(idx) == 0:
+            return pd.DataFrame(columns=cols)
+        Z = view.Z[i]
+        score = Z @ fit.weights
+        why = [[] for _ in idx]
+        cap = np.nan_to_num(B.a["CAP"][i, idx])
+        for k in np.where(cap * spec.max_participation < spec.capital / spec.top_k)[0]:
+            why[k].append("成交量太小")
+        if spec.max_rsi is not None and "RSI14" in B.a:
+            for k in np.where(B.a["RSI14"][i, idx] > spec.max_rsi)[0]:
+                why[k].append("RSI 過熱")
+        if spec.max_bias20 is not None and "BIAS20" in B.a:
+            for k in np.where(B.a["BIAS20"][i, idx] > spec.max_bias20)[0]:
+                why[k].append("乖離過大")
+        if spec.use_gates:
+            st = B.a["STAGE"][i, idx]
+            for s_ in spec.block_stages:
+                for k in np.where(st == STAGE_CODES[s_])[0]:
+                    why[k].append(f"個股階段{s_}")
+            if spec.b3_confirm:
+                for k in np.where((st == STAGE_CODES["B3"]) & ~B.a["WSUP"][i, idx])[0]:
+                    why[k].append("B3未止跌")
+            if spec.block_dtop:
+                for k in np.where(B.a["DTOP"][i, idx])[0]:
+                    why[k].append("M頭（多次攻不過）")
+        valid = np.array([not w for w in why])
+        rank = np.full(len(idx), np.nan)
+        vo = np.where(valid)[0]
+        rank[vo[np.argsort(-score[vo], kind="stable")]] = np.arange(1, len(vo) + 1)
+        pct = pd.Series(score).rank(pct=True).to_numpy()
+        fz = B.meta["factor_zh"]
+        rows = []
+        for k, j in enumerate(idx.tolist()):
+            contrib = Z[k] * fit.weights
+            top = np.argsort(-contrib)[:3]
+            neg = np.argsort(contrib)[:2]
+            rows.append({"ticker": B.tickers[j], "j": j, "score": float(score[k]), "pct": float(pct[k]),
+                         "rank": rank[k], "n_valid": len(vo), "valid": bool(valid[k]), "why": "、".join(why[k]),
+                         "reasons": [factor_phrase(B, f, Z[k][f]) for f in top if contrib[f] > 0],
+                         "risk": [factor_phrase(B, f, Z[k][f]) for f in neg if contrib[f] < 0]})
+        return pd.DataFrame(rows, columns=cols)
+
     # ------------------------------------------------------------------ factor table
     def factor_table(self, h, rule, size, weights) -> pd.DataFrame:
         ic = self.ic(rule, size, h)
@@ -448,7 +518,8 @@ class Research:
         rows = []
         for k, f in enumerate(B.factors):
             rows.append({"factor": f, "中文": B.meta["factor_zh"][k], "family": B.meta["families"][k],
-                         "prior_dir": B.meta["directions"][k], "horizon_ok": h in B.meta["horizons"][k],
+                         "prior_dir": B.meta["directions"][k],
+                         "horizon_ok": (h in B.meta["horizons"][k]) or abs(weights.get(f, 0.0)) > 0,
                          "coverage": B.meta["coverage"][f], "ic_all": m_all[k], "icir_all": ir_all[k], "t_all": t_all[k],
                          "ic_dev": m_dev[k], "t_dev": t_dev[k], "ic_holdout": m_h[k], "weight": weights.get(f, 0.0)})
         return pd.DataFrame(rows).sort_values(["family", "weight"], ascending=[True, False])
@@ -546,7 +617,8 @@ class Research:
             "pool_table": pt, "chosen_pool": {"rule": rule, "size": size}, "variant_table": vt,
             "chosen": {"variant": v.name, "mode": v.mode, "lam": v.lam, "exposure": v.exposure, "gates": v.gates,
                        "k": v.k, "tmin": v.tmin, "kK": v.kK, "lamK": v.lamK, "weighting": v.weighting, "anchor": v.anchor,
-                       "growth_blend": v.growth_blend, "hyp_blend": v.hyp_blend, "hypothesis": v.hypothesis},
+                       "growth_blend": v.growth_blend, "hyp_blend": v.hyp_blend, "hypothesis": v.hypothesis,
+                       "label_h": v.label_h},
             "data_beats_kostolany": data_wins, "eval": ev, "fit_history": hist, "factor_table": ft,
             "family_final": fit.family, "robust": robust, "ablation": ab, "stage_table": self.stage_table(res),
             "yearly": yearly_table(res.nav, res.bench), "latest": lt,
@@ -581,10 +653,11 @@ class Research:
             return {}
         r = self.cfg["research"]
         sp = self.B.sig_pos
-        rows = np.where((np.arange(self.S) >= self.first_oos) & (sp + self.H(h) + 1 <= sp[-1]))[0]
-        fit = fit_weights(self.ic(rule, size, h), rows, self.B.meta, h, self.cfg["horizons"][h]["family_prior"], v.lam, v.mode,
-                          r["n0_shrink"], r["max_factor_weight"], r["signal_step"], self.H(h), self.view(rule, size),
-                          self.B.a["FWD"][HKEY[h]], exclude=self._excl(v), **self._sp(v))
+        hz = v.label_h or h
+        rows = np.where((np.arange(self.S) >= self.first_oos) & (sp + self.H(hz) + 1 <= sp[-1]))[0]
+        fit = fit_weights(self.ic(rule, size, hz), rows, self.B.meta, hz, self.cfg["horizons"][hz]["family_prior"], v.lam, v.mode,
+                          r["n0_shrink"], r["max_factor_weight"], r["signal_step"], self.H(hz), self.view(rule, size),
+                          self.B.a["FWD"][HKEY[hz]], exclude=self._excl(v), **self._sp(v))
         W = [fit.weights] * self.S
         res = run(self.B, self.view(rule, size), W, self.spec(h, v), start_i=0)
         end = self.B.sig_dates[self.first_oos]

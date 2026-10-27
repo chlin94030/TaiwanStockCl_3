@@ -136,6 +136,15 @@ def build_panel(store: Store, start=None, end=None, min_names_per_day: int = 50)
         P.m[c] = _pivot(mg, c, dates, tickers).ffill(limit=5).astype(F32)
     P.quality["margin_coverage"] = float((mg["date"].nunique() / len(dates)) if not mg.empty else 0)
 
+    # TDCC weekly big holders (optional; forward-filled up to 3 weeks)
+    ho = store.read("holders", start, end)
+    for c in ("big400", "big1000", "retail50", "holders"):
+        P.m[c] = _pivot(ho, c, dates, tickers).reindex(dates)
+        if not ho.empty:
+            hp = ho[["date", "ticker", c]].drop_duplicates(["date", "ticker"], keep="last")
+            hp = hp.set_index(["date", "ticker"])[c].astype(F32).unstack("ticker").reindex(columns=tickers)
+            P.m[c] = hp.reindex(hp.index.union(dates)).ffill(limit=25).reindex(dates).astype(F32)
+
     # valuation
     va = store.read("valuation", start, end)
     for c in ("pe", "pb", "dy"):

@@ -86,11 +86,17 @@ horizons:
   short:
     days: 5
     label: 短線(5日)
-    model: {mode: opt, lam: 0.40, exposure: soft}   # 短線：精簡因子沒有改善 → 維持階層式 IC-IR（不建議單獨操作）
+    # v1.5 短線重建「快調慢α」：舊短線用 5 日籌碼/反轉訊號，扣成本前其實有 +6%/年，但每週換 55% 持股、成本吃掉 20%/年。
+    # 5 日 IC 最高的其實是慢變因子（殖利率、本益比、營收創新高、低波動）；5 日籌碼/技術因子的 IC 多為負或不顯著。
+    # 作法：用中線標籤估計的慢α權重（label_horizon: mid）每 5 日重新檢視、只換掉跌出前 25 名的股票（續抱 2.5 倍）
+    # → 每次換手 55%→22%、成本拖累約 20%→7%/年。代價：與中線名單平均重疊約 8 成（兩者擇一操作）。
+    # 想回到舊短線：刪掉 label_horizon，model 改 {mode: opt, lam: 0.40, exposure: soft}、hysteresis 1.5（不建議）。
+    model: {mode: sparse, k: 5, tmin: 2.0, growth_blend: 0.3, exposure: none, hyp_blend: 0.5,
+            hypothesis: PRICE_ALPHA_8_BALANCED, label_horizon: mid}
     weighting: equal
     residual: bench                    # v1.3 benchmark-first：沒買股票的資金放 0050（不是現金）
     family_prior: {T: 0.30, C: 0.30, F: 0.05, K: 0.35}
-    hysteresis: 1.5          # 已持有個股排名仍在前 1.5×K 內就續抱（律3 耐心、戒6 不隨風吹草動）
+    hysteresis: 2.5          # 已持有個股排名仍在前 2.5×K 內就續抱（律3 耐心、戒6 不隨風吹草動；v1.5 由 1.5 改 2.5）
     stop_loss: null          # 短線持有期短，不設停損
     alert_loss: 0.07         # 推薦表上的「警戒價」（僅提醒、不強制賣出）
   mid:
@@ -136,3 +142,6 @@ kostolany:
     none:   {A1: 1.0, A2: 1.0, A3: 1.0, B1: 1.0, B2: 1.0, B3: 1.0, UNKNOWN: 1.0}
     soft:   {A1: 1.0, A2: 1.0, A3: 0.6, B1: 0.5, B2: 0.4, B3: 1.0, UNKNOWN: 0.8}
     strict: {A1: 1.0, A2: 1.0, A3: 0.3, B1: 0.0, B2: 0.0, B3: 1.0, UNKNOWN: 0.5}
+
+app:
+  chart_days: 500          # v1.6 看盤資料包：K 線／籌碼圖保留的交易日數（約 2 年，年線需要 240 日）

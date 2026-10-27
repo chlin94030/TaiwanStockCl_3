@@ -223,3 +223,12 @@ def test_benchmark_residual_and_overheat_gate():
     B.a["BIAS20"] = np.zeros_like(B.a["RSI14"])
     hot = run(B, view, W, Spec(H=5, step=5, top_k=1, buy_cost=0, sell_cost=0, max_rsi=84))
     assert hot.tranches["n_picks"].sum() == 0                                                  # all blocked as overheated
+
+
+def test_short_model_can_use_mid_labels(world):
+    """v1.5 快調慢α: a short model with label_h='mid' gets exactly the weights a mid model would get."""
+    from kosto.research import Research, Variant
+    R = Research(world.B, world.cfg)
+    a = R.final_fit("ADV", 100, "short", Variant("s", "sparse", 0.0, k=3, tmin=0.5, label_h="mid")).weights
+    b = R.final_fit("ADV", 100, "mid", Variant("m", "sparse", 0.0, k=3, tmin=0.5)).weights
+    assert np.allclose(a, b)

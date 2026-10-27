@@ -23,16 +23,17 @@ KEYS = {
     "shares": ["date", "ticker"],
     "revenue": ["ticker", "ym"],
     "info": ["ticker"],
+    "holders": ["date", "ticker"],
 }
 _LOCK = threading.RLock()  # two download threads (TWSE / TPEx) may write the same dataset files
-YEARLY = {"price", "exright", "institutional", "margin", "valuation", "shares"}
+YEARLY = {"price", "exright", "institutional", "margin", "valuation", "shares", "holders"}
 # Download groups = one GitHub Actions matrix job + one release asset each (parallel, no write conflicts)
 GROUPS = {
     "price": ["price"],
     "institutional": ["institutional"],
     "margin": ["margin"],
     "valuation": ["valuation"],
-    "misc": ["exright", "shares", "revenue", "info"],
+    "misc": ["exright", "shares", "revenue", "info", "holders"],
 }
 
 

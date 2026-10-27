@@ -192,6 +192,24 @@ def build_bundle(P: Panel, cfg: dict, log=print) -> Bundle:
          "MKT_DAILY": mk[list(STAGES) + ["confidence", "index", "drawdown", "turnover_ratio", "breadth"]]
          .reindex(days).to_numpy(np.float32),
          "MKT_DAILY_CODE": np.array([STAGE_CODES.get(s, 0) for s in mk["stage"].reindex(days).fillna("UNKNOWN")], np.int8)}
+    # ---- 看盤資料包（App 的 K 線／籌碼圖用）：最近 chart_days 個交易日的原始價量與籌碼，單位：價(元)、量與籌碼(張)
+    nq = int((cfg.get("app") or {}).get("chart_days", 500))
+    q0 = max(0, len(P.dates) - nq)
+    qdays = P.dates[q0:]
+
+    def qa(name, scale=1.0):
+        if name not in P.m:
+            return np.full((len(qdays), len(cols)), np.nan, np.float32)
+        return (P.m[name].to_numpy(dtype=np.float32)[q0:, cols] * scale).astype(np.float32)
+    for key, name, sc in (("Q_O", "open", 1), ("Q_H", "high", 1), ("Q_L", "low", 1), ("Q_C", "close", 1),
+                          ("Q_V", "volume", 1e-3), ("Q_FI", "foreign", 1e-3), ("Q_TR", "trust", 1e-3),
+                          ("Q_DL", "dealer", 1e-3), ("Q_MB", "mbal", 1), ("Q_SB", "sbal", 1), ("Q_ML", "mlimit", 1),
+                          ("Q_FR", "foreign_ratio", 1), ("Q_H400", "big400", 1), ("Q_H1000", "big1000", 1),
+                          ("Q_HR", "retail50", 1), ("Q_HN", "holders", 1)):
+        a[key] = qa(name, sc)
+    a["Q_TAIEX"] = (P.taiex.reindex(qdays).to_numpy(np.float32) if P.taiex is not None
+                    else np.full(len(qdays), np.nan, np.float32))
+    meta["q_days"] = [str(d.date()) for d in qdays]
     # raw values of factors at the latest signal date (for explaining today's picks)
     a["LATEST_RAW"] = np.stack([vals[f][-1, cols] for f in fnames], axis=1).astype(np.float32)
     log(f"Bundle 完成 ({time.time()-t0:.0f}s)：S={len(pos)} D={len(days)} N={len(cols)} F={len(fnames)}")

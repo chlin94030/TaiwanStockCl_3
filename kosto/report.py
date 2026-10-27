@@ -131,7 +131,24 @@ def hints(H: dict) -> list[str]:
         if h == "short" and r["turnover"] > 0.5:
             out.append(f"{lab}：每次換股周轉率 {r['turnover']:.0%}，年交易成本約占資金 {r['cost_drag']:.0%} → "
                        "台股證交稅 0.3% 讓每週換股很難勝過 0050；建議短線清單只當中長線標的的『進場時機』參考，不單獨操作。")
+    if "short" in H and "mid" in H:
+        ov = _pick_overlap(H["short"], H["mid"])
+        if np.isfinite(ov) and ov >= 0.5:
+            out.append(f"短線與中線同一天的推薦平均重疊 {ov:.0%}（v1.5 短線＝中線的慢α分數、每 5 日檢視）→ "
+                       "兩者擇一操作即可：能每週檢查用短線、每月檢查用中線；同時操作等於重複持有同一批股票。")
     return out or ["本次未偵測到需要優先調整的項目。"]
+
+
+def _pick_overlap(a: dict, b: dict) -> float:
+    """Average share of b's picks that also appear in a's picks on the same signal date."""
+    try:
+        ta = a["tranches"].set_index("date")["picks"]
+        tb = b["tranches"].set_index("date")["picks"]
+        v = [len(set(ta[d]) & set(p)) / len(p) for d, p in tb.items()
+             if d in ta.index and isinstance(ta[d], list) and isinstance(p, list) and len(p)]
+        return float(np.mean(v)) if v else np.nan
+    except Exception:
+        return np.nan
 
 
 def _bench_sharpe(r: dict) -> float:

@@ -53,6 +53,8 @@ class Builder:
                 report[ds] = self.revenue()
             elif ds == "info":
                 report[ds] = self.info()
+            elif ds == "holders":
+                report[ds] = self.holders()
             self.log(f"[{ds}] {report.get(ds)}  ({time.time()-t0:.0f}s, http={self.http.calls})")
         self.store.save_state()
         return report
@@ -217,6 +219,17 @@ class Builder:
             return {"rows": 0}
         self.store.append("info", f)
         return {"rows": len(f)}
+
+    # ------------------------------------------------------------------ TDCC weekly big-holder snapshot (選用)
+    def holders(self) -> dict:
+        """集保股權分散表只提供「最新一週」→ 每次執行抓一次、逐週累積歷史（抓不到不影響研究）。"""
+        try:
+            f = self.off.tdcc_holders()
+        except Exception as e:  # noqa: BLE001 - optional dataset
+            self.log(f"  holders 失敗（不影響研究，只少了大戶持股）: {e}")
+            return {"rows": 0}
+        self.store.append("holders", f)
+        return {"rows": len(f), "date": str(f["date"].max().date()) if len(f) else None}
 
     # ------------------------------------------------------------------ FinMind per-stock fallback
     def _fm_or_skip(self, ds):

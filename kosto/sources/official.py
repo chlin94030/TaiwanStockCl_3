@@ -25,6 +25,7 @@ import requests
 TWSE = "https://www.twse.com.tw"
 TPEX = "https://www.tpex.org.tw"
 MOPS = "https://mopsov.twse.com.tw"
+TDCC = "https://opendata.tdcc.com.tw"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
                   "Chrome/124.0 Safari/537.36",
@@ -421,6 +422,36 @@ def parse_mops_revenue(html: str, year: int, month: int) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def parse_tdcc_holders(text: str) -> pd.DataFrame:
+    """集保戶股權分散表（每週）→ 每檔一列：大戶(≥400張)、千張大戶、散戶(<50張) 持股比例與股東人數。
+
+    分級 1~15 = 1-999股、1-5張、5-10、10-15、15-20、20-30、30-40、40-50、50-100、100-200、200-400、400-600、
+    600-800、800-1000、>1000 張；17 = 合計。"""
+    rows = {}
+    for line in text.lstrip("\ufeff").splitlines()[1:]:
+        p = [x.strip() for x in line.split(",")]
+        if len(p) < 6 or not p[0].isdigit():
+            continue
+        code = p[1]
+        if not KEEP_RE.match(code):
+            continue
+        try:
+            lv, n, pct = int(p[2]), float(p[3]), float(p[5])
+        except ValueError:
+            continue
+        r = rows.setdefault(code, {"date": pd.Timestamp(p[0]), "ticker": code, "big400": 0.0, "big1000": 0.0,
+                                   "retail50": 0.0, "holders": np.nan})
+        if 12 <= lv <= 15:
+            r["big400"] += pct
+        if lv == 15:
+            r["big1000"] += pct
+        if 1 <= lv <= 8:
+            r["retail50"] += pct
+        if lv == 17:
+            r["holders"] = n
+    return pd.DataFrame(list(rows.values()))
+
+
 def revenue_available_date(ym: int) -> pd.Timestamp:
     """Monthly revenue must be filed by the 10th of the following month (point-in-time rule)."""
     y, m = divmod(int(ym), 100)
@@ -480,6 +511,10 @@ class Official:
     def tpex_exright(self, start, end):
         return parse_tpex_exright(self.http.get(f"{TPEX}/www/zh-tw/bulletin/exDailyQ",
                                                 {"startDate": _slash(start), "endDate": _slash(end), "response": "json"}))
+
+    # TDCC 集保戶股權分散表（最新一週，全市場）
+    def tdcc_holders(self) -> pd.DataFrame:
+        return parse_tdcc_holders(self.http.get(f"{TDCC}/getOD.ashx", {"id": "1-5"}, as_json=False, encoding="utf-8"))
 
     # MOPS
     def revenue(self, year: int, month: int) -> pd.DataFrame:

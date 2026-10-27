@@ -189,7 +189,8 @@ def run(B, view: PoolView, weights: list, spec: Spec, start_i: int = 0) -> Resul
         cost = 0.0 if spec.equal_weight_all else sell * spec.sell_cost + buy * spec.buy_cost + etf
         V_start = V
         V = V * (1 - cost)
-        costs += V_start * cost
+        tot = float(np.nansum(slot_val[:, e - 1])) if e >= 1 else 1.0
+        costs += V_start * cost / (tot if tot > 0 else 1.0)          # as a fraction of the whole book at that time
         turnovers.append((sell + buy) / 2)
         BEN = B.a["BENCH"]
         bv = V * new_w.pop(-1, 0.0)
@@ -209,7 +210,8 @@ def run(B, view: PoolView, weights: list, spec: Spec, start_i: int = 0) -> Resul
                     if sell_now.any():  # stop-loss exit at this open (after the overnight gap)
                         pv[sell_now] *= 1 + GAP[d, js[sell_now]]
                         cash += (pv[sell_now] * (1 - spec.sell_cost)).sum()
-                        costs += (pv[sell_now] * spec.sell_cost).sum()
+                        tot_d = float(np.nansum(slot_val[:, d - 1])) or 1.0
+                        costs += (pv[sell_now] * spec.sell_cost).sum() / tot_d
                         pv[sell_now] = 0
                         alive &= ~sell_now
                         pending &= ~sell_now
