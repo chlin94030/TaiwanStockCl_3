@@ -43,6 +43,12 @@ class Spec:
     sleeve: float = 1.0              # 個股部位比例（其餘依 residual 放 0050 或現金）
     residual: str = "cash"           # cash | bench：未投入個股的資金放現金或 0050（benchmark-first）
     etf_cost: float = 0.001425 * 0.6 + 0.0005   # 0050 單邊成本（賣出另加 0.1% 證交稅）
+    # ---- v1.7 研究選項（預設全關＝與 v1.6 完全相同）
+    expo_scale: object = None        # 每個訊號的個股部位倍數（np.ndarray[S]，例：費半跌破百日線 → 0.5）
+    scale_residual: str = "cash"     # 被減碼的資金放現金 cash 或 0050 bench
+    vol_target: float | None = None  # 組合近 20 日年化波動超過此值 → 個股部位等比例降低（波動目標）
+    entry_close: object = None       # 每個訊號是否把「新買進」改在進場日收盤（np.ndarray[S] bool；隔夜美股大波動時）
+    cap_key: str = "SECTOR"          # max_per_sector 使用的分類：SECTOR 官方產業別、GROUP 產業鏈族群
 
 
 def spec_from_cfg(cfg: dict, horizon: str, exposure_profile: str = "none", **kw) -> Spec:
@@ -98,8 +104,8 @@ def choose(B, view: PoolView, i: int, w, prev: list, spec: Spec):
     K = spec.top_k
     buf = set(order[: max(K, int(round(K * spec.hysteresis)))].tolist())
     keep = sorted([j for j in prev if j in buf], key=lambda j: -smap[j])[:K]
-    if spec.max_per_sector and "SECTOR" in B.a:
-        sec = B.a["SECTOR"]
+    if spec.max_per_sector and spec.cap_key in B.a:
+        sec = B.a[spec.cap_key]
         cnt, picks = {}, []
         for j in keep + [j for j in order.tolist() if j not in keep]:
             g = int(sec[j])
@@ -114,6 +120,26 @@ def choose(B, view: PoolView, i: int, w, prev: list, spec: Spec):
     rest = [j for j in order.tolist() if j not in keep]
     picks = keep + rest[: K - len(keep)]
     return picks, order.tolist(), smap
+
+
+def _capped(w: np.ndarray, cap: float) -> np.ndarray:
+    w = w / w.sum()
+    for _ in range(10):                      # cap and redistribute
+        over = w > cap
+        if not over.any():
+            break
+        w[over] = cap
+        w[~over] *= (1 - w[over].sum()) / max(w[~over].sum(), 1e-12)
+    return w
+
+
+def book_vol(slot_val: np.ndarray, t: int, n: int = 20) -> float:
+    """組合（所有批次合計）截至 t 日收盤的近 n 日年化波動。"""
+    if t < n + 1:
+        return float("nan")
+    blk = pd.DataFrame(slot_val[:, : t + 1].T).ffill().iloc[-(n + 1):].sum(axis=1).to_numpy()
+    r = np.diff(blk) / np.where(blk[:-1] > 0, blk[:-1], np.nan)
+    return float(np.nanstd(r, ddof=1) * np.sqrt(245))
 
 
 def market_stage(B, i: int) -> str:
@@ -163,23 +189,34 @@ def run(B, view: PoolView, weights: list, spec: Spec, start_i: int = 0) -> Resul
             lin = np.linspace(1.5, 0.5, len(fs))
             budget = expo * len(filled) / max(n_slots, 1)
             new_w = {j: budget * float(x) / lin.sum() for j, x in zip(fs, lin)}
-        if spec.weighting == "sqrt_cap" and filled and not spec.equal_weight_all and "MCAP" in B.a:
-            m = np.sqrt(np.nan_to_num(B.a["MCAP"][i, filled].astype(float), nan=0.0))
+        if spec.weighting in ("sqrt_cap", "invvol") and filled and not spec.equal_weight_all:
+            if spec.weighting == "sqrt_cap" and "MCAP" in B.a:
+                m = np.sqrt(np.nan_to_num(B.a["MCAP"][i, filled].astype(float), nan=0.0))
+            elif spec.weighting == "invvol" and "VOL60" in B.a:
+                v = B.a["VOL60"][i, filled].astype(float)
+                v = np.where(np.isfinite(v) & (v > 0), v, np.nanmedian(v) if np.isfinite(v).any() else 0.03)
+                m = 1.0 / np.clip(v, 0.005, None)
+            else:
+                m = np.zeros(0)
             if m.sum() > 0:
                 budget = expo * len(filled) / max(n_slots, 1)
-                w = m / m.sum()
-                cap = 2.0 / max(n_slots, 1) / max(budget, 1e-9)
-                for _ in range(10):                      # cap and redistribute
-                    over = w > cap
-                    if not over.any():
-                        break
-                    w[over] = cap
-                    w[~over] *= (1 - w[over].sum()) / max(w[~over].sum(), 1e-12)
+                w = _capped(m.astype(float), 2.0 / max(n_slots, 1) / max(budget, 1e-9))
                 new_w = {j: budget * float(x) for j, x in zip(filled, w)}
+        scale = 1.0
+        if not spec.equal_weight_all:
+            if spec.expo_scale is not None:
+                scale *= float(spec.expo_scale[i])
+            if spec.vol_target:
+                bvol = book_vol(slot_val, t)
+                if np.isfinite(bvol) and bvol > spec.vol_target:
+                    scale *= spec.vol_target / bvol
         if spec.residual == "bench" and not spec.equal_weight_all:
-            bw = 1.0 - sum(new_w.values())
+            bw = 1.0 - sum(new_w.values()) * (scale if spec.scale_residual == "bench" else 1.0)
+            new_w = {j: v * scale for j, v in new_w.items()}
             if bw > 1e-9:
                 new_w[-1] = bw                              # -1 = 0050 sleeve
+        elif scale != 1.0:
+            new_w = {j: v * scale for j, v in new_w.items()}
         old_w = {j: v / V for j, v in old.items()} if V > 0 else {}
         keys = set(old_w) | set(new_w)
         sell = sum(max(0.0, old_w.get(j, 0) - new_w.get(j, 0)) for j in keys if j != -1)
@@ -204,7 +241,10 @@ def run(B, view: PoolView, weights: list, spec: Spec, start_i: int = 0) -> Resul
         for d in range(e, last + 1):
             if len(js):
                 if d == e:
-                    pv = pv * (1 + np.nan_to_num(OC[e, js]))
+                    f = 1 + np.nan_to_num(OC[e, js])
+                    if spec.entry_close is not None and bool(spec.entry_close[i]):
+                        f = np.where(np.isin(js, list(old)), f, 1.0)   # 新買進改在收盤成交 → 當天不承擔開盤→收盤
+                    pv = pv * f
                 else:
                     sell_now = pending & OK[d, js]
                     if sell_now.any():  # stop-loss exit at this open (after the overnight gap)
@@ -239,7 +279,7 @@ def run(B, view: PoolView, weights: list, spec: Spec, start_i: int = 0) -> Resul
             ret = np.nan  # still open
         st["prev"] = picks
         b = B.a["BENCH"][e: min(x, D)]
-        rows.append({"i": i, "date": B.sig_dates[i], "slot": sl, "stage": stage, "exposure": expo,
+        rows.append({"i": i, "date": B.sig_dates[i], "slot": sl, "stage": stage, "exposure": expo * scale,
                      "n_picks": len(picks), "n_filled": len(filled), "turnover": (sell + buy) / 2, "cost": cost,
                      "ret": ret, "bench": float(np.prod(1 + b) - 1) if x < D else np.nan,
                      "picks": [B.tickers[j] for j in picks]})

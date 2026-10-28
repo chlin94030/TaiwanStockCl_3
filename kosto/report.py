@@ -77,7 +77,7 @@ KOSTO_MAP = [
     ("律3 耐心、戒6 不對風吹草動反應", "遲滯續抱（名次仍在前 K×遲滯倍數 就不換股）", ["hyst"]),
     ("戒3 不要想把賠掉的再賺回來", "持有期停損（v1.1 預設關閉，改為推薦表『警戒價』提醒）", ["stop"]),
     ("整體：科斯托蘭尼因子族群", "精簡模型中 K 因子與其他因子公平競爭；加強版保留最強 2 個 K 因子 30%；階層式用最低權重 λ", ["K"]),
-    ("律2 足夠資金免受壓力、律9 考慮所有風險", "不融資、等權10檔、流動性容量限制（買進金額≤20日均量2%）", []),
+    ("律2 足夠資金免受壓力、律9 考慮所有風險", "不融資、等權8檔（v1.7）、流動性容量限制（買進金額≤20日均量0.5%）", []),
     ("戒8 不要只想獲利就賣掉", "不設停利；只要分數仍佳就續抱", []),
 ]
 
@@ -346,8 +346,27 @@ def build_html(res: dict, cfg: dict, comparison: tuple | None = None) -> str:
     # ---------------- hints
     p.append("<h2>7. 自動調整建議</h2><ul>" + "".join(f"<li>{html.escape(x)}</li>" for x in hints(H)) + "</ul>")
     p.append("<p class='mut'>調整方式：修改 config/default.yaml（或 Streamlit「快速調整」頁），重新執行即可；每次報告都附 config_used.yaml 方便回溯。</p>")
+    # ---------------- v1.7 international linkage
+    wd = res.get("world") or {}
+    if wd.get("study") is not None and len(wd.get("study")):
+        p.append("<h2>8. 國際連動與十面向研究（v1.7）</h2>")
+        stt = wd["study"]
+        p.append("<p>預先宣告（docs/v1.7_protocol.md），只用開發期挑選；Δ＝相對 v1.6 的年化超額報酬差（正＝較好），回撤Δ 正＝回撤較淺。</p>")
+        p.append(table(stt, {c: "pct" for c in stt.columns if "Δ" in c and "IR" not in c} | {"中線IRΔ": "{:+.2f}"},
+                       left=("面向", "候選", "結論")))
+        ov = wd.get("overnight")
+        if ov is not None and len(ov):
+            b = ov.attrs.get("beta", {})
+            p.append(f"<h3>前一夜費半漲跌 → 台股大型股隔日（{html.escape(str(ov.attrs.get('period', '')))}）</h3>")
+            p.append(table(ov, {c: "pct" for c in ov.columns if c not in ("級距", "天數")}, left=("級距",)))
+            p.append(f"<p class='mut'>台股對前一夜費半的 β：開盤跳空 {b.get('gap', np.nan):.2f}、開盤→收盤 {b.get('oc', np.nan):+.2f}、全日 "
+                     f"{b.get('day', np.nan):.2f}。美股的影響幾乎都在開盤一次反映完，盤中反而小幅回吐，隔一日已無延續。</p>")
+        yl = wd.get("yearly")
+        if yl is not None and len(yl):
+            p.append("<h3>逐年連動（台股大型股日報酬）</h3>")
+            p.append(table(yl, {c: "{:.2f}" for c in yl.columns if c.startswith(("相關", "β"))}))
     # ---------------- method
-    p.append("<h2>8. 方法與限制</h2><ul>"
+    p.append("<h2>9. 方法與限制</h2><ul>"
              "<li>資料：證交所/櫃買中心/公開資訊觀測站逐日全市場（或 FinMind）；含已下市股票，無存活者偏誤（FinMind 逐檔模式除外）。</li>"
              "<li>報酬：以官方『除權息參考價』還原，股利再投入；訊號日收盤決策、次日開盤成交、持有 H 日於開盤出場；開盤漲停買不到視為現金。</li>"
              f"<li>成本：手續費 {cfg['costs']['fee']*100:.4f}%×{cfg['costs']['fee_discount']} 折、證交稅 {cfg['costs']['tax']*100:.1f}%、滑價單邊 {cfg['costs']['slippage']*100:.1f}%。</li>"
@@ -401,6 +420,10 @@ def build_excel(res: dict, comparison=None) -> bytes:
             r["nav"].to_excel(xw, sheet_name=_xls_name(f"{tag}_淨值"))
         mk = res["market"].copy()
         mk.to_excel(xw, sheet_name="市場階段")
+        wd = res.get("world") or {}
+        for key, name in (("study", "v1.7_十面向研究"), ("overnight", "美股隔夜衝擊"), ("yearly", "國際連動_逐年")):
+            if wd.get(key) is not None and len(wd[key]):
+                wd[key].to_excel(xw, sheet_name=name, index=False)
         if comparison is not None and comparison[0] is not None and len(comparison[0]):
             comparison[1].to_excel(xw, sheet_name="新舊比較_摘要", index=False)
             comparison[0].to_excel(xw, sheet_name="新舊比較_逐期", index=False)

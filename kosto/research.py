@@ -13,12 +13,13 @@ Weights are re-estimated every `retrain_months` using only labels that had matur
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import pandas as pd
 
 from .backtest import choose, market_stage, run, spec_from_cfg
+from . import linkage
 from .bundle import Bundle
 from .config import HORIZON_KEYS, STAGE_CODES, STAGE_NAMES
 from .metrics import (block_bootstrap_excess, deflated_sharpe, perf, probabilistic_sharpe, selection_score,
@@ -109,6 +110,10 @@ class Research:
             secs = B.meta.get("sectors") or ["NA"] * len(B.tickers)
             uniq = {x: k for k, x in enumerate(sorted({x for x in secs if x not in ("NA", "", None)}))}
             B.a["SECTOR"] = np.array([uniq.get(x, -1) for x in secs], np.int32)
+        if "GROUP" not in B.a and B.meta.get("groups"):   # v1.7 產業鏈族群代碼（族群上限用）
+            gs = B.meta["groups"]
+            uniq = {x: k for k, x in enumerate(sorted({x for x in gs if x not in ("其他", "", None)}))}
+            B.a["GROUP"] = np.array([uniq.get(x, -1) for x in gs], np.int32)
 
     # ------------------------------------------------------------------ cached pieces
     def view(self, rule: str, size: int) -> PoolView:
@@ -183,7 +188,8 @@ class Research:
     def _excl(self, v: Variant) -> tuple:
         """Factors a sparse model may not *select* (they can still enter through the fixed anchor/hypothesis)."""
         extra = tuple(self.cfg["research"].get("sparse_exclude") or ()) if v.mode == "sparse" else ()
-        return tuple(v.exclude) + extra
+        off = tuple(f for f in (self.cfg["research"].get("inactive_factors") or ()) if f in self.B.factors)
+        return tuple(v.exclude) + extra + off
 
     # ------------------------------------------------------------------ evaluation
     def spec(self, h, v: Variant):
@@ -567,6 +573,7 @@ class Research:
             progress(f"{h} 完成：開發期CAGR {ev.get('dev_cagr', np.nan):.1%}，盲測CAGR {ev.get('hold_cagr', np.nan):.1%} "
                      f"({time.time()-t0:.0f}s)")
         out["market"] = self.market_frame()
+        out["world"] = linkage.summary(self.B)
         out["elapsed"] = time.time() - t0
         return out
 
@@ -598,6 +605,9 @@ class Research:
             be = self.evaluate(rule, size, h, bv, keep=True)
             base[bv.name] = be.pop("_res")
         ew = self.pool_ew(rule, size, h)
+        # v1.7：同一模型、未投入資金改放現金（＝完全不含 0050）的淨值，供 App 配置頁比較
+        res_cash = run(self.B, self.view(rule, size), self.schedule(rule, size, h, v)[0], replace(self.spec(h, v), residual="cash"),
+                       start_i=self.first_oos)
         daily = res.nav.pct_change().dropna()
         trials = pd.concat([pt, vt], ignore_index=True)
         sr_std = float(np.nanstd(trials["oos_sharpe"] / np.sqrt(245))) if "oos_sharpe" in trials else np.nan
@@ -622,7 +632,8 @@ class Research:
             "data_beats_kostolany": data_wins, "eval": ev, "fit_history": hist, "factor_table": ft,
             "family_final": fit.family, "robust": robust, "ablation": ab, "stage_table": self.stage_table(res),
             "yearly": yearly_table(res.nav, res.bench), "latest": lt,
-            "nav": pd.DataFrame({"策略": res.nav, "0050": res.bench, "母池等權": ew.nav.reindex(res.nav.index),
+            "nav": pd.DataFrame({"策略": res.nav, "0050": res.bench, "策略(不含0050)": res_cash.nav.reindex(res.nav.index),
+                                 "母池等權": ew.nav.reindex(res.nav.index),
                                  **{k.split()[0]: r.nav.reindex(res.nav.index) for k, r in base.items()}}),
             "tranches": res.tranches, "turnover": res.turnover, "cost_drag": res.cost_drag, "mix": mix,
             "vs_pool_ew": dict(mix.attrs.get("vs_pool_ew", {})), "validation": val,

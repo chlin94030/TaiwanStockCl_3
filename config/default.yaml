@@ -27,7 +27,7 @@ research:
   train_min_months: 24       # 走勢前進法：最少訓練月數
   retrain_months: 6          # 每 6 個月重新估計權重
   holdout_months: 12         # 最後 12 個月保留，不參與母池/模型挑選（盲測）
-  top_k: 10                  # 每次推薦 10 檔，等權
+  top_k: 8                   # v1.7：每次推薦 8 檔（10→8：短中長線開發期超額 +14/+3.7/+2.8pp，盲測、2019-20、2018 皆未退步；12/15 檔都較差）
   capital: 1000000           # 參考資金（計算容量限制）
   max_participation: 0.005   # 單檔買進金額不超過 20 日均成交額的 0.5%（v1.3 採 V23.1 的較嚴容量限制；實測不降反升）
   min_price: 10              # 母池基本門檻：股價
@@ -56,6 +56,8 @@ research:
   presample_test: true
   lock_model: true                     # v1.3：使用設定檔指定的模型（多窗口「不退步原則」決定），不再只看開發期自動挑
   sparse_exclude: [t_lowidio]          # 只給成長動能假說使用、不讓精簡模型自己挑的因子
+  # v1.7 國際連動／族群因子：照樣計算並在 App 顯示，但預先宣告的研究未通過（見 docs/v1.7_protocol.md）→ 不進任何模型
+  inactive_factors: [g_us_beta, g_us_lead, g_asia_lead, g_fx_flow, t_ind_mom]
   score_hypotheses:                    # v1.4：ChatGPT V24 預先宣告的價格領先假說（固定權重）
     PRICE_ALPHA_8_BALANCED: {t_rs120: 0.40, t_mom120x20: 0.25, t_high252: 0.20, t_lowidio: 0.15}
     PRICE_ALPHA_5_LEADERS: {t_rs120: 0.60, t_mom120x20: 0.25, t_high252: 0.15}

@@ -342,6 +342,86 @@ def rsi14(c):
 def _f_size(c): return -np.log(c.P["mcap"].astype(float).where(c.P["mcap"] > 0))
 
 
+# ================================================================== v1.7 國際連動／產業鏈輪動（研究候選；未通過驗收者由 sparse_exclude 排除）
+def _wser(c, key):
+    W = c.P.world
+    if W is None or key not in W or not np.isfinite(W[key].to_numpy(dtype=float)).any():
+        return None
+    return W[key].astype(float)
+
+
+def _nan_like(c):
+    return pd.DataFrame(np.nan, index=c.P.dates, columns=c.P.tickers)
+
+
+def _beta_to(c, key, n=120):
+    """個股日報酬對「同一交易日已發生」的國際市場報酬的滾動 β（美股＝前一夜，日韓＝同日）。"""
+    def calc():
+        w = _wser(c, key)
+        if w is None:
+            return None
+        x = w.pct_change(fill_method=None).where(lambda v: v.abs() < 0.25)
+        ret = c.P["ret"].astype(float).where(c.P["tradable"])
+        m = ret.notna() & x.notna().to_numpy()[:, None]
+        r0, x0 = ret.where(m), m.mul(x, axis=0).where(m)
+        mp = max(40, int(n * 0.6))
+        ex, er = x0.rolling(n, min_periods=mp).mean(), r0.rolling(n, min_periods=mp).mean()
+        cov = (r0 * x0).rolling(n, min_periods=mp).mean() - ex * er
+        var = (x0 * x0).rolling(n, min_periods=mp).mean() - ex * ex
+        return cov / var.where(var > 1e-10)
+    return c.get(f"beta_{key}{n}", calc)
+
+
+@factor("g_us_beta", "T", 0, ALL_H, "對美股費半連動(β)")
+def _g_us_beta(c):
+    b = _beta_to(c, "SOX")
+    return _nan_like(c) if b is None else b
+
+
+@factor("g_us_lead", "T", 1, ALL_H, "美股費半趨勢×連動(β×費半20日)")
+def _g_us_lead(c):
+    b, w = _beta_to(c, "SOX"), _wser(c, "SOX")
+    return _nan_like(c) if b is None else b.mul(w / w.shift(20) - 1, axis=0)
+
+
+@factor("g_asia_lead", "T", 1, ALL_H, "韓股趨勢×連動(β×KOSPI 20日)")
+def _g_asia_lead(c):
+    b, w = _beta_to(c, "KS11"), _wser(c, "KS11")
+    return _nan_like(c) if b is None else b.mul(w / w.shift(20) - 1, axis=0)
+
+
+@factor("g_fx_flow", "T", 1, ALL_H, "台幣升值×外資持股(熱錢流向)")
+def _g_fx_flow(c):
+    w = _wser(c, "TWD")
+    if w is None or "foreign_ratio" not in c.P.m:
+        return _nan_like(c)
+    return c.P["foreign_ratio"].astype(float).mul(-(w / w.shift(20) - 1), axis=0)
+
+
+def chain_groups(P: Panel) -> pd.Series:
+    """每檔股票的產業鏈族群（電子上游-半導體…；同 App 標籤）。"""
+    from .chain import label
+    sec = P.info["sector"] if P.info is not None and "sector" in P.info else pd.Series("NA", index=P.tickers)
+    return pd.Series([label(t, s)["group"] for t, s in zip(P.tickers, sec.reindex(P.tickers).fillna("NA"))], index=P.tickers)
+
+
+@factor("t_ind_mom", "T", 1, ("mid", "long"), "族群動能(同產業鏈其他股60日)")
+def _t_ind_mom(c):
+    g = c.get("chain_groups", lambda: chain_groups(c.P))
+    m = c.mom(60).astype(float)
+    ok = m.notna()
+    out = _nan_like(c)
+    for grp, cols in g.groupby(g).groups.items():
+        if len(cols) < 3:
+            continue
+        sub, k = m[cols], ok[cols]
+        tot, n = sub.sum(axis=1, min_count=1), k.sum(axis=1)
+        ex = (tot.to_numpy()[:, None] - sub.fillna(0).to_numpy()) / (n.to_numpy()[:, None] - k.to_numpy())
+        ex[(n.to_numpy()[:, None] - k.to_numpy()) < 2] = np.nan
+        out[cols] = ex
+    return out.where(c.adj.notna())
+
+
 def compute(P: Panel, names=None, sample_idx=None, log=None) -> tuple[dict, Ctx]:
     """Compute factors; returns {name: ndarray[n_sample, n_tickers] float32} and the context cache."""
     from . import kostolany  # noqa: F401  (import registers the K factors)

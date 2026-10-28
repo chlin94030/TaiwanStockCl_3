@@ -55,6 +55,8 @@ class Builder:
                 report[ds] = self.info()
             elif ds == "holders":
                 report[ds] = self.holders()
+            elif ds == "world":
+                report[ds] = self.world()
             self.log(f"[{ds}] {report.get(ds)}  ({time.time()-t0:.0f}s, http={self.http.calls})")
         self.store.save_state()
         return report
@@ -230,6 +232,21 @@ class Builder:
             return {"rows": 0}
         self.store.append("holders", f)
         return {"rows": len(f), "date": str(f["date"].max().date()) if len(f) else None}
+
+    # ------------------------------------------------------------------ v1.7 國際市場（美股/日韓/匯率）日收盤
+    def world(self) -> dict:
+        """Yahoo Finance 日收盤，增量更新（重抓最近 20 天以補修正值）；抓不到不影響研究，只是國際因子與擇時暫停。"""
+        from .sources import world as W
+        old = self.store.read("world")
+        start = (pd.Timestamp(old["date"].max()) - pd.Timedelta(days=20)) if not old.empty else self.start - pd.Timedelta(days=90)
+        try:
+            f = W.fetch(start=start, end=self.end + pd.Timedelta(days=2), log=self.log)
+        except Exception as e:  # noqa: BLE001 - optional dataset
+            self.log(f"  world 失敗（不影響研究，只少了國際連動因子）: {e}")
+            return {"rows": 0}
+        self.store.append("world", f)
+        return {"rows": len(f), "symbols": int(f["ticker"].nunique()) if len(f) else 0,
+                "last": str(f["date"].max().date()) if len(f) else None}
 
     # ------------------------------------------------------------------ FinMind per-stock fallback
     def _fm_or_skip(self, ds):

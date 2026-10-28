@@ -30,6 +30,7 @@ class Panel:
     bench: pd.Series = None                          # 0050 daily total return
     taiex: pd.Series = None                          # TAIEX close
     rev_m: pd.DataFrame = None                       # monthly revenue (index ym int, columns ticker)
+    world: pd.DataFrame = None                       # v1.7 國際市場收盤，已對齊到「台股 T 日收盤後可知」（見 align_world）
     synthetic: bool = False
     quality: dict = field(default_factory=dict)
 
@@ -47,6 +48,26 @@ def _pivot(f: pd.DataFrame, col: str, dates, tickers) -> pd.DataFrame:
     p = g.set_index(["date", "ticker"])[col].astype(F32).unstack("ticker")
     p.columns = p.columns.astype(str)
     return p.reindex(index=dates, columns=tickers).astype(F32)
+
+
+def align_world(w: pd.DataFrame, dates: pd.DatetimeIndex, stale_days: int = 10) -> pd.DataFrame:
+    """國際市場收盤 → 台股交易日 T 在收盤後（研究時間）已知的值（不偷看未來）。
+    美股/匯率：美國（倫敦）日期 ≤ T−1 的最後收盤（T 日晚上的美股在台北凌晨才收盤）；
+    日韓：T 日收盤（台北 14:30 前已收）。超過 stale_days 沒有新資料 → NaN。"""
+    from .sources.world import US
+    if w is None or w.empty:
+        return pd.DataFrame(index=dates)
+    out = {}
+    for k, g in w.groupby("ticker"):
+        s = g.dropna(subset=["close"]).drop_duplicates("date", keep="last").set_index("date")["close"].astype(float).sort_index()
+        if s.empty:
+            continue
+        look = dates - pd.Timedelta(days=1) if k in US else dates
+        pos = s.index.searchsorted(look, side="right") - 1
+        val = np.where(pos >= 0, s.to_numpy()[np.clip(pos, 0, None)], np.nan)
+        age = np.where(pos >= 0, (look - s.index[np.clip(pos, 0, None)]).days, 9999)
+        out[str(k)] = np.where(age <= stale_days, val, np.nan)
+    return pd.DataFrame(out, index=dates)
 
 
 def build_panel(store: Store, start=None, end=None, min_names_per_day: int = 50) -> Panel:
@@ -161,6 +182,9 @@ def build_panel(store: Store, start=None, end=None, min_names_per_day: int = 50)
                               pd.Period(f"{rm.index.max() // 100}-{rm.index.max() % 100:02d}", "M"), freq="M")
         P.rev_m = rm.reindex([p.year * 100 + p.month for p in per])  # contiguous months for YoY shifts
     P.quality["revenue_months"] = 0 if rv.empty else int(rv["ym"].nunique())
+
+    P.world = align_world(store.read("world"), dates)
+    P.quality["world_series"] = int(P.world.shape[1])
 
     info = store.read("info")
     names = price.dropna(subset=["name"]).groupby("ticker")["name"].last() if "name" in price else pd.Series(dtype=str)

@@ -57,7 +57,7 @@ def test_config_validation():
     with pytest.raises(ValueError):
         load_config(overrides={"horizons": {"mid": {"family_prior": {"T": 0.5, "C": 0.5, "F": 0.5, "K": 0.0}}}})
     cfg = load_config()
-    assert cfg["horizons"]["long"]["days"] == 60 and cfg["research"]["top_k"] == 10
+    assert cfg["horizons"]["long"]["days"] == 60 and cfg["research"]["top_k"] == 8
 
 
 def test_visible_workflow_copy_matches_real_workflow():

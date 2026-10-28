@@ -78,6 +78,9 @@ def test_auto_build_two_threads_and_progress(tmp_path, monkeypatch):
     monkeypatch.setattr(O.Official, "tpex_exright", lambda self, s, e: O.parse_tpex_exright(S.TPEX_EXRIGHT))
     monkeypatch.setattr(O.Official, "revenue", lambda self, y, m: O.parse_mops_revenue(S.MOPS_HTML, y, m)
                         .assign(avail_date=O.revenue_available_date(y * 100 + m)))
+    from kosto.sources import world as Wd
+    monkeypatch.setattr(Wd, "fetch", lambda **k: pd.DataFrame({"date": pd.to_datetime(["2024-06-12", "2024-06-13"]),
+                                                               "ticker": ["SOX", "SOX"], "close": [5000.0, 5100.0]}))
     monkeypatch.setattr(FinMind, "info", lambda self: pd.DataFrame(
         [{"ticker": "2330", "name": "台積電", "sector": "半導體業", "board": "TWSE"}]))
     cfg = load_config(overrides={"data": {"dir": str(tmp_path), "start": "2024-04-01", "end": "2024-06-28", "pause_sec": 0}})

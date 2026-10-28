@@ -12,6 +12,8 @@ Arrays (S = signal dates, D = trading days from first signal, N = tickers ever i
   DTOP   bool   [S,N]    M double-top flag ; WSUP bool [S,N] W support / stabilisation flag
   TRADE  bool   [S,N]    traded at the signal close ; CAP float32[S,N] 20-day average traded value
   BENCH  float32[D]      0050 daily return ; MKT float32[S,7] market stage scores + code
+  WORLD  float32[D,K]    v1.7 國際市場收盤（美股/匯率＝美國日期 ≤ T−1，日韓＝T 日；meta.world_keys）
+  VOL60  float32[S,N]    60 日報酬波動（波動倒數加權用） ; meta.groups = 產業鏈族群
 """
 from __future__ import annotations
 
@@ -26,7 +28,7 @@ import pandas as pd
 
 from . import __version__
 from .config import HORIZON_KEYS, STAGE_CODES, STAGES
-from .factors import REGISTRY, compute, rsi14
+from .factors import REGISTRY, chain_groups, compute, rsi14
 from .kostolany import market_regime, mw_patterns, stage_codes
 from .panel import Panel
 from .optimize import avg_rank_cols
@@ -192,6 +194,13 @@ def build_bundle(P: Panel, cfg: dict, log=print) -> Bundle:
          "MKT_DAILY": mk[list(STAGES) + ["confidence", "index", "drawdown", "turnover_ratio", "breadth"]]
          .reindex(days).to_numpy(np.float32),
          "MKT_DAILY_CODE": np.array([STAGE_CODES.get(s, 0) for s in mk["stage"].reindex(days).fillna("UNKNOWN")], np.int8)}
+    # ---- v1.7 國際市場（已對齊到台股 T 日收盤後可知）、60 日波動、產業鏈族群
+    W = P.world if P.world is not None else pd.DataFrame(index=P.dates)
+    meta["world_keys"] = [str(k) for k in W.columns]
+    a["WORLD"] = W.reindex(days).to_numpy(np.float32) if W.shape[1] else np.zeros((len(days), 0), np.float32)
+    a["VOL60"] = (P["ret"].astype(float).where(P["tradable"]).rolling(60, min_periods=40).std()
+                  .to_numpy(dtype=np.float32)[pos][:, cols])
+    meta["groups"] = ctx.get("chain_groups", lambda: chain_groups(P)).reindex(P.tickers[cols]).fillna("其他").tolist()
     # ---- 看盤資料包（App 的 K 線／籌碼圖用）：最近 chart_days 個交易日的原始價量與籌碼，單位：價(元)、量與籌碼(張)
     nq = int((cfg.get("app") or {}).get("chart_days", 500))
     q0 = max(0, len(P.dates) - nq)
