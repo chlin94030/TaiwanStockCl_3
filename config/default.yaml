@@ -54,6 +54,7 @@ research:
     min_fold_win: 0.5                  #   至少一半區塊贏 0050
     cost_stress: 0.005                 #   每次買賣來回多加 0.5% 成本後超額仍須 > 0
   presample_test: true
+  phase_check: true                    # v1.8 換股日敏感度：另外平移 1～4 天重跑選定模型，報告五種換股日的平均／最差／最好
   lock_model: true                     # v1.3：使用設定檔指定的模型（多窗口「不退步原則」決定），不再只看開發期自動挑
   sparse_exclude: [t_lowidio]          # 只給成長動能假說使用、不讓精簡模型自己挑的因子
   # v1.7 國際連動／族群因子：照樣計算並在 App 顯示，但預先宣告的研究未通過（見 docs/v1.7_protocol.md）→ 不進任何模型

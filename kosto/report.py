@@ -346,6 +346,15 @@ def build_html(res: dict, cfg: dict, comparison: tuple | None = None) -> str:
     # ---------------- hints
     p.append("<h2>7. 自動調整建議</h2><ul>" + "".join(f"<li>{html.escape(x)}</li>" for x in hints(H)) + "</ul>")
     p.append("<p class='mut'>調整方式：修改 config/default.yaml（或 Streamlit「快速調整」頁），重新執行即可；每次報告都附 config_used.yaml 方便回溯。</p>")
+    # ---------------- v1.8 phase sensitivity
+    ph = res.get("phases")
+    if ph is not None and len(ph):
+        from .phases import summary as _phs
+        sm = _phs(ph).reset_index().rename(columns={"h": "期間"})
+        sm["期間"] = sm["期間"].map({"short": "短線", "mid": "中線", "long": "長線"})
+        p.append("<h2>換股日敏感度（五種換股起點）</h2><p>每 5 個交易日換股時，從哪一天開始算會讓回測差很多。"
+                 "下表把訊號日平移 0～4 天（涵蓋一週五種換股日）重跑同一個模型，平均值是比單一回測更穩健的預期。</p>")
+        p.append(table(sm, {c: "pct" for c in sm.columns if c not in ("期間", "起點數")} | {"起點數": "{:.0f}"}, left=("期間",)))
     # ---------------- v1.7 international linkage
     wd = res.get("world") or {}
     if wd.get("study") is not None and len(wd.get("study")):
@@ -420,6 +429,8 @@ def build_excel(res: dict, comparison=None) -> bytes:
             r["nav"].to_excel(xw, sheet_name=_xls_name(f"{tag}_淨值"))
         mk = res["market"].copy()
         mk.to_excel(xw, sheet_name="市場階段")
+        if res.get("phases") is not None and len(res["phases"]):
+            res["phases"].to_excel(xw, sheet_name="換股日敏感度", index=False)
         wd = res.get("world") or {}
         for key, name in (("study", "v1.7_十面向研究"), ("overnight", "美股隔夜衝擊"), ("yearly", "國際連動_逐年")):
             if wd.get(key) is not None and len(wd[key]):

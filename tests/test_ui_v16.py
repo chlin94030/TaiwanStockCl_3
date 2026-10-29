@@ -17,7 +17,9 @@ from kosto.store import Store
 
 # ------------------------------------------------------------------ 產業鏈
 def test_chain_labels():
-    assert chain.label("2330", "半導體業")["label"] == "電子中游-半導體｜IC/晶圓製造"
+    assert chain.label("2330", "半導體業")["label"] == "電子中游-半導體｜晶圓代工"
+    assert "記憶體" in chain.label("2344", "電子工業")["segment"]          # v1.8 細產業校正（華邦電不是一般晶圓代工）
+    assert chain.label("3406", "光電業")["segment"] == "光學鏡頭"
     assert chain.label("2454", "電子工業")["group"] == "電子上游-半導體"
     assert chain.label("2603", "航運業")["group"] == "傳產-交通運輸及航運"
     assert chain.label("2881", "金融保險")["group"].startswith("金融")

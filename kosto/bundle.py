@@ -216,6 +216,12 @@ def build_bundle(P: Panel, cfg: dict, log=print) -> Bundle:
                           ("Q_FR", "foreign_ratio", 1), ("Q_H400", "big400", 1), ("Q_H1000", "big1000", 1),
                           ("Q_HR", "retail50", 1), ("Q_HN", "holders", 1)):
         a[key] = qa(name, sc)
+    for key, name in (("Q_PE", "pe"), ("Q_PB", "pb"), ("Q_DY", "dy")):      # v1.8 估值歷史（基本面快照）
+        a[key] = qa(name)
+    if P.rev_m is not None and len(P.rev_m):                                  # v1.8 近 25 個月月營收（元）
+        rm = P.rev_m.iloc[-25:]
+        a["REV_M"] = rm.reindex(columns=P.tickers[cols]).to_numpy(np.float32)
+        meta["rev_ym"] = [int(x) for x in rm.index]
     a["Q_TAIEX"] = (P.taiex.reindex(qdays).to_numpy(np.float32) if P.taiex is not None
                     else np.full(len(qdays), np.nan, np.float32))
     meta["q_days"] = [str(d.date()) for d in qdays]

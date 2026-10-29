@@ -449,6 +449,115 @@ class Research:
                 "weights": {f: float(w) for f, w in zip(B.factors, fit.weights) if abs(w) > 1e-6},
                 "family": fit.family}
 
+    # ------------------------------------------------------------------ v1.8 持股追蹤（何時出場）
+    def ranks_at(self, i: int, w, spec, view) -> dict:
+        """訊號日 i：可買標的（流動性＋風控閘門通過）依分數排序的名次 {ticker: rank}。"""
+        B = self.B
+        idx = view.members[i]
+        if w is None or len(idx) == 0:
+            return {}
+        score = view.Z[i] @ w
+        ok = np.nan_to_num(B.a["CAP"][i, idx]) * spec.max_participation >= spec.capital / spec.top_k
+        if spec.use_gates:
+            st = B.a["STAGE"][i, idx]
+            ok &= ~np.isin(st, [STAGE_CODES[s_] for s_ in spec.block_stages])
+            if spec.b3_confirm:
+                ok &= ~((st == STAGE_CODES["B3"]) & ~B.a["WSUP"][i, idx])
+            if spec.block_dtop:
+                ok &= ~B.a["DTOP"][i, idx]
+        vo = np.where(ok)[0]
+        order = idx[vo[np.argsort(-score[vo], kind="stable")]]
+        return {B.tickers[j]: r + 1 for r, j in enumerate(order)}
+
+    def holdings(self, h, rule, size, v: Variant, tranches: pd.DataFrame, latest: dict, n_hist: int = 6) -> list[dict]:
+        """模型目前的持股（最近 nt 批，每批一份資金）＋何時檢查、目前排名、預計續抱或出場。
+        規則與回測相同：每一份資金在自己的檢查日，排名仍在前 round(K×續抱倍數) 名就續抱，否則隔日開盤換股。"""
+        B = self.B
+        spec = self.spec(h, v)
+        nt = max(1, spec.H // spec.step)
+        S = self.S
+        K = spec.top_k
+        buf = max(K, int(round(K * spec.hysteresis)))
+        fit = self.final_fit(rule, size, h, v)
+        view = self.view(rule, size)
+        hist_i = list(range(max(0, S - n_hist), S))
+        hist = {i: self.ranks_at(i, fit.weights, spec, view) for i in hist_i}
+        now = hist.get(S - 1, {})
+        by_i = {}
+        if tranches is not None and len(tranches):
+            for _, r in tranches.iterrows():
+                by_i[int(r["i"])] = list(r["picks"])
+        by_i[S - 1] = [p["ticker"] for p in (latest or {}).get("picks", [])] or by_i.get(S - 1, [])
+        qd = pd.DatetimeIndex(B.meta.get("q_days", []))
+        qpos = {d: k for k, d in enumerate(qd)}
+        out = {}
+        # 使用者實際操作的資金份數（操作指南）：短線 1 份每週換、中線 4 份每週換 1 份、長線 3 份每 4 週換 1 份
+        portions = {"short": 1, "mid": 4, "long": 3}.get(h, nt)
+        spacing = max(1, nt // max(1, portions))
+        for s in range(min(portions, nt)):
+            i_s = S - 1 - s * spacing
+            if i_s < 0 or i_s not in by_i:
+                continue
+            for t in by_i[i_s]:
+                i0 = i_s
+                while (i0 - nt) in by_i and t in by_i[i0 - nt]:
+                    i0 -= nt
+                e = int(B.sig_pos[i0]) + 1
+                entry_day = B.days[e] if e < len(B.days) else None
+                ep = np.nan
+                if entry_day is not None and entry_day in qpos and "Q_O" in B.a and t in B.tickers:
+                    ep = float(B.a["Q_O"][qpos[entry_day], B.tickers.index(t)])
+                nxt = B.sig_dates[-1] + pd.offsets.BDay((i_s + nt - (S - 1)) * spec.step)
+                d = out.setdefault(t, {"ticker": t, "name": B.meta["names"][B.tickers.index(t)] if t in B.tickers else t,
+                                       "slots": 0, "nt": min(portions, nt), "entry_signal": None, "entry_day": None, "entry_price": np.nan,
+                                       "next_check": None, "new_today": False})
+                d["slots"] += 1
+                if d["entry_signal"] is None or B.sig_dates[i0] < pd.Timestamp(d["entry_signal"]):
+                    d["entry_signal"] = str(B.sig_dates[i0].date())
+                    d["entry_day"] = str(entry_day.date()) if entry_day is not None else None
+                    d["entry_price"] = ep
+                if d["next_check"] is None or nxt < pd.Timestamp(d["next_check"]):
+                    d["next_check"] = str(nxt.date())
+                if i_s == S - 1 and i0 == S - 1:
+                    d["new_today"] = True
+        rows = []
+        for t, d in out.items():
+            j = B.tickers.index(t) if t in B.tickers else None
+            r = now.get(t, np.nan)
+            close = float(B.a["CLOSE"][-1, j]) if j is not None else np.nan
+            if not np.isfinite(r):
+                status, why = "exit", "已不符合選股條件（流動性／M頭／跌出股票池）"
+            elif r > buf:
+                status, why = "exit", f"排名第 {int(r)} 名，超出續抱門檻 {buf}"
+            elif r > K:
+                status, why = "watch", f"排名第 {int(r)} 名：已跌出前 {K}、仍在續抱門檻 {buf} 內"
+            else:
+                status, why = "keep", f"排名第 {int(r)} 名"
+            rows.append({**d, "rank": r, "buffer": buf, "K": K, "status": status, "why": why, "close": close,
+                         "ret": close / d["entry_price"] - 1 if np.isfinite(d["entry_price"]) and d["entry_price"] > 0 else np.nan,
+                         "rank_hist": [hist[i].get(t, np.nan) for i in hist_i],
+                         "hist_dates": [str(B.sig_dates[i].date()) for i in hist_i]})
+        order = {"exit": 0, "watch": 1, "keep": 2}
+        return sorted(rows, key=lambda x: (order[x["status"]], x["rank"] if np.isfinite(x["rank"]) else 1e9))
+
+    def monitor(self, vt: pd.DataFrame, chosen: str) -> list[dict]:
+        """模型監控：有沒有其他候選模型在「開發期」與「盲測期」同時明顯勝過目前模型（→ 值得在下一版研究檢討）。"""
+        if vt is None or not len(vt) or "variant" not in vt:
+            return []
+        me = vt[vt["variant"] == chosen]
+        if not len(me):
+            return []
+        me = me.iloc[0]
+        out = []
+        for _, r in vt.iterrows():
+            if r["variant"] == chosen:
+                continue
+            d_dev = r.get("dev_cagr", np.nan) - me.get("dev_cagr", np.nan)
+            d_hold = r.get("hold_cagr", np.nan) - me.get("hold_cagr", np.nan)
+            if np.isfinite(d_dev) and np.isfinite(d_hold) and d_dev > 0.02 and d_hold > 0.02:
+                out.append({"variant": r["variant"], "d_dev": float(d_dev), "d_hold": float(d_hold)})
+        return sorted(out, key=lambda x: -(x["d_dev"] + x["d_hold"]))[:5]
+
     # ------------------------------------------------------------------ full ranking (個股診斷用)
     def rank_table(self, h, rule, size, v: Variant) -> pd.DataFrame:
         """最新訊號日：母池內每一檔的模型分數、名次（只計可買標的）、被排除原因與前三大加分因子。"""
@@ -637,6 +746,8 @@ class Research:
                                  **{k.split()[0]: r.nav.reindex(res.nav.index) for k, r in base.items()}}),
             "tranches": res.tranches, "turnover": res.turnover, "cost_drag": res.cost_drag, "mix": mix,
             "vs_pool_ew": dict(mix.attrs.get("vs_pool_ew", {})), "validation": val,
+            "holdings": self.holdings(h, rule, size, v, res.tranches, lt),
+            "monitor": self.monitor(vt, v.name),
         }
 
     # ------------------------------------------------------------------ v1.3 validation (acceptance gates)

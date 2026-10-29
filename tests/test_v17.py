@@ -121,3 +121,32 @@ def test_linkage_tables_from_bundle():
     assert ov.attrs["beta"]["gap"] > 0.15                          # most of the US move shows up in the opening gap
     assert out["yearly"]["相關_費半(前一夜)"].min() > 0.3
     assert out["state"]["light"] in ("green", "amber", "red")
+
+
+def test_v18_holdings_board(tmp_path_factory):
+    from kosto import brief as brieflib
+    from kosto.backtest import run as _run
+    from kosto.bundle import build_bundle
+    from kosto.config import load_config
+    from kosto.panel import build_panel
+    from kosto.research import Research
+    from kosto.sources.synthetic import write_demo
+    from kosto.store import Store
+    root = tmp_path_factory.mktemp("v18")
+    st = Store(root)
+    write_demo(st, 120, 5, start="2018-01-02", end="2022-12-30")
+    cfg = load_config(overrides={"data": {"dir": str(root)}, "research": {"start": "2020-01-01", "holdout_months": 6},
+                                 "pools": {"sizes": [60], "rules": ["ADV"]}})
+    B = build_bundle(build_panel(st), cfg, log=lambda *a: None)
+    assert "REV_M" in B.a and "Q_PE" in B.a and len(B.meta["rev_ym"]) == B.a["REV_M"].shape[0]
+    R = Research(B, cfg, log=lambda *a: None)
+    v = R.model_variant("mid")
+    ev = R.evaluate("ADV", 60, "mid", v, keep=True)
+    lt = R.latest("mid", "ADV", 60, v, ev["_res"])
+    hold = R.holdings("mid", "ADV", 60, v, ev["_res"].tranches, lt)
+    assert hold and all(x["status"] in ("keep", "watch", "exit") for x in hold)
+    assert all(x["buffer"] == max(x["K"], round(x["K"] * cfg["horizons"]["mid"]["hysteresis"])) for x in hold)
+    assert all(x["next_check"] > str(B.sig_dates[-1].date()) for x in hold)
+    assert sum(x["slots"] for x in hold) <= 4 * cfg["research"]["top_k"] and all(x["nt"] == 4 for x in hold)
+    b = brieflib.brief(B, B.tickers.index(lt["picks"][0]["ticker"]))
+    assert b["tone"] in ("正向", "中性", "保守") and b["title"]

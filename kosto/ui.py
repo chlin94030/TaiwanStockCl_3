@@ -124,6 +124,22 @@ table.kq td .sub, .kq-sub { color:var(--muted); font-size:11.5px; font-family:'N
   box-shadow:0 0 0 2px var(--panel); transform:translateX(-1px); }
 .kq-lad .lb { display:flex; justify-content:space-between; font-size:11px; color:var(--muted); font-family:'Roboto Mono', monospace; gap:6px; }
 .kq-lad .lb b { color:var(--text); font-weight:600; }
+/* ---------- v1.8 pick cards grid (desktop & mobile, never scrolls sideways) */
+.kq-grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap:12px; margin:4px 0 10px; }
+.kq-pcard { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:12px 14px 11px; box-shadow:var(--shadow);
+  display:flex; flex-direction:column; gap:6px; min-width:0; }
+.kq-pcard:hover { border-color:var(--tagline); }
+.kq-pcard .hd { display:flex; justify-content:space-between; align-items:flex-start; gap:8px; }
+.kq-pcard .rk { display:inline-flex; width:20px; height:20px; border-radius:6px; background:var(--tagbg); color:var(--muted);
+  font-size:11.5px; align-items:center; justify-content:center; margin-right:7px; font-family:'Roboto Mono', monospace; }
+.kq-pcard .nm { font-weight:700; color:var(--strong); font-size:15.5px; }
+.kq-pcard .px { text-align:right; font-family:'Roboto Mono', monospace; font-weight:600; color:var(--strong); font-size:16px; line-height:1.1; }
+.kq-pcard .px small { display:block; font-size:12px; margin-top:2px; }
+.kq-pcard .grp { line-height:1.5; min-height:22px; }
+.kq-pcard .sp svg { display:block; }
+.kq-pcard .ft { display:flex; flex-wrap:wrap; gap:5px; align-items:center; font-size:12px; color:var(--muted); }
+.kq-pcard .ft .why { flex:1 1 100%; color:var(--muted); line-height:1.45; }
+table.kq td.l { white-space:normal; }
 /* ---------- mobile cards */
 .kq-mob { display:none; }
 .kq-mcard { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:12px 13px; margin-bottom:10px;
@@ -262,7 +278,7 @@ def resp(desktop_html: str, mobile_html: str) -> str:
     return f"<div class='kq-desk'>{desktop_html}</div><div class='kq-mob'>{mobile_html}</div>"
 
 
-def spark(vals, w: int = 92, h: int = 26, color: str | None = None, fill: bool = True) -> str:
+def spark(vals, w: int = 92, h: int = 26, color: str | None = None, fill: bool = True, fluid: bool = False) -> str:
     """迷你走勢圖（SVG）；顏色依期間漲跌自動紅／綠。"""
     v = np.asarray([x for x in (vals if vals is not None else []) if ok(x)], float)
     if len(v) < 2:
@@ -274,6 +290,13 @@ def spark(vals, w: int = 92, h: int = 26, color: str | None = None, fill: bool =
     pts = " ".join(f"{x:.1f},{y:.1f}" for x, y in zip(xs, ys))
     c = color or (UP if v[-1] >= v[0] else DOWN)
     area = (f"<polygon points='1,{h - 1} {pts} {w - 1},{h - 1}' fill='{c}' fill-opacity='.12'/>" if fill else "")
+    if fluid:
+        w2 = 300
+        xs = np.linspace(1, w2 - 1, len(v))
+        pts = " ".join(f"{x:.1f},{y:.1f}" for x, y in zip(xs, ys))
+        area = (f"<polygon points='1,{h - 1} {pts} {w2 - 1},{h - 1}' fill='{c}' fill-opacity='.12'/>" if fill else "")
+        return (f"<svg width='100%' height='{h + 8}' viewBox='0 0 {w2} {h}' preserveAspectRatio='none'>{area}"
+                f"<polyline points='{pts}' fill='none' stroke='{c}' stroke-width='1.6' vector-effect='non-scaling-stroke'/></svg>")
     return (f"<svg width='{w}' height='{h}' viewBox='0 0 {w} {h}' style='vertical-align:middle'>{area}"
             f"<polyline points='{pts}' fill='none' stroke='{c}' stroke-width='1.6' stroke-linejoin='round'/>"
             f"<circle cx='{xs[-1]:.1f}' cy='{ys[-1]:.1f}' r='2' fill='{c}'/></svg>")

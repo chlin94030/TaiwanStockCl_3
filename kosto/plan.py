@@ -86,11 +86,11 @@ STATUS_STYLE = {"buy": "#2563eb", "dip": "#0891b2", "wait": "#d97706", "warn": "
 STATUS_HELP = {"buy": "現價在建議買進區（或略高但未超過追價上限）→ 可分批進場",
                "dip": "現價回到拉回買點 → 適合承接／加碼", "wait": "現價高於追價上限 → 不追，等拉回",
                "warn": "跌破警戒價 → 空手暫緩；持有者重新檢視籌碼與基本面", "lock": "漲停鎖住 → 買不到不追",
-               "hold": "排名仍在前 25 名 → 持有者續抱，空手者不新買", "none": "不在模型名單／非交易時段"}
+               "hold": "排名仍在續抱門檻內 → 持有者續抱，空手者不新買", "none": "不在模型名單／非交易時段"}
 
 
 def live_status(price: float, plan: Plan | None, role: str = "pick", limit_up: float = np.nan) -> tuple[str, str]:
-    """role: pick(推薦名單) / keep(前 25 名，持有者續抱) / none(不在名單)。回傳 (代碼, 簡短狀態)。"""
+    """role: pick(推薦名單) / keep(續抱門檻內，持有者續抱) / none(不在名單)。回傳 (代碼, 簡短狀態)。"""
     p = _f(price)
     if plan is None or not np.isfinite(p):
         return "none", "無報價"

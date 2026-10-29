@@ -65,6 +65,11 @@ def cmd_research(a, cfg):
     R = Research(B, cfg, log=log)
     hz = a.horizons.split(",") if a.horizons else list(HORIZON_KEYS)
     res = R.run_all(hz, quick=a.quick, progress=log)
+    if (not a.quick and cfg["research"].get("phase_check", True) and not B.meta.get("synthetic")
+            and (Path(cfg["data"]["dir"]) / "raw" / "price").is_dir()):
+        from kosto.phases import phase_check
+        log("換股日敏感度：重建 4 個平移起點的研究資料包（約 5～10 分鐘）…")
+        res["phases"] = phase_check(cfg, res, log=log)
     comparison = None
     if a.compare:
         comparison = run_compare(a.compare, res, B, cfg)
