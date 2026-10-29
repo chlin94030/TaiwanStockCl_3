@@ -1,19 +1,19 @@
 {
  "groups": {
-  "price": 1.0,
-  "institutional": 1.0,
-  "margin": 1.0,
-  "valuation": 1.0,
+  "price": 0.9996,
+  "institutional": 0.9996,
+  "margin": 0.9996,
+  "valuation": 0.9996,
   "misc": 1.0
  },
  "blocked": {},
- "checked_at": "2026-10-29 23:59:28+08:00",
- "percent": 1.0,
+ "checked_at": "2026-10-30 00:52:26+08:00",
+ "percent": 0.9997,
  "complete": true,
  "stage": "done",
  "research": {
   "last_date": "2026-10-29",
-  "built": "2026-10-29T23:57:42+08:00",
+  "built": "2026-10-30T00:45:02+08:00",
   "synthetic": false
  }
 }
