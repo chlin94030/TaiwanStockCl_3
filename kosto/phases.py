@@ -16,7 +16,8 @@ from .research import Research
 from .store import Store
 
 
-def phase_check(cfg: dict, res: dict, n: int = 4, log=print) -> pd.DataFrame:
+def phase_check(cfg: dict, res: dict, n: int = 4, log=print, on_bundle=None) -> pd.DataFrame:
+    """on_bundle(R, k)：每個平移起點建好研究物件後呼叫（v1.9 冠軍／挑戰者比較共用這些資料包，不重建）。"""
     t0 = time.time()
     rows = []
     for h, hb in res["horizons"].items():
@@ -42,6 +43,11 @@ def phase_check(cfg: dict, res: dict, n: int = 4, log=print) -> pd.DataFrame:
                 ev = R.evaluate(rule, size, h, v)
                 rows.append({"phase": k, "end": str(end.date()), "h": h, **{c: ev.get(c) for c in
                              ("dev_cagr", "hold_cagr", "oos_cagr", "oos_mdd", "oos_bench_cagr", "hold_bench_cagr")}})
+            if on_bundle is not None:
+                try:
+                    on_bundle(R, k)
+                except Exception as e:  # noqa: BLE001
+                    log(f"冠軍／挑戰者比較（平移 {k} 天）失敗：{e}")
             del B, R
             log(f"換股日敏感度：平移 {k} 天完成（{time.time() - t0:.0f}s）")
         except Exception as e:  # noqa: BLE001 - optional analysis

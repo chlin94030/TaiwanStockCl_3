@@ -122,6 +122,41 @@ def forward_returns(R: np.ndarray, OC: np.ndarray, sig_rel: np.ndarray, H: int) 
     return out
 
 
+MKT_COLS = ["open", "high", "low", "close", "amount", "foreign", "trust", "dealer", "mbal", "sbal", "up", "down",
+            "mflow", "sflow"]   # mbal/sbal＝餘額張數×收盤價（市值估算）；mflow/sflow＝當日張數增減×收盤價（不受股價漲跌影響）
+
+
+def market_pack(P: Panel, qdays) -> tuple[np.ndarray, list]:
+    """加權指數開高低收（官方；缺時只有收盤）、成交金額（億，官方；缺時用個股加總）、
+    三大法人買賣超與融資券餘額（億元，個股加總估算）、上漲／下跌家數。"""
+    out = pd.DataFrame(index=qdays, columns=MKT_COLS, dtype=float)
+    close = P.m["close"].astype(float)
+    if P.index_daily is not None and len(P.index_daily):
+        ix = P.index_daily.reindex(qdays)
+        for c in ("open", "high", "low", "close"):
+            if c in ix:
+                out[c] = ix[c]
+        if "amount" in ix:
+            out["amount"] = ix["amount"] / 1e8
+    if P.taiex is not None:
+        out["close"] = out["close"].fillna(P.taiex.reindex(qdays))
+    stock_amt = (P.m["amount"].astype(float).sum(axis=1, min_count=1) / 1e8).reindex(qdays)
+    out["amount"] = out["amount"].fillna(stock_amt)
+    px = close.ffill()
+    for c in ("foreign", "trust", "dealer"):
+        if c in P.m:
+            out[c] = ((P.m[c].astype(float) * px).sum(axis=1, min_count=1) / 1e8).reindex(qdays)
+    for c, fl in (("mbal", "mflow"), ("sbal", "sflow")):
+        if c in P.m:
+            lots = P.m[c].astype(float)
+            out[c] = ((lots * 1000 * px).sum(axis=1, min_count=1) / 1e8).reindex(qdays)
+            out[fl] = ((lots.diff() * 1000 * px).sum(axis=1, min_count=1) / 1e8).reindex(qdays)
+    r = P.m["ret"].astype(float).where(P.m["tradable"])
+    out["up"] = (r > 0).sum(axis=1).reindex(qdays)
+    out["down"] = (r < 0).sum(axis=1).reindex(qdays)
+    return out.to_numpy(np.float32), list(MKT_COLS)
+
+
 def build_bundle(P: Panel, cfg: dict, log=print) -> Bundle:
     t0 = time.time()
     r = cfg["research"]
@@ -222,6 +257,7 @@ def build_bundle(P: Panel, cfg: dict, log=print) -> Bundle:
         rm = P.rev_m.iloc[-25:]
         a["REV_M"] = rm.reindex(columns=P.tickers[cols]).to_numpy(np.float32)
         meta["rev_ym"] = [int(x) for x in rm.index]
+    a["Q_MKT"], meta["q_mkt_cols"] = market_pack(P, qdays)                 # v1.9 大盤 K 線＋市場籌碼（億元）
     a["Q_TAIEX"] = (P.taiex.reindex(qdays).to_numpy(np.float32) if P.taiex is not None
                     else np.full(len(qdays), np.nan, np.float32))
     meta["q_days"] = [str(d.date()) for d in qdays]

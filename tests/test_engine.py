@@ -158,7 +158,9 @@ def test_optimizer_finds_planted_signals_and_respects_prior(world):
 
 def test_sparse_model_selects_few_prior_consistent_factors(world):
     from kosto.research import Research, Variant
-    R = Research(world.B, world.cfg)
+    cfg = copy.deepcopy(world.cfg)
+    cfg["research"]["overlay"] = {}                                      # 只測精簡模型本身（v1.9 固定疊加另測）
+    R = Research(world.B, cfg)
     fit = R.final_fit("ADV", 100, "mid", Variant("s", "sparse", 0.0, k=3, tmin=0.5))
     w = fit.weights
     assert 0 < (np.abs(w) > 0).sum() <= 3

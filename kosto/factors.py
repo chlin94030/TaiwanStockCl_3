@@ -422,6 +422,86 @@ def _t_ind_mom(c):
     return out.where(c.adj.notna())
 
 
+# ================================================================== v1.9 候選因子（預先宣告研究；未通過者由 inactive_factors 排除）
+def _ret(c):
+    return c.get("ret_tr", lambda: c.P["ret"].astype(float).where(c.P["tradable"]))
+
+
+def _group_rel(c, x: pd.DataFrame) -> pd.DataFrame:
+    """x 減去同產業鏈族群（≥5 檔）的當日中位數。"""
+    g = c.get("chain_groups", lambda: chain_groups(c.P))
+    out = x.copy()
+    for grp, cols in g.groupby(g).groups.items():
+        if len(cols) < 5:
+            out[cols] = np.nan
+            continue
+        sub = x[cols]
+        out[cols] = sub.sub(sub.median(axis=1), axis=0)
+    return out
+
+
+@factor("t_max20", "T", 1, ("short", "mid"), "近20日無暴漲(MAX效應)")
+def _t_max20(c): return -_ret(c).rolling(20, min_periods=15).max()
+
+
+@factor("t_skew60", "T", 1, ("mid", "long"), "報酬偏態低(非彩券股)")
+def _t_skew60(c): return -_ret(c).rolling(60, min_periods=40).skew()
+
+
+@factor("t_limitup20", "T", 0, ("short", "mid"), "近20日漲停次數(注意力)")
+def _t_lu20(c): return (_ret(c) >= 0.095).astype(float).where(c.P["tradable"]).rolling(20, min_periods=15).sum()
+
+
+@factor("t_high60", "T", 1, ("short", "mid"), "接近60日新高")
+def _t_high60(c): return c.adj / c.hi.rolling(60, min_periods=45).max()
+
+
+@factor("t_bbw", "T", 0, ("short", "mid"), "布林帶寬收斂(相對120日)")
+def _t_bbw(c):
+    sd = c.adj.rolling(20, min_periods=15).std()
+    bw = (4 * sd / c.ma(20)).where(c.ma(20) > 0)
+    return -(bw / bw.rolling(120, min_periods=80).median())
+
+
+@factor("f_rev_surprise", "F", 1, ("mid", "long"), "營收驚喜(年增率相對近12月常態)")
+def _f_rev_surprise(c):
+    def fn(r):
+        y = _yoy(r, 1)
+        m, s_ = y.shift(1).rolling(12, min_periods=8).mean(), y.shift(1).rolling(12, min_periods=8).std()
+        return ((y - m) / s_.where(s_ > 0.02)).clip(-5, 5)
+    return _rev(c, fn, "rev_surprise")
+
+
+@factor("f_rev_rel", "F", 1, ("mid", "long"), "營收年增率相對同業")
+def _f_rev_rel(c): return _group_rel(c, _rev(c, lambda r: _yoy(r, 3), "rev_yoy3"))
+
+
+@factor("c_trust60", "C", 1, ("mid", "long"), "投信60日累計買超(占股本)")
+def _c_trust60(c): return c.rsum("trust", 60) / c.shares
+
+
+@factor("c_fr_high", "C", 1, ("mid", "long"), "外資持股比率接近半年高點")
+def _c_fr_high(c):
+    if "foreign_ratio" not in c.P.m:
+        return _nan_like(c)
+    fr = c.P["foreign_ratio"].astype(float)
+    return fr - fr.rolling(120, min_periods=60).max()
+
+
+@factor("f_pe_self", "F", 1, ("mid", "long"), "本益比低於自身兩年水準")
+def _f_pe_self(c):
+    pe = c.P["pe"].astype(float)
+    return -(pe / pe.rolling(500, min_periods=250).median() - 1)
+
+
+@factor("f_dy_rel", "F", 1, ("long",), "殖利率相對同業")
+def _f_dy_rel(c): return _group_rel(c, c.P["dy"].astype(float))
+
+
+V19_CANDIDATES = ["t_max20", "t_skew60", "t_limitup20", "t_high60", "t_bbw", "f_rev_surprise", "f_rev_rel", "c_trust60",
+                  "c_fr_high", "f_pe_self", "f_dy_rel"]
+
+
 def compute(P: Panel, names=None, sample_idx=None, log=None) -> tuple[dict, Ctx]:
     """Compute factors; returns {name: ndarray[n_sample, n_tickers] float32} and the context cache."""
     from . import kostolany  # noqa: F401  (import registers the K factors)

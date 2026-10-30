@@ -19,6 +19,7 @@ import streamlit as st
 
 from kosto import APP_NAME, __version__
 from kosto import chain as chainlib
+from kosto import freshness
 from kosto import linkage
 from kosto import plan as planlib
 from kosto import ta
@@ -130,9 +131,15 @@ def load_demo(n=320):
     return B, None
 
 
+def effective_config(res) -> dict:
+    """設定檔＋每日研究自動晉級後的冠軍設定（與 GitHub 當天選股用的完全相同）。"""
+    from kosto import tournament
+    return tournament.apply(load_config(), ((res or {}).get("auto") or {}).get("champions"))
+
+
 @st.cache_resource
-def research_obj(bundle_id: str, _B: Bundle):
-    return Research(_B, load_config())
+def research_obj(bundle_id: str, _B: Bundle, _cfg: dict):
+    return Research(_B, _cfg)
 
 
 def setup_page():
@@ -233,8 +240,8 @@ def get_source():
 
 B, RES = get_source()
 BID = B.meta.get("built", "") + str(len(B.tickers))
-R = research_obj(BID, B)
-CFG0 = load_config()
+CFG0 = effective_config(RES)
+R = research_obj(BID, B, CFG0)
 TIDX = {t: j for j, t in enumerate(B.tickers)}
 NAMES, SECTORS, BOARDS = B.meta["names"], B.meta["sectors"], B.meta.get("boards", [""] * len(B.tickers))
 HAS_Q = "Q_C" in B.a and "q_days" in B.meta
@@ -381,7 +388,12 @@ def is_live_time():
     return market_phase() in ("盤中", "盤前試撮")
 
 
-K = CFG0["research"]["top_k"]
+K = int(CFG0["horizons"]["mid"].get("top_k") or CFG0["research"]["top_k"])
+
+
+def KH(h) -> int:
+    """各期間持股檔數（自動晉級可能讓短、中、長線不同）。"""
+    return int(CFG0["horizons"][h].get("top_k") or CFG0["research"]["top_k"])
 
 
 # ================================================================== 國際盤（美股／日韓／匯率）
@@ -481,30 +493,62 @@ def world_strip() -> str:
 
 
 # ================================================================== header
-def header(world: bool = True):
-    d_last = B.sig_dates[-1].date()
-    lt = latest("short")
-    stage = lt.get("market_stage", "UNKNOWN")
-    ph = market_phase()
-    items = []
-    if HAS_Q:
+@st.cache_data(ttl=180, show_spinner=False)
+def actions_runs(repo, token):
+    try:
+        runs = latest_runs(repo, token, 6)
+    except Exception:  # noqa: BLE001
+        return []
+    return [r for r in runs if "全自動" in (r.get("name") or "") or "pipeline" in (r.get("name") or "").lower()] or runs
+
+
+def data_status() -> tuple[str, str, str]:
+    """(燈號, 文字, 連結)：見 kosto/freshness.py。"""
+    runs = actions_runs(REPO, TOKEN) if REPO else []
+    return freshness.status(pd.Timestamp.now(tz="Asia/Taipei"), pd.Timestamp(B.sig_dates[-1]), runs[0] if runs else None)
+
+
+def taiex_now() -> dict:
+    out = {}
+    if "Q_TAIEX" in B.a and "q_days" in B.meta:
         tx = pd.Series(B.a["Q_TAIEX"], index=pd.DatetimeIndex(B.meta["q_days"])).dropna()
         if len(tx) >= 2:
-            items.append(("加權指數", f"{tx.iloc[-1]:,.0f} {ui.chg(tx.iloc[-1] / tx.iloc[-2] - 1)}", ""))
-    if is_live_time():
+            out = {"px": float(tx.iloc[-1]), "chg": float(tx.iloc[-1] / tx.iloc[-2] - 1), "date": tx.index[-1], "live": False}
+    ph = market_phase()
+    if ph in ("盤前試撮", "盤中", "盤後"):
         q, _ = live_quotes((INDEX_CH["加權指數"],))
         if len(q) and ui.ok(q["price"].iloc[0]):
-            items = [("加權(即時)", f"{q['price'].iloc[0]:,.0f} {ui.chg(q['chg'].iloc[0])}", "")]
-    items += [("資料日", str(d_last), " kq-hide-m"), ("市場階段", ui.esc(STAGE_ZH.get(stage, stage).split(" ")[0]), " kq-hide-m")]
-    col = {"盤中": "#b4232a", "盤前試撮": "#a16207", "盤前": "#334155", "盤後": "#1e3a8a", "休市": "#334155"}[ph]
+            out = {"px": float(q["price"].iloc[0]), "chg": float(q["chg"].iloc[0]), "live": True,
+                   "date": pd.Timestamp.now(tz="Asia/Taipei").normalize().tz_localize(None), "time": q["time"].iloc[0]}
+    return out
+
+
+def header(world: bool = True):
+    ph = market_phase()
     now = pd.Timestamp.now(tz="Asia/Taipei")
-    html = ["<div class='kq-bar'><span class='kq-brand'>KOSTO<small class='kq-hide-m'>量化選股</small></span>"]
-    html += [f"<span class='kq-item{c}'>{k}<b>{v}</b></span>" for k, v, c in items]
-    html.append(f"<span class='kq-pill' style='background:{col};color:#fff'>{ph} {now:%H:%M}</span>")
+    tx = taiex_now()
+    html = ["<div class='kq-bar kq-top'><span class='kq-brand'>KOSTO<small class='kq-hide-m'>量化選股</small></span>"]
+    if tx:
+        tag = ("即時" if ph in ("盤中", "盤前試撮") else "今日收盤") if tx.get("live") else f"{tx['date']:%m/%d} 收盤"
+        html.append(f"<span class='kq-item'>加權<b>{tx['px']:,.0f}</b> {ui.chg(tx['chg'])} <span class='kq-sub'>{tag}</span></span>")
+    lvl, txt, url = data_status()
+    st_html = ui.light(lvl, txt)
+    if url:
+        st_html = f"<a href='{url}' target='_blank' rel='noopener' style='text-decoration:none'>{st_html}</a>"
+    html.append(f"<span class='kq-item'>研究資料日<b>{B.sig_dates[-1]:%m/%d}</b></span><span class='kq-small'>{st_html}</span>")
+    if world:
+        snap = world_snapshot()
+        for k, lab in (("SOX", "費半"), ("NQF", "那指期"), ("TSM", "台積ADR")):
+            if k in snap:
+                html.append(f"<span class='kq-item kq-hide-m'>{lab}<b>{ui.chg(snap[k]['chg'])}</b></span>")
+        rl, rt, _ = risk_light()
+        html.append(f"<span class='kq-small kq-hide-m'>{ui.light(rl, rt)}</span>")
+    col = {"盤中": "#b4232a", "盤前試撮": "#a16207", "盤前": "#334155", "盤後": "#1e3a8a", "休市": "#334155"}[ph]
+    html.append(f"<span class='kq-pill' style='background:{col};color:#fff;margin-left:auto'>{ph} {now:%H:%M}</span>")
     if B.meta.get("synthetic"):
         html.append("<span class='kq-pill' style='background:#7c2d12;color:#fff'>示範資料</span>")
     html.append("</div>")
-    st.markdown("".join(html) + (world_strip() if world else ""), unsafe_allow_html=True)
+    st.markdown("".join(html), unsafe_allow_html=True)
 
 
 # ================================================================== stock view (chart + plan + chips)
@@ -648,12 +692,7 @@ def stock_view(j, h="mid", key="sv"):
     c2.markdown(ui.panel("籌碼動向｜三大法人・融資券・大戶", chips_html(chips(BID, j))), unsafe_allow_html=True)
     c3.markdown(ui.panel("基本面快照與短評", brief_html(j) + "<div style='margin-top:8px'></div>" + fundamentals_html(j)),
                 unsafe_allow_html=True)
-    a1, a2, a3, a4 = st.columns([0.8, 1.6, 2.4, 0.9])
-    per = a1.segmented_control("週期", list(PERIOD), format_func=PERIOD.get, default="D", key=f"{key}_per") or "D"
-    mas = a2.multiselect("均線", list(MA_OPTS), default=[5, 20, 60], format_func=MA_OPTS.get, key=f"{key}_ma")
-    inds = a3.multiselect("指標", list(IND_OPTS), default=["boll", "volume", "kd", "macd", "inst"],
-                          format_func=IND_OPTS.get, key=f"{key}_ind")
-    rng = a4.selectbox("區間", list(RANGE), index=1, key=f"{key}_rng")
+    per, rng, mas, inds = chart_controls(key, [5, 20, 60], IND_OPTS, ["boll", "volume", "kd", "macd", "inst"], 1)
     from kosto.charts import kline
     ind = ind_frame(BID, j, per)
     bars = max(20, RANGE[rng] // {"D": 1, "W": 5, "M": 21}[per])
@@ -685,7 +724,7 @@ def phase_stats(h):
 
 def BUF(h) -> int:
     """續抱門檻：排名在前 round(K×續抱倍數) 名內就不賣（與回測相同）。"""
-    return max(K, int(round(K * float(CFG0["horizons"][h]["hysteresis"]))))
+    return max(KH(h), int(round(KH(h) * float(CFG0["horizons"][h]["hysteresis"]))))
 
 
 def pick_items(h, lt) -> list[dict]:
@@ -833,16 +872,21 @@ def page_picks():
                 f"🟦 買進：{ui.esc(fmt(new))}<br>🟥 賣出：{ui.esc(fmt(sold))}<br>"
                 f"🟪 續抱：其餘 {len(its) - len(new)} 檔不動　<span class='kq-muted'>名單日 {lt['date']} 收盤後產生</span></div>",
                 unsafe_allow_html=True)
-    st.markdown(ui.section(f"{HZ[h]}推薦 {len(its) or K} 檔", f"市場階段 {ui.esc(STAGE_ZH.get(lt.get('market_stage'), '').split(' ')[0])}"
-                           f"｜價位尺：紅＝警戒價、藍＝建議買進區、金＝可小量追、白線＝收盤價"), unsafe_allow_html=True)
-    if its:
-        st.markdown(render_picks(its), unsafe_allow_html=True)
-    else:
-        st.info("目前沒有符合條件的標的。")
-    st.markdown(ui.section("持股追蹤：什麼時候賣？", f"模型目前持有的股票、下次檢查日與預計續抱／賣出（續抱門檻：前 {BUF(h)} 名）"),
-                unsafe_allow_html=True)
-    st.markdown(holdings_board(h, lt), unsafe_allow_html=True)
-    with st.expander(f"候補名單（未列入推薦但排名在前 {BUF(h)}：已持有可續抱；標「新資金可買」者為排名前 {K}）"):
+    hold = holdings_of(BID, h)
+    n_sell = sum(1 for x in hold if x["status"] == "exit")
+    tabs = st.tabs([f"📋 推薦 {len(its) or KH(h)} 檔", f"🧭 持股追蹤（何時賣）{'・' + str(n_sell) + ' 檔預計賣出' if n_sell else ''}",
+                    "🔎 候補與排除"])
+    with tabs[0]:
+        st.markdown(f"<div class='kq-muted' style='margin:2px 0 8px'>市場階段 {ui.esc(STAGE_ZH.get(lt.get('market_stage'), '').split(' ')[0])}"
+                    "｜價位尺：<span style='color:#f0464b'>紅＝警戒價</span>、<span style='color:#5aa9ff'>藍＝建議買進區</span>、"
+                    "<span style='color:#e9b949'>金＝可小量追</span>、白線＝收盤價</div>", unsafe_allow_html=True)
+        if its:
+            st.markdown(render_picks(its), unsafe_allow_html=True)
+        else:
+            st.info("目前沒有符合條件的標的。")
+    with tabs[1]:
+        st.markdown(holdings_board(h, lt), unsafe_allow_html=True)
+    with tabs[2]:
         try:
             rk = ranks(BID, h)
             alt = rk[rk["valid"] & (rk["rank"] > 0)].sort_values("rank")
@@ -851,18 +895,20 @@ def page_picks():
             for t, r in alt.iterrows():
                 cl, ch = last_close(TIDX[t])
                 why = "、".join(clean_reason(x) for x in r["reasons"][:3])
-                badge_ = " " + ui.tag("新資金可買", "g") if r["rank"] <= K else ""
+                badge_ = " " + ui.tag("新資金可買", "g") if r["rank"] <= KH(h) else ""
                 rows2.append([f"{int(r['rank'])}{badge_}", stock_cell(t), chain_html(t, themes=False), ui.price(cl), ui.chg(ch),
                               f"<span class='sub'>{ui.esc(why)}</span>"])
                 cards2.append(ui.mcard(f"<span class='rk'>#{int(r['rank'])}</span><span class='kq-cd'>{t}</span>"
                                        f"<span class='nm'>{ui.esc(NAMES[TIDX[t]])}</span>{badge_}",
                                        f"{ui.price(cl)}<small>{ui.chg(ch)}</small>", "", ui.esc(why)))
+            st.markdown(f"<div class='kq-muted' style='margin:2px 0 8px'>排名在前 {BUF(h)} 名、但不在推薦名單：已持有可續抱；"
+                        f"標「新資金可買」者排名在前 {KH(h)}。</div>", unsafe_allow_html=True)
             st.markdown(ui.resp(ui.table(["排名", "股票", "族群", "收盤", "漲跌", "主要加分"], rows2, left=(1, 2, 5)), "".join(cards2)),
                         unsafe_allow_html=True)
         except Exception as e:  # noqa: BLE001
             st.caption(f"無法計算候補：{e}")
-    if lt.get("blocked"):
-        with st.expander("高分但被風控規則排除"):
+        if lt.get("blocked"):
+            st.markdown(ui.section("高分但被風控規則排除"), unsafe_allow_html=True)
             st.markdown(ui.table(["股票", "原因"], [[stock_cell(b["ticker"]), ui.esc(b["why"])] for b in lt["blocked"]
                                                   if b["ticker"] in TIDX], left=(0, 1)), unsafe_allow_html=True)
     st.markdown(ui.section("個股看盤", "K 線、價位計畫、基本面短評、三大法人、融資券、大戶"), unsafe_allow_html=True)
@@ -1021,7 +1067,7 @@ def page_live():
     board()
     with st.expander("盤後：決定明日標的（每晚自動更新）", expanded=ph in ("盤後", "休市", "盤前")):
         st.markdown(f"""
-- 系統每個交易日 **23:10** 自動抓取當日收盤、法人、融資券資料並重新選股，約 30–60 分鐘完成；隔天開盤前打開「今日選股」即可看到明日名單（目前名單日：**{latest('short')['date']}**）。
+- 系統每個交易日 **21:40** 自動抓取當日收盤、法人、融資券資料並重新選股，約 23:00 完成；隔天開盤前打開「今日選股」即可看到明日名單（目前名單日：**{latest('short')['date']}**）。
 - **明日要買**：名單中標「新進」的股票；**續抱**：標「續抱」或仍在續抱門檻內；**要賣**：手上有、但已跌出續抱門檻（看「今日選股」的持股追蹤或下方「持股健檢」）。
 - 隔日 **開盤前** 先看「國際盤」：昨夜費半大跌 → 台股多半開低後盤中小幅收斂，不要開盤殺低；大漲 → 開高後常回落，不追開盤。
 - 以「建議買進區上緣」以內掛單；**開盤跳空超過追價上限就不追**，盤中回到買進區再分批買。
@@ -1047,9 +1093,9 @@ def verdict_for(t, h, live_px=np.nan):
     if not r["valid"]:
         return "no", "暫不建議（風控排除）", f"原因：{r['why']}｜分數位於股票池{top}"
     rank = int(r["rank"])
-    if t in picks or rank <= K:
+    if t in picks or rank <= KH(h):
         code, txt = planlib.live_status(px, pl, "pick")
-        note = "" if t in picks else f"（排名前 {K}；本期名單保留了續抱股，空手者可列為首選候補）"
+        note = "" if t in picks else f"（排名前 {KH(h)}；本期名單保留了續抱股，空手者可列為首選候補）"
         if code in ("buy", "dip"):
             return "buy", f"可以買進（第 {rank} 名）", planlib.STATUS_HELP[code] + note
         if code == "wait":
@@ -1058,7 +1104,7 @@ def verdict_for(t, h, live_px=np.nan):
             return "watch", f"推薦但股價轉弱（第 {rank} 名）", planlib.STATUS_HELP["warn"] + note
         return "buy", f"推薦（第 {rank} 名）", f"{txt}{note}"
     if rank <= BUF(h):
-        return "hold", f"持有可續抱（第 {rank}/{n} 名）", f"未進前 {K} 名：空手者不新買，等它進入推薦名單"
+        return "hold", f"持有可續抱（第 {rank}/{n} 名）", f"未進前 {KH(h)} 名：空手者不新買，等它進入推薦名單"
     return "no", f"不建議（第 {rank}/{n} 名）", f"分數位於股票池{top}；持有者可在下次檢查日換股"
 
 
@@ -1257,6 +1303,94 @@ def page_alloc():
     st.caption("回測為每月再平衡、含交易成本的歷史模擬，不代表未來報酬。")
 
 
+# ================================================================== page: 大盤
+def chart_controls(key: str, ma_default: list, ind_opts: dict, ind_default: list, rng_index: int):
+    """K 線控制列（v1.9 精簡）：週期、區間一列；均線與指標收進「圖表設定」彈出選單。"""
+    a1, a2, a3 = st.columns([1.1, 1, 1.3], vertical_alignment="bottom")
+    per = a1.segmented_control("週期", list(PERIOD), format_func=PERIOD.get, default="D", key=f"{key}_per") or "D"
+    rng = a2.selectbox("區間", list(RANGE), index=rng_index, key=f"{key}_rng")
+    with a3.popover("均線・指標設定", width="stretch"):
+        mas = st.multiselect("均線", list(MA_OPTS), default=ma_default, format_func=MA_OPTS.get, key=f"{key}_ma")
+        inds = st.multiselect("指標", list(ind_opts), default=ind_default, format_func=ind_opts.get, key=f"{key}_ind")
+    return per, rng, mas, inds
+
+
+@st.cache_data(show_spinner=False)
+def market_frame(bid) -> tuple[pd.DataFrame, bool]:
+    """加權指數日資料：開高低收、成交金額(億)、三大法人(億)、融資券(億)、漲跌家數；第二個值＝是否有官方開高低。"""
+    if "Q_MKT" in B.a and B.meta.get("q_mkt_cols"):
+        df = pd.DataFrame(B.a["Q_MKT"].astype(float), index=pd.DatetimeIndex(B.meta["q_days"]), columns=B.meta["q_mkt_cols"])
+    elif "Q_TAIEX" in B.a:
+        df = pd.DataFrame({"close": B.a["Q_TAIEX"].astype(float)}, index=pd.DatetimeIndex(B.meta["q_days"]))
+    else:
+        return pd.DataFrame(), False
+    df = df[df["close"].notna()]
+    for c in ("open", "high", "low"):
+        if c not in df:
+            df[c] = np.nan
+    real = df["open"].notna()
+    has_ohlc = bool(real.tail(60).mean() > 0.8)
+    prev = df["close"].shift(1).fillna(df["close"])            # 缺開高低的日子：以前一日收盤近似開盤
+    df["open"] = df["open"].where(real, prev)
+    df["high"] = df["high"].where(real, np.maximum(df["open"], df["close"]))
+    df["low"] = df["low"].where(real, np.minimum(df["open"], df["close"]))
+    df["volume"] = df["amount"] if "amount" in df else np.nan
+    return df, has_ohlc
+
+
+def page_market():
+    header()
+    st.markdown(ui.section("大盤", "加權指數 K 線、成交金額、三大法人、融資、漲跌家數｜法人與融資＝個股張數×收盤價加總估算（億元）"),
+                unsafe_allow_html=True)
+    df, has_ohlc = market_frame(BID)
+    if df.empty:
+        st.info("大盤資料將在下一次每日研究後提供。")
+        return
+    last, prev = df.iloc[-1], df.iloc[-2] if len(df) > 1 else df.iloc[-1]
+    tx = taiex_now()
+    inst = sum(float(last.get(c, np.nan)) for c in ("foreign", "trust", "dealer") if ui.ok(last.get(c)))
+    mchg = last.get("mflow", np.nan) if ui.ok(last.get("mflow")) else last.get("mbal", np.nan) - prev.get("mbal", np.nan)
+    stage = latest("mid").get("market_stage", "UNKNOWN")
+    items = [("加權指數" + ("（即時）" if tx.get("live") else ""), f"{tx.get('px', last['close']):,.0f}",
+              f"{ui.chg(tx.get('chg', last['close'] / prev['close'] - 1))}　{(tx.get('date') or df.index[-1]):%m/%d}"),
+             ("成交金額", f"{last.get('volume', np.nan):,.0f} 億" if ui.ok(last.get("volume")) else "–",
+              f"20 日均 {df['volume'].tail(20).mean():,.0f} 億" if "volume" in df else ""),
+             ("三大法人合計", f"{ui.lots_fmt(inst)} 億" if ui.ok(inst) else "–",
+              "外資 " + (f"{last['foreign']:+,.0f}" if ui.ok(last.get("foreign")) else "–") + "｜投信 "
+              + (f"{last['trust']:+,.0f}" if ui.ok(last.get("trust")) else "–")),
+             ("融資餘額（市值估）", f"{last.get('mbal', np.nan):,.0f} 億" if ui.ok(last.get("mbal")) else "–",
+              f"今日增減 {mchg:+,.0f} 億（以張數變化計）" if ui.ok(mchg) else ""),
+             ("上漲／下跌家數", f"{last.get('up', np.nan):,.0f}／{last.get('down', np.nan):,.0f}" if ui.ok(last.get("up")) else "–",
+              f"市場階段 {ui.esc(STAGE_ZH.get(stage, stage).split(' ')[0])}")]
+    st.markdown(ui.cards(items), unsafe_allow_html=True)
+    opts = {k: v for k, v in IND_OPTS.items() if k != "holders"}
+    opts["volume"] = "成交金額"
+    per, rng, mas, inds = chart_controls("mk", [5, 20, 60, 240], opts, ["boll", "volume", "kd", "macd", "inst", "margin"], 2)
+    from kosto.charts import kline
+    ind = ta.indicators(ta.resample(df[[c for c in ("open", "high", "low", "close", "volume", "foreign", "trust", "dealer", "mbal", "sbal")
+                                        if c in df]], per))
+    bars = max(20, RANGE[rng] // {"D": 1, "W": 5, "M": 21}[per])
+    fig = kline(ind, dark=DARK, mas=tuple(mas), boll="boll" in inds, panels=[x for x in inds if x != "boll"], bars=bars,
+                unit="億", vol_label="成交金額(億)")
+    st.plotly_chart(fig, width="stretch", theme=None, key="mk_fig",
+                    config={"displaylogo": False, "scrollZoom": True, "modeBarButtonsToRemove": ["lasso2d", "select2d", "autoScale2d"]})
+    if not has_ohlc:
+        st.caption("加權指數的開高低將在下一次每日研究後補齊（目前以前一日收盤近似開盤）。")
+    if "up" in df:
+        brd = df[["up", "down"]].tail(60)
+        import plotly.graph_objects as go
+        from kosto.charts import THEME
+        BG, GRID, TXT, MUTED = THEME[bool(DARK)]
+        fig2 = go.Figure()
+        fig2.add_trace(go.Bar(x=[d.strftime("%m/%d") for d in brd.index], y=brd["up"], name="上漲家數", marker_color=ui.UP))
+        fig2.add_trace(go.Bar(x=[d.strftime("%m/%d") for d in brd.index], y=-brd["down"], name="下跌家數", marker_color=ui.DOWN))
+        fig2.update_layout(barmode="relative", height=200, margin=dict(l=8, r=40, t=8, b=8), paper_bgcolor=BG, plot_bgcolor=BG,
+                           font=dict(color=TXT, family="Inter, Noto Sans TC, sans-serif"), legend=dict(orientation="h", y=1.15),
+                           xaxis=dict(type="category", nticks=10, gridcolor=GRID), yaxis=dict(gridcolor=GRID, side="right"))
+        st.markdown(ui.section("多空家數（近 60 日）"), unsafe_allow_html=True)
+        st.plotly_chart(fig2, width="stretch", theme=None, config={"displaylogo": False, "displayModeBar": False})
+
+
 # ================================================================== page: 國際盤
 def page_world():
     header(world=False)
@@ -1264,7 +1398,7 @@ def page_world():
     ls = link_stats(BID)
     st.markdown(ui.section("國際盤", "美股收盤、美股期貨、日韓早盤、匯率｜每 60 秒更新"), unsafe_allow_html=True)
     if not snap:
-        st.info("國際市場資料尚未建立：下一次每日更新（23:10）會自動抓取，或目前網路無法連到 Yahoo Finance。")
+        st.info("國際市場資料尚未建立：下一次每日更新（21:40）會自動抓取，或目前網路無法連到 Yahoo Finance。")
         return
     tiles = []
     for k in WORLD_ORDER:
@@ -1373,7 +1507,7 @@ def page_guide():
     header()
     st.markdown(ui.section("操作指南", "盤後選股 → 開盤前看國際盤 → 盤中執行 → 定期檢查"), unsafe_allow_html=True)
     steps = [
-        ("盤後｜決定明日標的", "每個交易日 23:10 系統自動更新（約 30–60 分鐘）。", [
+        ("盤後｜決定明日標的", "每個交易日 21:40 系統自動更新，約 23:00 完成。", [
             "打開「今日選股」，選擇短／中／長線。",
             "標「新進」＝明天要買；標「續抱」＝已持有就不動。",
             "看「價位計畫」：藍色＝買進區、金色＝可小量、超過追價上限不追。"]),
@@ -1435,13 +1569,64 @@ def picks_frame(items):
 FZH = dict(zip(B.factors, B.meta.get("factor_zh", B.factors)))
 
 
+def auto_panel():
+    from kosto import tournament as T
+    au = (RES or {}).get("auto") or {}
+    st.markdown(ui.section("冠軍／挑戰者（每日自動比較）",
+                           f"規則：開發期超額多 {au.get('rule', {}).get('min_gain', 0.02):.0%} 以上、資訊比率不降、2019–20 不退步，"
+                           f"連續 {au.get('rule', {}).get('streak', 10)} 個交易日第一名才換上"
+                           + ("" if au.get("enabled", True) else "（目前設定為只比較、不自動換）")), unsafe_allow_html=True)
+    if not au.get("table"):
+        st.markdown("<div class='kq-muted'>下一次每日研究（21:40）後開始記錄。</div>", unsafe_allow_html=True)
+        return
+    rows, mc = [], []
+    for h in [x for x in HORIZON_KEYS if x in au["table"]]:
+        champ = au.get("champions", {}).get(h) or T.base_params(CFG0, h)
+        ld = (au.get("leader") or {}).get(h) or {}
+        need = au.get("rule", {}).get("streak", 10)
+        lead = (f"{ui.esc(T.describe(ld['params'], champ))}（超額 +{ld['d_excess']:.1%}，已連續 {ld['streak']}/{need} 天）"
+                if ld else "沒有挑戰者明顯勝出")
+        last = (au.get("last_switch") or {}).get(h)
+        rows.append([f"<b>{HZ[h]}</b>", ui.esc(T.describe(champ)), lead, last or "–"])
+        mc.append(ui.mcard(f"<span class='nm'>{HZ[h]}</span>", "", "", f"冠軍：{ui.esc(T.describe(champ))}<br>挑戰者：{lead}"))
+    st.markdown(ui.resp(ui.table(["期間", "目前模型（冠軍）", "領先的挑戰者", "上次換模型"], rows, left=(0, 1, 2)), "".join(mc)),
+                unsafe_allow_html=True)
+    if au.get("log"):
+        st.markdown("<div class='kq-muted' style='margin-top:6px'>換模型紀錄：" + "；".join(
+            f"{x['date']} {HZ.get(x['h'], x['h'])}：{ui.esc(x['text'])}" for x in au["log"][-6:]) + "</div>", unsafe_allow_html=True)
+    with st.expander("今天的完整比較表"):
+        for h in [x for x in HORIZON_KEYS if x in au["table"]]:
+            t = au["table"][h].sort_values("d_excess", ascending=False)
+            st.markdown(f"**{HZ[h]}**")
+            st.dataframe(t[["desc", "dev_excess", "d_excess", "dev_ir", "d_ir"] + (["pre_excess"] if "pre_excess" in t else []) + ["qualified"]]
+                         .rename(columns={"desc": "設定（相對冠軍）", "dev_excess": "開發期超額", "d_excess": "差異", "dev_ir": "資訊比率",
+                                          "d_ir": "IR差", "pre_excess": "2019-20超額", "qualified": "今日合格"}),
+                         hide_index=True, width="stretch")
+
+
+def forward_panel():
+    from kosto import forward
+    au = (RES or {}).get("auto") or {}
+    log = au.get("picks_log") or []
+    st.markdown(ui.section("前瞻紀錄（上線後的真實績效）", f"從 {au.get('live_since', '–')} 起每天保存實際公布的名單；"
+                                                     "照隔日開盤買進、持有到期計算，不經回測挑選"), unsafe_allow_html=True)
+    sm = forward.summary(B, log) if log else pd.DataFrame()
+    if sm.empty:
+        st.markdown("<div class='kq-muted'>剛開始累積；約 3 個月後有參考價值。</div>", unsafe_allow_html=True)
+        return
+    rows = [[HZ.get(h, h), f"{int(r['筆數'])}（到期 {int(r['已到期'])}）", ui.pct(r["平均報酬"], 2, color=True), ui.pct(r["0050同期"], 2),
+             ui.pct(r["平均超額"], 2, color=True), f"{r['勝過0050比例']:.0%}"] for h, r in sm.iterrows()]
+    st.markdown(ui.table(["期間", "名單數", "平均報酬", "0050 同期", "平均超額", "勝過 0050"], rows, left=(0,)), unsafe_allow_html=True)
+
+
 def auto_research_tab():
-    st.markdown(ui.panel("今日選股用的就是這裡的結果，不需要手動調權重", ui.bullets([
-        "每個交易日 23:10，GitHub Actions 自動：①下載最新資料 ②在 30 個母池（5 種規則 × 6 種大小）中依開發期分數<b>自動挑出最佳母池</b> "
-        "③用走勢前進法<b>自動估計因子權重</b>（每 6 個月重估一次，只用當時已知的資料）④用全部資料重估一次權重，選出今天的名單 ⑤產生完整報告。",
-        "「模型結構」（精簡因子數、假說混合比例、續抱倍數、持股檔數）是每一版研究依預先宣告的多窗口規則決定，寫在設定檔並鎖定"
-        "（lock_model）；每天不會因為最近幾週的結果自動換結構，以免追著雜訊跑。",
-        "下方「模型監控」若列出挑戰者（開發期與盲測期都勝過目前模型 2 個百分點以上），代表值得在下一版研究檢討 → 把完整報告 ZIP 交給開發者即可。",
+    st.markdown(ui.panel("今日選股用的就是這裡的結果，不需要手動調整", ui.bullets([
+        "每個交易日 21:40，GitHub Actions 自動：①下載最新資料 ②在 30 個母池中<b>自動挑出最佳母池</b> ③<b>自動估計因子權重</b>"
+        "（每天用全部資料重估）④<b>冠軍／挑戰者比較</b>：把目前模型和鄰近設定（因子數、假說比例、續抱倍數、持股檔數）在五種換股日上比較，"
+        "挑戰者連續 10 個交易日明顯勝出就<b>自動換上</b> ⑤產生名單與完整報告。",
+        "分數只用開發期（盲測期不參與挑選），並檢查 2019–20 這段沒用過的期間不可明顯退步，避免越調越貼歷史。",
+        "新增「因子」（新的資料或算法）仍需改程式並做預先宣告的研究。v1.9 測了 11 個新因子，只有「營收年增相對同業」通過，"
+        "以固定 15% 加入三個期間的分數；其餘照常計算、不進模型（docs/v1.9_protocol.md）。",
         "「自行試驗」分頁只給想自己測參數的人用，不會影響每日名單。"])), unsafe_allow_html=True)
     if not RES:
         st.info("尚無每日研究結果。")
@@ -1449,6 +1634,9 @@ def auto_research_tab():
     pr = RES.get("protocol", {})
     st.markdown(f"<div class='kq-muted'>資料至 {pr.get('last_date')}｜樣本外起點 {pr.get('first_oos')}｜盲測起點 {pr.get('holdout_start')}｜"
                 f"權重重估日：{'、'.join(pr.get('retrain_points', [])[-4:])}…</div>", unsafe_allow_html=True)
+    auto_panel()
+    forward_panel()
+    st.markdown(ui.section("各期間的自動研究結果", "母池、模型、回測、目前權重"), unsafe_allow_html=True)
     for h in [x for x in HORIZON_KEYS if x in RES["horizons"]]:
         hb = RES["horizons"][h]
         ev, cp = hb["eval"], hb["chosen_pool"]
@@ -1674,6 +1862,7 @@ def page_lab():
 # ================================================================== navigation
 pages = [st.Page(page_picks, title="今日選股", icon="📋", url_path="picks", default=True),
          st.Page(page_live, title="盤中監控", icon="⏱️", url_path="live"),
+         st.Page(page_market, title="大盤", icon="📈", url_path="market"),
          st.Page(page_world, title="國際盤", icon="🌏", url_path="world"),
          st.Page(page_stock, title="個股診斷", icon="🔍", url_path="stock"),
          st.Page(page_alloc, title="資金配置", icon="⚖️", url_path="alloc"),

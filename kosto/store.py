@@ -24,7 +24,8 @@ KEYS = {
     "revenue": ["ticker", "ym"],
     "info": ["ticker"],
     "holders": ["date", "ticker"],
-    "world": ["date", "ticker"],      # v1.7 國際市場日收盤（ticker = SOX/IXIC/VIX/N225/KS11/TWD/TSM…）
+    "world": ["date", "ticker"],
+    "index": ["date", "ticker"],      # v1.9 加權指數日 K（開高低收、成交金額）      # v1.7 國際市場日收盤（ticker = SOX/IXIC/VIX/N225/KS11/TWD/TSM…）
 }
 _LOCK = threading.RLock()  # two download threads (TWSE / TPEx) may write the same dataset files
 YEARLY = {"price", "exright", "institutional", "margin", "valuation", "shares", "holders"}
@@ -34,7 +35,7 @@ GROUPS = {
     "institutional": ["institutional"],
     "margin": ["margin"],
     "valuation": ["valuation"],
-    "misc": ["exright", "shares", "revenue", "info", "holders", "world"],
+    "misc": ["exright", "shares", "revenue", "info", "holders", "world", "index"],
 }
 
 

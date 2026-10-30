@@ -92,6 +92,36 @@ def roc_to_date(s: str) -> pd.Timestamp | None:
         return None
 
 
+# --------------------------------------------------------------------------- v1.9 加權指數日 K（開高低收）＋市場成交金額
+def _f(x):
+    try:
+        return float(str(x).replace(",", ""))
+    except (TypeError, ValueError):
+        return float("nan")
+
+
+def parse_twse_index_hist(payload: dict) -> pd.DataFrame:
+    """MI_5MINS_HIST：['日期','開盤指數','最高指數','最低指數','收盤指數']（民國日期）。"""
+    rows = []
+    for r in (payload or {}).get("data") or []:
+        d = roc_to_date(r[0])
+        if d is None or len(r) < 5:
+            continue
+        rows.append({"date": d, "ticker": "TAIEX", "open": _f(r[1]), "high": _f(r[2]), "low": _f(r[3]), "close": _f(r[4])})
+    return pd.DataFrame(rows, columns=["date", "ticker", "open", "high", "low", "close"])
+
+
+def parse_twse_fmtqik(payload: dict) -> pd.DataFrame:
+    """FMTQIK：['日期','成交股數','成交金額','成交筆數','發行量加權股價指數','漲跌點數']（元、股）。"""
+    rows = []
+    for r in (payload or {}).get("data") or []:
+        d = roc_to_date(r[0])
+        if d is None or len(r) < 3:
+            continue
+        rows.append({"date": d, "ticker": "TAIEX", "volume": _f(r[1]), "amount": _f(r[2])})
+    return pd.DataFrame(rows, columns=["date", "ticker", "volume", "amount"])
+
+
 class Http:
     """Polite session with pacing + retries. Raises SourceError when blocked."""
 
@@ -511,6 +541,14 @@ class Official:
     def tpex_exright(self, start, end):
         return parse_tpex_exright(self.http.get(f"{TPEX}/www/zh-tw/bulletin/exDailyQ",
                                                 {"startDate": _slash(start), "endDate": _slash(end), "response": "json"}))
+
+    # 加權指數歷史（每月一次）
+    def twse_index_month(self, d) -> pd.DataFrame:
+        a = parse_twse_index_hist(self.http.get(f"{TWSE}/rwd/zh/TAIEX/MI_5MINS_HIST", {"date": _ymd(d), "response": "json"}))
+        b = parse_twse_fmtqik(self.http.get(f"{TWSE}/rwd/zh/afterTrading/FMTQIK", {"date": _ymd(d), "response": "json"}))
+        if a.empty:
+            return a
+        return a.merge(b[["date", "volume", "amount"]], on="date", how="left") if not b.empty else a
 
     # TDCC 集保戶股權分散表（最新一週，全市場）
     def tdcc_holders(self) -> pd.DataFrame:

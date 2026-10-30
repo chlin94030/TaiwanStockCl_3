@@ -57,6 +57,8 @@ class Builder:
                 report[ds] = self.holders()
             elif ds == "world":
                 report[ds] = self.world()
+            elif ds == "index":
+                report[ds] = self.index()
             self.log(f"[{ds}] {report.get(ds)}  ({time.time()-t0:.0f}s, http={self.http.calls})")
         self.store.save_state()
         return report
@@ -82,6 +84,8 @@ class Builder:
                         break
                     try:
                         f = getattr(self.off, method)(d)
+                        if f.empty and ds == "margin" and i == 0:
+                            f = self._wait_today(ds, board, method, d)
                         fails = 0
                     except SourceError as e:
                         fails += 1
@@ -108,6 +112,28 @@ class Builder:
         if (stats["blocked"] or "official" not in providers) and "finmind" in providers and self.fm:
             stats["fallback"] = self.finmind_backfill(ds)
         return stats
+
+    def _wait_today(self, ds, board, method, d):
+        """v1.9：21:40 更新時若「今天」的融資融券還沒公布，每 5 分鐘重試，最多到台北 22:45；
+        先確認今天是交易日（當天收盤行情有資料）才等，假日不浪費時間。"""
+        now = pd.Timestamp.now(tz="Asia/Taipei")
+        if d.date() != now.date() or now.hour < 18:
+            return pd.DataFrame()
+        try:
+            px = self.off.twse_price(d) if board == "TWSE" else self.off.tpex_price(d)
+        except SourceError:
+            return pd.DataFrame()
+        if px.empty:
+            return pd.DataFrame()
+        f = pd.DataFrame()
+        while f.empty and pd.Timestamp.now(tz="Asia/Taipei") < now.normalize() + pd.Timedelta(hours=22, minutes=45):
+            self.log(f"  {ds}:{board} 今日資料尚未公布，5 分鐘後重試")
+            time.sleep(300)
+            try:
+                f = getattr(self.off, method)(d)
+            except SourceError:
+                f = pd.DataFrame()
+        return f
 
     def _flag(self, key, err):
         b = self.store.state.setdefault("blocked", {})
@@ -247,6 +273,31 @@ class Builder:
         self.store.append("world", f)
         return {"rows": len(f), "symbols": int(f["ticker"].nunique()) if len(f) else 0,
                 "last": str(f["date"].max().date()) if len(f) else None}
+
+    # ------------------------------------------------------------------ v1.9 加權指數日 K（每月一次請求）
+    def index(self) -> dict:
+        stats = {"months": 0, "rows": 0}
+        done = self.store.done_set("index")
+        st0 = max(pd.Timestamp(self.start), pd.Timestamp(self.end) - pd.DateOffset(months=30))   # App 只畫近兩年（q_days 500 日）
+        months = pd.period_range(st0, self.end, freq="M")
+        todo = [m for m in months if str(m) not in done or m >= months[-2]]
+        todo = todo[-2:][::-1] + todo[:-2]                      # 先抓最新兩個月，再補歷史
+        for m in todo:
+            if self.out_of_time():
+                break
+            try:
+                f = self.off.twse_index_month(m.start_time)
+            except SourceError as e:
+                self.log(f"  index {m} 失敗（不影響研究，只少了大盤 K 線）: {e}")
+                break
+            if not f.empty:
+                self.store.append("index", f)
+                stats["rows"] += len(f)
+                stats["months"] += 1
+                if m < months[-2]:
+                    self.store.mark_done("index", [str(m)])
+                    self.store.save_state()
+        return stats
 
     # ------------------------------------------------------------------ FinMind per-stock fallback
     def _fm_or_skip(self, ds):

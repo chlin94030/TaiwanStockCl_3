@@ -37,9 +37,9 @@ def css(dark: bool = True) -> str:
 
 CSS_BODY = """
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=Roboto+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap');
 html, body, [data-testid="stAppViewContainer"], .stMarkdown, button, input, textarea, select {
-  font-family: 'Noto Sans TC', 'PingFang TC', 'Microsoft JhengHei', sans-serif; }
+  font-family: 'Inter', 'Noto Sans TC', 'PingFang TC', 'Microsoft JhengHei', sans-serif; font-variant-numeric: tabular-nums; }
 [data-testid="stAppViewContainer"] { background: radial-gradient(1200px 500px at 15% -10%, var(--bg2), var(--bg)) fixed; color: var(--text); }
 .stMarkdown, .stMarkdown p, .stMarkdown li, [data-testid="stWidgetLabel"] p, [data-testid="stExpander"] summary p { color: var(--text); }
 [data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] p { color: var(--muted) !important; }
@@ -56,9 +56,11 @@ h3 { font-size: 1.05rem !important; color: var(--strong); margin-top: .5rem !imp
 .kq-brand { font-weight:700; font-size:17px; color:var(--accent); letter-spacing:2.5px; margin-right:4px; }
 .kq-brand small { color:var(--muted); font-weight:400; letter-spacing:.5px; margin-left:6px; font-size:12px; }
 .kq-item { color:var(--muted); font-size:12.5px; white-space:nowrap; }
-.kq-item b { color:var(--strong); font-family:'Roboto Mono', monospace; font-weight:600; font-size:14px; margin-left:4px; }
+.kq-item b { color:var(--strong); font-family:'Inter', 'Noto Sans TC', sans-serif; font-variant-numeric: tabular-nums; letter-spacing:-.1px; font-weight:600; font-size:14px; margin-left:4px; }
 .kq-pill { display:inline-block; padding:2px 10px; border-radius:999px; font-size:12px; font-weight:500; white-space:nowrap; }
 .kq-sep { width:1px; height:18px; background:var(--line); }
+.kq-small { font-size:12.5px; }
+.kq-small .kq-light { font-weight:500; gap:6px; } .kq-small .kq-light i { width:8px; height:8px; }
 /* ---------- section title */
 .kq-h { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; margin:18px 0 8px; }
 .kq-h .t { font-size:17px; font-weight:700; color:var(--strong); padding-left:10px; border-left:3px solid var(--accent); line-height:1.1; }
@@ -67,7 +69,7 @@ h3 { font-size: 1.05rem !important; color: var(--strong); margin-top: .5rem !imp
 .kq-cards { display:grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap:10px; margin: 4px 0 12px; }
 .kq-card { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:12px 14px; box-shadow:var(--shadow); }
 .kq-card .l { color:var(--muted); font-size:12px; }
-.kq-card .v { font-family:'Roboto Mono', monospace; font-size:21px; font-weight:600; color:var(--strong); margin-top:3px; }
+.kq-card .v { font-family:'Inter', 'Noto Sans TC', sans-serif; font-variant-numeric: tabular-nums; letter-spacing:-.4px; font-size:24px; font-weight:700; color:var(--strong); margin-top:3px; }
 .kq-card .s { color:var(--muted); font-size:11.5px; margin-top:3px; }
 /* ---------- tables */
 .kq-wrap { overflow-x:auto; border:1px solid var(--line); border-radius:14px; background:var(--panel2); box-shadow:var(--shadow); }
@@ -75,12 +77,12 @@ table.kq { width:100%; border-collapse:collapse; font-size:13.5px; white-space:n
 table.kq th { color:var(--muted); font-weight:500; font-size:12px; text-align:right; padding:9px 10px; border-bottom:1px solid var(--line);
   background:var(--panel2); position:sticky; top:0; }
 table.kq td { padding:9px 10px; border-bottom:1px solid var(--line2); text-align:right; color:var(--text); vertical-align:middle;
-  font-family:'Roboto Mono', 'Noto Sans TC', monospace; }
+  font-family:'Inter', 'Noto Sans TC', sans-serif; font-variant-numeric: tabular-nums; }
 table.kq tr:last-child td { border-bottom:none; }
 table.kq th.l, table.kq td.l { text-align:left; }
 table.kq tr:hover td { background:var(--hover); }
 table.kq td .nm { font-family:'Noto Sans TC', sans-serif; font-weight:500; color:var(--strong); }
-table.kq td .cd, .kq-cd { color:var(--accent); font-weight:600; margin-right:6px; font-family:'Roboto Mono', monospace; }
+table.kq td .cd, .kq-cd { color:var(--accent); font-weight:600; margin-right:6px; font-family:'Inter', 'Noto Sans TC', sans-serif; font-variant-numeric: tabular-nums; letter-spacing:-.1px; }
 table.kq td .sub, .kq-sub { color:var(--muted); font-size:11.5px; font-family:'Noto Sans TC', sans-serif; }
 /* ---------- tags & badges */
 .kq-tag { display:inline-block; padding:1px 8px; border-radius:999px; font-size:11.5px; background:var(--tagbg); color:var(--tagtx);
@@ -96,7 +98,7 @@ table.kq td .sub, .kq-sub { color:var(--muted); font-size:11.5px; font-family:'N
 .kq-panel ul { margin:0; padding-left:18px; } .kq-panel li { margin:3px 0; color:var(--text); font-size:13.5px; line-height:1.65; }
 .kq-verdict { border-left:4px solid var(--accent); background:var(--panel); padding:13px 16px; border-radius:10px; margin:6px 0 12px;
   font-size:14.5px; box-shadow:var(--shadow); line-height:1.75; }
-.kq-mono { font-family:'Roboto Mono', monospace; }
+.kq-mono { font-family:'Inter', 'Noto Sans TC', sans-serif; font-variant-numeric: tabular-nums; letter-spacing:-.1px; }
 .kq-muted { color:var(--muted); font-size:12.5px; }
 .kq-kv { display:flex; justify-content:space-between; gap:10px; padding:4px 0; border-bottom:1px dashed var(--line); font-size:13.5px; }
 .kq-kv:last-child { border-bottom:none; }
@@ -110,8 +112,8 @@ table.kq td .sub, .kq-sub { color:var(--muted); font-size:11.5px; font-family:'N
 .kq-tile { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:10px 13px; box-shadow:var(--shadow);
   position:relative; overflow:hidden; }
 .kq-tile .l { color:var(--muted); font-size:12px; display:flex; justify-content:space-between; gap:6px; }
-.kq-tile .v { font-family:'Roboto Mono', monospace; font-size:19px; font-weight:600; color:var(--strong); margin-top:2px; }
-.kq-tile .c { font-family:'Roboto Mono', monospace; font-size:13px; font-weight:600; }
+.kq-tile .v { font-family:'Inter', 'Noto Sans TC', sans-serif; font-variant-numeric: tabular-nums; letter-spacing:-.1px; font-size:19px; font-weight:600; color:var(--strong); margin-top:2px; }
+.kq-tile .c { font-family:'Inter', 'Noto Sans TC', sans-serif; font-variant-numeric: tabular-nums; letter-spacing:-.1px; font-size:13px; font-weight:600; }
 .kq-tile .s { color:var(--faint); font-size:11px; margin-top:2px; }
 .kq-tile svg { display:block; margin-top:6px; opacity:.9; }
 .kq-light { display:inline-flex; align-items:center; gap:8px; font-weight:600; }
@@ -122,7 +124,7 @@ table.kq td .sub, .kq-sub { color:var(--muted); font-size:11.5px; font-family:'N
 .kq-lad .z { position:absolute; top:0; height:8px; }
 .kq-lad .m { position:absolute; top:-4px; width:3px; height:16px; border-radius:2px; background:var(--strong);
   box-shadow:0 0 0 2px var(--panel); transform:translateX(-1px); }
-.kq-lad .lb { display:flex; justify-content:space-between; font-size:11px; color:var(--muted); font-family:'Roboto Mono', monospace; gap:6px; }
+.kq-lad .lb { display:flex; justify-content:space-between; font-size:11px; color:var(--muted); font-family:'Inter', 'Noto Sans TC', sans-serif; font-variant-numeric: tabular-nums; letter-spacing:-.1px; gap:6px; }
 .kq-lad .lb b { color:var(--text); font-weight:600; }
 /* ---------- v1.8 pick cards grid (desktop & mobile, never scrolls sideways) */
 .kq-grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap:12px; margin:4px 0 10px; }
@@ -131,9 +133,9 @@ table.kq td .sub, .kq-sub { color:var(--muted); font-size:11.5px; font-family:'N
 .kq-pcard:hover { border-color:var(--tagline); }
 .kq-pcard .hd { display:flex; justify-content:space-between; align-items:flex-start; gap:8px; }
 .kq-pcard .rk { display:inline-flex; width:20px; height:20px; border-radius:6px; background:var(--tagbg); color:var(--muted);
-  font-size:11.5px; align-items:center; justify-content:center; margin-right:7px; font-family:'Roboto Mono', monospace; }
+  font-size:11.5px; align-items:center; justify-content:center; margin-right:7px; font-family:'Inter', 'Noto Sans TC', sans-serif; font-variant-numeric: tabular-nums; letter-spacing:-.1px; }
 .kq-pcard .nm { font-weight:700; color:var(--strong); font-size:15.5px; }
-.kq-pcard .px { text-align:right; font-family:'Roboto Mono', monospace; font-weight:600; color:var(--strong); font-size:16px; line-height:1.1; }
+.kq-pcard .px { text-align:right; font-family:'Inter', 'Noto Sans TC', sans-serif; font-variant-numeric: tabular-nums; letter-spacing:-.1px; font-weight:600; color:var(--strong); font-size:16px; line-height:1.1; }
 .kq-pcard .px small { display:block; font-size:12px; margin-top:2px; }
 .kq-pcard .grp { line-height:1.5; min-height:22px; }
 .kq-pcard .sp svg { display:block; }
@@ -146,13 +148,13 @@ table.kq td.l { white-space:normal; }
   box-shadow:var(--shadow); }
 .kq-mcard .hd { display:flex; align-items:center; justify-content:space-between; gap:8px; }
 .kq-mcard .nm { font-weight:700; color:var(--strong); font-size:15.5px; }
-.kq-mcard .rk { color:var(--faint); font-family:'Roboto Mono', monospace; font-size:12px; margin-right:6px; }
-.kq-mcard .px { text-align:right; font-family:'Roboto Mono', monospace; font-weight:600; color:var(--strong); font-size:15.5px; line-height:1.15; }
+.kq-mcard .rk { color:var(--faint); font-family:'Inter', 'Noto Sans TC', sans-serif; font-variant-numeric: tabular-nums; letter-spacing:-.1px; font-size:12px; margin-right:6px; }
+.kq-mcard .px { text-align:right; font-family:'Inter', 'Noto Sans TC', sans-serif; font-variant-numeric: tabular-nums; letter-spacing:-.1px; font-weight:600; color:var(--strong); font-size:15.5px; line-height:1.15; }
 .kq-mcard .px small { display:block; font-size:12px; }
 .kq-mcard .mid { margin:6px 0 2px; }
 .kq-mcard .ft { display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-top:6px; font-size:12px; color:var(--muted); }
 [data-testid="stExpander"] { border:1px solid var(--line) !important; border-radius:14px !important; background:var(--panel2); }
-div[data-testid="stMetricValue"] { font-family:'Roboto Mono', monospace; }
+div[data-testid="stMetricValue"] { font-family:'Inter', 'Noto Sans TC', sans-serif; font-variant-numeric: tabular-nums; letter-spacing:-.1px; }
 @media (max-width: 760px) {
   .block-container { padding-left: .55rem; padding-right: .55rem; padding-top: 3rem; }
   .kq-desk { display:none !important; }

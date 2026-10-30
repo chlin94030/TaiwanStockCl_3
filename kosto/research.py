@@ -21,6 +21,7 @@ import pandas as pd
 from .backtest import choose, market_stage, run, spec_from_cfg
 from . import linkage
 from .bundle import Bundle
+from .factors import REGISTRY
 from .config import HORIZON_KEYS, STAGE_CODES, STAGE_NAMES
 from .metrics import (block_bootstrap_excess, deflated_sharpe, perf, probabilistic_sharpe, selection_score,
                       tranche_stats, yearly_table)
@@ -35,7 +36,8 @@ OPPOSITE = {"f_size": "大市值", "t_lowvol": "波動較大", "t_lowidio": "個
             "c_short_ratio": "券資比低", "k_paid": "融資比重高", "k_calm": "交易熱絡", "t_high252": "離一年新高較遠",
             "t_rs120": "相對大盤偏弱", "t_mom120x20": "中期動能偏弱", "f_rev_accel": "營收成長放緩", "f_rev_high": "營收未創新高",
             "f_ep": "本益比偏高", "f_dy": "殖利率偏低", "f_bp": "股價淨值比偏高", "f_rev_yoy": "月營收年減",
-            "f_rev_yoy3": "近3月營收衰退", "f_eps_yoy": "EPS衰退", "f_roe": "ROE偏低", "f_rev_streak": "營收成長中斷"}
+            "f_rev_yoy3": "近3月營收衰退", "f_eps_yoy": "EPS衰退", "f_roe": "ROE偏低", "f_rev_streak": "營收成長中斷",
+            "f_rev_rel": "營收成長落後同業"}
 
 
 def factor_phrase(B, f: int, z: float) -> str:
@@ -71,6 +73,7 @@ class Variant:
     overheat: bool | None = None      # 不追高閘門（RSI/乖離）：None=依設定檔
     sleeve: float | None = None       # 個股部位比例：None=依設定檔
     residual: str | None = None       # 未投入資金：cash | bench(0050)；None=依設定檔
+    top_k: int | None = None          # v1.9 持股檔數：None=依設定檔（horizons.*.top_k 或 research.top_k）
 
     def label(self) -> str:
         return self.name
@@ -160,9 +163,9 @@ class Research:
         pts = self.retrain + [self.S]
         for a, b in zip(pts[:-1], pts[1:]):
             rows = self.train_rows(a, hz)
-            fit = fit_weights(ic, rows, self.B.meta, hz, self.cfg["horizons"][hz]["family_prior"], v.lam, v.mode,
-                              r["n0_shrink"], r["max_factor_weight"], r["signal_step"], self.H(hz), view,
-                              self.B.a["FWD"][HKEY[hz]], exclude=self._excl(v), **self._sp(v))
+            fit = self._overlay(fit_weights(ic, rows, self.B.meta, hz, self.cfg["horizons"][hz]["family_prior"], v.lam, v.mode,
+                                            r["n0_shrink"], r["max_factor_weight"], r["signal_step"], self.H(hz), view,
+                                            self.B.a["FWD"][HKEY[hz]], exclude=self._excl(v), **self._sp(v)), v)
             for i in range(a, b):
                 W[i] = fit.weights
             hist.append({"from": str(self.B.sig_dates[a].date()), "n_train": fit.n_rows, "alpha": round(fit.alpha, 3),
@@ -175,9 +178,24 @@ class Research:
         r = self.cfg["research"]
         hz = v.label_h or h
         rows = self.train_rows(self.S, hz)
-        return fit_weights(self.ic(rule, size, hz), rows, self.B.meta, hz, self.cfg["horizons"][hz]["family_prior"],
-                           v.lam, v.mode, r["n0_shrink"], r["max_factor_weight"], r["signal_step"], self.H(hz),
-                           self.view(rule, size), self.B.a["FWD"][HKEY[hz]], exclude=self._excl(v), **self._sp(v))
+        return self._overlay(fit_weights(self.ic(rule, size, hz), rows, self.B.meta, hz, self.cfg["horizons"][hz]["family_prior"],
+                                         v.lam, v.mode, r["n0_shrink"], r["max_factor_weight"], r["signal_step"], self.H(hz),
+                                         self.view(rule, size), self.B.a["FWD"][HKEY[hz]], exclude=self._excl(v), **self._sp(v)), v)
+
+    def _overlay(self, fit, v: Variant):
+        """v1.9 固定權重疊加（research.overlay，預先宣告研究通過者）：
+        新權重 = (1 − Σs) × 原權重(|w| 總和歸一) + Σ s_f × 方向_f；消融時被排除的因子不疊加。"""
+        ov = {f: float(s_) for f, s_ in (self.cfg["research"].get("overlay") or {}).items()
+              if f in self.B.factors and f not in v.exclude and s_}
+        if not ov or fit.weights is None:
+            return fit
+        w = np.asarray(fit.weights, dtype=float)
+        tot = sum(ov.values())
+        w = (1 - tot) * w / max(np.abs(w).sum(), 1e-12)
+        for f, s_ in ov.items():
+            d = REGISTRY[f].direction if f in REGISTRY else 1
+            w[self.B.factors.index(f)] += s_ * (d or 1)
+        return replace(fit, weights=w.astype(np.asarray(fit.weights).dtype))
 
     def _sp(self, v: Variant) -> dict:
         return {"k": v.k, "tmin": v.tmin, "kK": v.kK, "lamK": v.lamK, "anchor": v.anchor,
@@ -212,6 +230,8 @@ class Research:
             kw["block_dtop"] = False
         if v.hysteresis is not None:
             kw["hysteresis"] = v.hysteresis
+        if v.top_k:
+            kw["top_k"] = int(v.top_k)
         if v.stop == "off":
             kw["stop_loss"] = None
         elif v.stop == "on":
@@ -777,9 +797,9 @@ class Research:
         sp = self.B.sig_pos
         hz = v.label_h or h
         rows = np.where((np.arange(self.S) >= self.first_oos) & (sp + self.H(hz) + 1 <= sp[-1]))[0]
-        fit = fit_weights(self.ic(rule, size, hz), rows, self.B.meta, hz, self.cfg["horizons"][hz]["family_prior"], v.lam, v.mode,
-                          r["n0_shrink"], r["max_factor_weight"], r["signal_step"], self.H(hz), self.view(rule, size),
-                          self.B.a["FWD"][HKEY[hz]], exclude=self._excl(v), **self._sp(v))
+        fit = self._overlay(fit_weights(self.ic(rule, size, hz), rows, self.B.meta, hz, self.cfg["horizons"][hz]["family_prior"],
+                                        v.lam, v.mode, r["n0_shrink"], r["max_factor_weight"], r["signal_step"], self.H(hz),
+                                        self.view(rule, size), self.B.a["FWD"][HKEY[hz]], exclude=self._excl(v), **self._sp(v)), v)
         W = [fit.weights] * self.S
         res = run(self.B, self.view(rule, size), W, self.spec(h, v), start_i=0)
         end = self.B.sig_dates[self.first_oos]

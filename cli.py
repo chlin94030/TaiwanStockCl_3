@@ -57,26 +57,67 @@ def cmd_bundle(a, cfg):
     log(f"bundle 已存：{ART/'bundle.npz'} ({(ART/'bundle.npz').stat().st_size/1e6:.1f} MB)")
 
 
+def load_prev_auto() -> dict:
+    """前一次每日研究的自動晉級狀態（冠軍、連續領先天數、前瞻紀錄）：本機 artifacts 或 GitHub release。"""
+    p = ART / "results.pkl"
+    try:
+        if p.is_file():
+            with open(p, "rb") as f:
+                return (pickle.load(f).get("res") or {}).get("auto") or {}
+    except Exception:  # noqa: BLE001
+        pass
+    repo = os.getenv("GITHUB_REPOSITORY")
+    if repo:
+        try:
+            from kosto.remote import RESEARCH_TAG, fetch_asset, token_from_env
+            d = pickle.loads(fetch_asset(repo, RESEARCH_TAG, "results.pkl", token_from_env()))
+            return (d.get("res") or {}).get("auto") or {}
+        except Exception as e:  # noqa: BLE001
+            log(f"讀取前一次研究狀態失敗（第一次執行時正常）：{e}")
+    return {}
+
+
 def cmd_research(a, cfg):
+    from kosto import tournament as T
     from kosto.bundle import Bundle
     from kosto.report import build_zip
     from kosto.research import Research
     B = Bundle.load(a.bundle)
-    R = Research(B, cfg, log=log)
+    prev = {} if a.quick else load_prev_auto()
+    cfg_eff = T.apply(cfg, prev.get("champions"))
+    if prev.get("champions"):
+        log("使用自動晉級後的模型：" + "；".join(f"{h} {T.describe(p)}" for h, p in prev["champions"].items()))
+    R = Research(B, cfg_eff, log=log)
     hz = a.horizons.split(",") if a.horizons else list(HORIZON_KEYS)
     res = R.run_all(hz, quick=a.quick, progress=log)
+    auto = dict(prev)
     if (not a.quick and cfg["research"].get("phase_check", True) and not B.meta.get("synthetic")
             and (Path(cfg["data"]["dir"]) / "raw" / "price").is_dir()):
         from kosto.phases import phase_check
-        log("換股日敏感度：重建 4 個平移起點的研究資料包（約 5～10 分鐘）…")
-        res["phases"] = phase_check(cfg, res, log=log)
+        rows = []
+        log("冠軍／挑戰者比較：目前資料包…")
+        try:
+            rows += T.evaluate(R, res, cfg_eff, 0, presample=True)
+        except Exception as e:  # noqa: BLE001
+            log(f"冠軍／挑戰者比較失敗：{e}")
+        log("換股日敏感度＋冠軍／挑戰者：重建 4 個平移起點的研究資料包（約 10～20 分鐘）…")
+        res["phases"] = phase_check(cfg_eff, res, log=log, on_bundle=lambda Rk, k: rows.extend(T.evaluate(Rk, res, cfg_eff, k)))
+        if rows:
+            auto = T.update(prev, rows, res, cfg, cfg_eff)
+            for h, ld in (auto.get("leader") or {}).items():
+                if ld:
+                    log(f"{h} 領先挑戰者：{T.describe(ld['params'], T.base_params(cfg_eff, h))}（+{ld['d_excess']:.1%}，連續 {ld['streak']} 天）")
+            for x in auto.get("log", []):
+                if x["date"] == res["protocol"]["last_date"]:
+                    log(f"★ {x['h']} 自動換上新模型（明天起生效）：{x['text']}")
+    res["auto"] = T.log_picks(auto, res)
     comparison = None
     if a.compare:
-        comparison = run_compare(a.compare, res, B, cfg)
+        comparison = run_compare(a.compare, res, B, cfg_eff)
     ART.mkdir(exist_ok=True)
     with open(ART / "results.pkl", "wb") as f:
-        pickle.dump({"res": res, "cfg": cfg, "comparison": comparison}, f, protocol=4)
-    (ART / "report.zip").write_bytes(build_zip(res, cfg, comparison))
+        pickle.dump({"res": res, "cfg": cfg_eff, "comparison": comparison}, f, protocol=4)
+    (ART / "report.zip").write_bytes(build_zip(res, cfg_eff, comparison))
     log(f"報告：{ART/'report.zip'}  ({res['elapsed']:.0f}s)")
 
 

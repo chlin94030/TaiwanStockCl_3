@@ -16,7 +16,8 @@ PANEL_H = {"volume": 0.13, "kd": 0.12, "macd": 0.12, "inst": 0.14, "margin": 0.1
 
 
 def kline(ind: pd.DataFrame, mas=(5, 20, 60), boll: bool = True, panels=("volume", "kd", "macd"),
-          plan=None, bars: int = 120, height: int | None = None, title: str = "", dark: bool = True) -> go.Figure:
+          plan=None, bars: int = 120, height: int | None = None, title: str = "", dark: bool = True,
+          unit: str = "張", vol_label: str = "成交量(張)") -> go.Figure:
     BG, GRID, TXT, MUTED = THEME[bool(dark)]
     df = ind.tail(bars).copy()
     if df.empty:
@@ -52,11 +53,11 @@ def kline(ind: pd.DataFrame, mas=(5, 20, 60), boll: bool = True, panels=("volume
                 fig.add_hline(y=y, line=dict(color=col, width=1, dash=dash), row=1, col=1,
                               annotation_text=f"{nm} {y:g}", annotation_position="top left",
                               annotation_font=dict(color=col, size=10), annotation_bgcolor=BG)
-    r = 2
+    r, mrow = 2, None
     up = (df["close"] >= df["open"]).to_numpy()
     for p in panels:
         if p == "volume":
-            fig.add_trace(go.Bar(x=x, y=df["volume"], showlegend=False, name="成交量(張)", marker_color=np.where(up, UP, DOWN),
+            fig.add_trace(go.Bar(x=x, y=df["volume"], showlegend=False, name=vol_label, marker_color=np.where(up, UP, DOWN),
                                  marker_line_width=0, opacity=0.85), row=r, col=1)
             if "vma20" in df:
                 fig.add_trace(go.Scatter(x=x, y=df["vma20"], showlegend=False, name="20日均量", mode="lines",
@@ -74,13 +75,13 @@ def kline(ind: pd.DataFrame, mas=(5, 20, 60), boll: bool = True, panels=("volume
         elif p == "inst":
             for col, nm, cc in (("foreign", "外資", "#60a5fa"), ("trust", "投信", "#f472b6"), ("dealer", "自營商", "#facc15")):
                 if col in df:
-                    fig.add_trace(go.Bar(x=x, y=df[col], name=f"{nm}(張)", marker_color=cc, marker_line_width=0), row=r, col=1)
+                    fig.add_trace(go.Bar(x=x, y=df[col], name=f"{nm}({unit})", marker_color=cc, marker_line_width=0), row=r, col=1)
         elif p == "margin":
             if "mbal" in df:
-                fig.add_trace(go.Scatter(x=x, y=df["mbal"], showlegend=False, name="融資餘額(張)", mode="lines",
+                fig.add_trace(go.Scatter(x=x, y=df["mbal"], showlegend=False, name=f"融資餘額({unit})", mode="lines",
                                          line=dict(color="#fb7185", width=1.4)), row=r, col=1, secondary_y=False)
             if "sbal" in df:
-                fig.add_trace(go.Scatter(x=x, y=df["sbal"], showlegend=False, name="融券餘額(張)", mode="lines",
+                fig.add_trace(go.Scatter(x=x, y=df["sbal"], showlegend=False, name=f"融券餘額({unit})", mode="lines",
                                          line=dict(color="#34d399", width=1.4)), row=r, col=1, secondary_y=True)
         elif p == "holders":
             fig.add_trace(go.Scatter(x=x, y=df["big400"], showlegend=False, name="大戶≥400張(%)", mode="lines", connectgaps=True,
@@ -88,16 +89,23 @@ def kline(ind: pd.DataFrame, mas=(5, 20, 60), boll: bool = True, panels=("volume
             if "retail50" in df:
                 fig.add_trace(go.Scatter(x=x, y=df["retail50"], showlegend=False, name="散戶<50張(%)", mode="lines", connectgaps=True,
                                          line=dict(color="#94a3b8", width=1.2, shape="hv")), row=r, col=1)
-        fig.update_yaxes(title_text=PANELS[p], title_font=dict(size=10, color=MUTED), row=r, col=1)
+        fig.update_yaxes(title_text=vol_label.split("(")[0] if p == "volume" else PANELS[p], title_font=dict(size=10, color=MUTED),
+                         row=r, col=1)
+        if p == "margin":
+            mrow = r
         r += 1
     if "inst" in panels:
         fig.update_layout(barmode="relative")
     fig.update_xaxes(type="category", showgrid=False, rangeslider_visible=False, nticks=8, tickfont=dict(color=MUTED, size=10),
                      linecolor=GRID, showspikes=True, spikemode="across", spikethickness=1, spikecolor="#64748b")
     fig.update_yaxes(gridcolor=GRID, zerolinecolor=GRID, tickfont=dict(color=MUTED, size=10), side="right")
+    if mrow is not None:                                   # 融券用左側座標軸，避免和融資的刻度疊在一起
+        fig.update_yaxes(side="left", showgrid=False, title_text="", tickfont=dict(color="#34d399", size=9), row=mrow, col=1,
+                         secondary_y=True)
+        fig.update_yaxes(tickfont=dict(color="#fb7185", size=10), row=mrow, col=1, secondary_y=False)
     fig.update_layout(height=height or int(380 + 120 * len(panels)), paper_bgcolor=BG, plot_bgcolor=BG,
-                      font=dict(color=TXT, family="Noto Sans TC, PingFang TC, Microsoft JhengHei, sans-serif"),
-                      margin=dict(l=8, r=64, t=36 if title else 10, b=8), hovermode="x unified",
+                      font=dict(color=TXT, family="Inter, Noto Sans TC, PingFang TC, Microsoft JhengHei, sans-serif"),
+                      margin=dict(l=40 if mrow is not None else 8, r=64, t=36 if title else 10, b=28), hovermode="x unified",
                       title=dict(text=title, font=dict(size=14)) if title else None,
                       legend=dict(orientation="h", yanchor="bottom", y=1.0, x=0, font=dict(size=10), bgcolor="rgba(0,0,0,0)",
                                   traceorder="normal"),

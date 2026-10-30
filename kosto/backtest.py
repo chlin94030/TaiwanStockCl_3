@@ -55,7 +55,7 @@ def spec_from_cfg(cfg: dict, horizon: str, exposure_profile: str = "none", **kw)
     h = cfg["horizons"][horizon]
     c = cfg["costs"]
     k = cfg["kostolany"]
-    s = Spec(H=h["days"], step=cfg["research"]["signal_step"], top_k=cfg["research"]["top_k"],
+    s = Spec(H=h["days"], step=cfg["research"]["signal_step"], top_k=int(h.get("top_k") or cfg["research"]["top_k"]),
              hysteresis=h["hysteresis"], stop_loss=h["stop_loss"], block_stages=tuple(k["block_stages"]),
              b3_confirm=k["b3_requires_confirmation"], block_dtop=k["block_double_top"],
              exposure=dict(k["exposure"][exposure_profile]),

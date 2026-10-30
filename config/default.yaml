@@ -55,10 +55,20 @@ research:
     cost_stress: 0.005                 #   每次買賣來回多加 0.5% 成本後超額仍須 > 0
   presample_test: true
   phase_check: true                    # v1.8 換股日敏感度：另外平移 1～4 天重跑選定模型，報告五種換股日的平均／最差／最好
+  # v1.9 冠軍／挑戰者自動晉級（每日比較；挑戰者連續領先 auto_streak 個交易日才換上；見 kosto/tournament.py）
+  auto_promote: true                   # false＝只比較、不自動換模型
+  auto_min_gain: 0.02                  # 開發期五種換股日平均超額至少多 2 個百分點
+  auto_streak: 10                      # 連續 10 個交易日都是第一名
+  auto_cooldown: 20                    # 兩次換模型至少間隔 20 個交易日
   lock_model: true                     # v1.3：使用設定檔指定的模型（多窗口「不退步原則」決定），不再只看開發期自動挑
   sparse_exclude: [t_lowidio]          # 只給成長動能假說使用、不讓精簡模型自己挑的因子
   # v1.7 國際連動／族群因子：照樣計算並在 App 顯示，但預先宣告的研究未通過（見 docs/v1.7_protocol.md）→ 不進任何模型
-  inactive_factors: [g_us_beta, g_us_lead, g_asia_lead, g_fx_flow, t_ind_mom]
+  inactive_factors: [g_us_beta, g_us_lead, g_asia_lead, g_fx_flow, t_ind_mom,
+                     # v1.9 候選因子（docs/v1.9_protocol.md）：放進精簡模型候選池全部未通過 → 照常計算、不讓模型自己挑
+                     t_max20, t_skew60, t_limitup20, t_high60, t_bbw, f_rev_surprise, f_rev_rel, c_trust60,
+                     c_fr_high, f_pe_self, f_dy_rel]
+  overlay:                             # v1.9 研究唯一通過門檻者：以固定 15% 權重加入三個期間的分數（其餘 85% 為原模型）
+    f_rev_rel: 0.15                    #   營收年增相對同業：中線 +1.6pp／資訊比率 +0.02、長線 +8.0pp、短線 −0.8pp（容許 1pp 內）
   score_hypotheses:                    # v1.4：ChatGPT V24 預先宣告的價格領先假說（固定權重）
     PRICE_ALPHA_8_BALANCED: {t_rs120: 0.40, t_mom120x20: 0.25, t_high252: 0.20, t_lowidio: 0.15}
     PRICE_ALPHA_5_LEADERS: {t_rs120: 0.60, t_mom120x20: 0.25, t_high252: 0.15}

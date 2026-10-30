@@ -31,6 +31,7 @@ class Panel:
     taiex: pd.Series = None                          # TAIEX close
     rev_m: pd.DataFrame = None                       # monthly revenue (index ym int, columns ticker)
     world: pd.DataFrame = None                       # v1.7 國際市場收盤，已對齊到「台股 T 日收盤後可知」（見 align_world）
+    index_daily: pd.DataFrame = None                 # v1.9 加權指數日 K：open high low close volume(股) amount(元)
     synthetic: bool = False
     quality: dict = field(default_factory=dict)
 
@@ -184,6 +185,10 @@ def build_panel(store: Store, start=None, end=None, min_names_per_day: int = 50)
     P.quality["revenue_months"] = 0 if rv.empty else int(rv["ym"].nunique())
 
     P.world = align_world(store.read("world"), dates)
+    ix = store.read("index")
+    if not ix.empty:
+        ix = ix[ix["ticker"].astype(str) == "TAIEX"].drop_duplicates("date", keep="last").set_index("date").sort_index()
+        P.index_daily = ix[[c for c in ("open", "high", "low", "close", "volume", "amount") if c in ix]].astype(float)
     P.quality["world_series"] = int(P.world.shape[1])
 
     info = store.read("info")

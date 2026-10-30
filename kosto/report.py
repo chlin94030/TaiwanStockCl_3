@@ -355,6 +355,19 @@ def build_html(res: dict, cfg: dict, comparison: tuple | None = None) -> str:
         p.append("<h2>換股日敏感度（五種換股起點）</h2><p>每 5 個交易日換股時，從哪一天開始算會讓回測差很多。"
                  "下表把訊號日平移 0～4 天（涵蓋一週五種換股日）重跑同一個模型，平均值是比單一回測更穩健的預期。</p>")
         p.append(table(sm, {c: "pct" for c in sm.columns if c not in ("期間", "起點數")} | {"起點數": "{:.0f}"}, left=("期間",)))
+    # ---------------- v1.9 auto promotion
+    au = res.get("auto") or {}
+    if au.get("table"):
+        from . import tournament as _T
+        p.append("<h2>冠軍／挑戰者（每日自動比較）</h2>")
+        rows = []
+        for h, t in au["table"].items():
+            champ = (au.get("champions") or {}).get(h) or {}
+            ld = (au.get("leader") or {}).get(h) or {}
+            rows.append({"期間": {"short": "短線", "mid": "中線", "long": "長線"}.get(h, h), "冠軍": _T.describe(champ) if champ else "",
+                         "領先挑戰者": (_T.describe(ld["params"], champ) + f"（+{ld['d_excess']:.1%}，連續 {ld['streak']} 天）") if ld else "無",
+                         "上次換模型": (au.get("last_switch") or {}).get(h, "")})
+        p.append(table(pd.DataFrame(rows), left=("期間", "冠軍", "領先挑戰者")))
     # ---------------- v1.7 international linkage
     wd = res.get("world") or {}
     if wd.get("study") is not None and len(wd.get("study")):
@@ -431,6 +444,8 @@ def build_excel(res: dict, comparison=None) -> bytes:
         mk.to_excel(xw, sheet_name="市場階段")
         if res.get("phases") is not None and len(res["phases"]):
             res["phases"].to_excel(xw, sheet_name="換股日敏感度", index=False)
+        for h, t in ((res.get("auto") or {}).get("table") or {}).items():
+            t.to_excel(xw, sheet_name=_xls_name(f"挑戰者_{h}"), index=False)
         wd = res.get("world") or {}
         for key, name in (("study", "v1.7_十面向研究"), ("overnight", "美股隔夜衝擊"), ("yearly", "國際連動_逐年")):
             if wd.get(key) is not None and len(wd[key]):
