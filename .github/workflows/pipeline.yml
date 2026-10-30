@@ -11,7 +11,7 @@ on:
     branches: [main, master]
     paths: ["config/**", "kosto/**", "cli.py", "compare/**", ".github/workflows/pipeline.yml"]
   schedule:
-    - cron: "10 15 * * 1-5"
+    - cron: "40 13 * * 1-5"
   workflow_dispatch:
     inputs:
       mode:
