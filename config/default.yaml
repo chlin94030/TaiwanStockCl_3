@@ -20,6 +20,11 @@ data:
     shares: [official, finmind]
     revenue: [official, finmind]
   finmind_hourly_quota: 550   # 免費 token 每小時 600 次，保留緩衝
+  # v2.0 ETF 與上市官方大盤合計（misc 群組；只用在 ETF 頁與市場解讀頁，不進選股模型）
+  etf_years: 6               # ETF 行情回補年數（最新日優先）
+  etf_minutes: 25            # 每晚 ETF 回補最多分鐘數（約 4 個晚上補滿）
+  mkt_months: 26             # 官方三大法人／融資金額回補月數
+  mkt_minutes: 10
 
 research:
   start: "2019-01-01"        # 回測（訊號）起點

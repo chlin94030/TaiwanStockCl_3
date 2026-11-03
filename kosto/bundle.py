@@ -123,10 +123,14 @@ def forward_returns(R: np.ndarray, OC: np.ndarray, sig_rel: np.ndarray, H: int) 
 
 
 MKT_COLS = ["open", "high", "low", "close", "amount", "foreign", "trust", "dealer", "mbal", "sbal", "up", "down",
-            "mflow", "sflow"]   # mbal/sbal＝餘額張數×收盤價（市值估算）；mflow/sflow＝當日張數增減×收盤價（不受股價漲跌影響）
+            "mflow", "sflow",   # mbal/sbal＝餘額張數×收盤價（市值估算）；mflow/sflow＝當日張數增減×收盤價（不受股價漲跌影響）
+            # v2.0 市場解讀：融資張數、站上 20／60 日線比例、20 日新高／新低家數、大盤本益比／殖利率、國際市場
+            "mlots", "ab20", "ab60", "hi20", "lo20", "pe_mkt", "dy_mkt", "sox", "vix", "nasdaq", "tsm", "twd",
+            # v2.0 上市官方合計（億元／張；回補完成前為空）
+            "o_foreign", "o_trust", "o_dealer", "o_margin", "o_mlots"]
 
 
-def market_pack(P: Panel, qdays) -> tuple[np.ndarray, list]:
+def market_pack(P: Panel, qdays, series: pd.DataFrame | None = None) -> tuple[np.ndarray, list]:
     """加權指數開高低收（官方；缺時只有收盤）、成交金額（億，官方；缺時用個股加總）、
     三大法人買賣超與融資券餘額（億元，個股加總估算）、上漲／下跌家數。"""
     out = pd.DataFrame(index=qdays, columns=MKT_COLS, dtype=float)
@@ -154,7 +158,48 @@ def market_pack(P: Panel, qdays) -> tuple[np.ndarray, list]:
     r = P.m["ret"].astype(float).where(P.m["tradable"])
     out["up"] = (r > 0).sum(axis=1).reindex(qdays)
     out["down"] = (r < 0).sum(axis=1).reindex(qdays)
+    ms = series if series is not None else _market_series(P)
+    for c in ("mlots", "ab20", "ab60", "hi20", "lo20", "pe_mkt", "dy_mkt", "sox", "vix", "nasdaq", "tsm", "twd"):
+        if c in ms:
+            out[c] = ms[c].reindex(qdays)
+    mo = getattr(P, "mkt_off", None)
+    if mo is not None and len(mo):
+        mo = mo.reindex(qdays)
+        for c, src, sc in (("o_foreign", "foreign", 1e-8), ("o_trust", "trust", 1e-8), ("o_dealer", "dealer", 1e-8),
+                           ("o_margin", "margin_amt", 1e-8), ("o_mlots", "margin_lots", 1.0)):
+            if src in mo:
+                out[c] = mo[src].astype(float) * sc
     return out.to_numpy(np.float32), list(MKT_COLS)
+
+
+def _market_series(P):
+    from .market import market_series
+    return market_series(P)
+
+
+def data_dates(P: Panel) -> dict:
+    """v2.0 各資料集最新日期（App 顯示「分析依據」與過期警示）。"""
+    def last_valid(df):
+        try:
+            v = df.notna().any(axis=1) if isinstance(df, pd.DataFrame) else df.notna()
+            return str(v[v].index[-1].date()) if v.any() else None
+        except Exception:  # noqa: BLE001
+            return None
+    out = {"price": str(P.dates[-1].date())}
+    for k in ("institutional", "margin", "valuation"):
+        out[k] = P.quality.get(f"{k}_last")
+    if P.rev_m is not None and len(P.rev_m):
+        ok = P.rev_m.notna().sum(axis=1)
+        ym = int(ok[ok > 0.5 * ok.max()].index[-1])
+        out["revenue"] = f"{ym // 100}-{ym % 100:02d}"
+    out["world"] = P.quality.get("world_last")
+    if P.index_daily is not None and len(P.index_daily):
+        out["index"] = str(P.index_daily.index[-1].date())
+    if P.etf_px is not None and len(P.etf_px):
+        out["etf"] = str(pd.Timestamp(P.etf_px["date"].max()).date())
+    if getattr(P, "mkt_off", None) is not None and len(P.mkt_off):
+        out["mkt"] = str(P.mkt_off.index[-1].date())
+    return out
 
 
 def build_bundle(P: Panel, cfg: dict, log=print) -> Bundle:
@@ -257,7 +302,27 @@ def build_bundle(P: Panel, cfg: dict, log=print) -> Bundle:
         rm = P.rev_m.iloc[-25:]
         a["REV_M"] = rm.reindex(columns=P.tickers[cols]).to_numpy(np.float32)
         meta["rev_ym"] = [int(x) for x in rm.index]
-    a["Q_MKT"], meta["q_mkt_cols"] = market_pack(P, qdays)                 # v1.9 大盤 K 線＋市場籌碼（億元）
+    # ---- v2.0 市場解讀（止穩檢查表、修正事件統計、反彈候選）與 ETF；都不進選股模型
+    from . import etf as etflib
+    from . import market as mklib
+    ms = mklib.market_series(P)
+    a["Q_MKT"], meta["q_mkt_cols"] = market_pack(P, qdays, ms)             # v1.9 大盤 K 線＋市場籌碼（億元）
+    try:
+        meta["mkt_stats"] = mklib.history_stats(ms)
+        rr = vals.get("f_rev_rel")
+        meta["rebound"] = mklib.rebound_candidates(P, rr[-1] if rr is not None else None)
+        meta["rebound_asof"] = str(P.dates[-1].date())
+    except Exception as e:  # noqa: BLE001 - optional analysis
+        log(f"市場解讀統計失敗（不影響選股）：{e}")
+    try:
+        ea, em = etflib.pack(P.etf_px, P.etf_div) if P.etf_px is not None else ({}, {})
+        a.update(ea)
+        meta.update(em)
+        if em:
+            log(f"ETF {len(em.get('etf_tickers', []))} 檔，資料至 {em.get('etf_asof')}")
+    except Exception as e:  # noqa: BLE001
+        log(f"ETF 整理失敗（不影響選股）：{e}")
+    meta["data_dates"] = data_dates(P)
     a["Q_TAIEX"] = (P.taiex.reindex(qdays).to_numpy(np.float32) if P.taiex is not None
                     else np.full(len(qdays), np.nan, np.float32))
     meta["q_days"] = [str(d.date()) for d in qdays]

@@ -59,6 +59,12 @@ class Builder:
                 report[ds] = self.world()
             elif ds == "index":
                 report[ds] = self.index()
+            elif ds == "mkt":
+                report[ds] = self.mkt()
+            elif ds == "etf_div":
+                report[ds] = self.etf_div()
+            elif ds == "etf":
+                report[ds] = self.etf()
             self.log(f"[{ds}] {report.get(ds)}  ({time.time()-t0:.0f}s, http={self.http.calls})")
         self.store.save_state()
         return report
@@ -297,6 +303,100 @@ class Builder:
                 if m < months[-2]:
                     self.store.mark_done("index", [str(m)])
                     self.store.save_state()
+        return stats
+
+    # ------------------------------------------------------------------ v2.0 上市官方大盤合計（三大法人＋融資金額）
+    def mkt(self) -> dict:
+        """每日 2 個小請求；最新日優先，歷史回補每次最多 data.mkt_minutes 分鐘（預設 10 分鐘，約 110 天）。"""
+        stats = {"days": 0, "rows": 0}
+        cap = time.time() + float(self.cfg["data"].get("mkt_minutes", 10)) * 60
+        st0 = max(self.start, self.end - pd.DateOffset(months=int(self.cfg["data"].get("mkt_months", 26))))
+        done = self.store.done_set("mkt")
+        todo = [d for d in weekdays(st0, self.end) if d.strftime("%Y-%m-%d") not in done][::-1]
+        buf, marks = [], []
+        for d in todo:
+            if self.out_of_time() or time.time() > cap:
+                break
+            try:
+                f = self.off.twse_mkt(d)
+            except SourceError as e:
+                self.log(f"  mkt {d.date()} 失敗（不影響研究）: {e}")
+                break
+            complete = (not f.empty and all(c in f for c in ("foreign", "margin_amt"))
+                        and bool(f[["foreign", "margin_amt"]].notna().all(axis=None)))
+            if not f.empty:
+                buf.append(f)
+            if complete or (f.empty and d < self.recent_cut):     # 當天融資還沒公布 → 不標記完成，下次再抓
+                marks.append(d.strftime("%Y-%m-%d"))
+            stats["days"] += 1
+        stats["rows"] = self._flush("mkt", buf, "mkt", marks)
+        return stats
+
+    # ------------------------------------------------------------------ v2.0 ETF 行情與配息
+    def etf_div(self) -> dict:
+        stats = {"years": 0, "rows": 0}
+        years = int(self.cfg["data"].get("etf_years", 6))
+        done = self.store.done_set("etf_div")
+        for year in range(max(self.start.year, self.end.year - years), self.end.year + 1):
+            if self.out_of_time():
+                break
+            if str(year) in done and year < self.end.year:
+                continue
+            s, e = pd.Timestamp(year, 1, 1), min(pd.Timestamp(year, 12, 31), self.end)
+            try:
+                f = pd.concat([self.off.twse_exright_etf(s, e), self.off.tpex_exright_etf(s, e)], ignore_index=True)
+            except SourceError as err:
+                self.log(f"  etf_div {year} 失敗（不影響研究）: {err}")
+                break
+            if not f.empty:
+                self.store.append("etf_div", f)
+                stats["rows"] += len(f)
+            stats["years"] += 1
+            if year < self.end.year:
+                self.store.mark_done("etf_div", [str(year)])
+                self.store.save_state()
+        return stats
+
+    def etf(self) -> dict:
+        """上市＋上櫃 ETF 日行情；兩個市場交錯、最新日優先，歷史回補每次最多 data.etf_minutes 分鐘（預設 25 分鐘），約 4 個晚上補滿。"""
+        stats = {"days": 0, "rows": 0}
+        cap = time.time() + float(self.cfg["data"].get("etf_minutes", 25)) * 60
+        st0 = max(self.start, self.end - pd.DateOffset(years=int(self.cfg["data"].get("etf_years", 6))))
+        tp0 = self.end - pd.DateOffset(years=3)                       # 上櫃 ETF 多為債券型，只補近 3 年
+        todo = {}
+        for board in ("TWSE", "TPEX"):
+            done = self.store.done_set(f"etf:{board}")
+            todo[board] = [d for d in weekdays(st0 if board == "TWSE" else tp0, self.end) if d.strftime("%Y-%m-%d") not in done][::-1]
+        queue = []
+        for k in range(max(len(v) for v in todo.values()) if todo else 0):
+            for board in ("TWSE", "TPEX"):
+                if k < len(todo[board]):
+                    queue.append((board, todo[board][k]))
+        buf = {"TWSE": [], "TPEX": []}
+        marks = {"TWSE": [], "TPEX": []}
+        failed = set()
+        for board, d in queue:
+            if self.out_of_time() or time.time() > cap or len(failed) == 2:
+                break
+            if board in failed:
+                continue
+            try:
+                f = self.off.twse_etf(d) if board == "TWSE" else self.off.tpex_etf(d)
+            except SourceError as e:
+                self.log(f"  etf {board} {d.date()} 失敗（不影響研究）: {e}")
+                failed.add(board)
+                continue
+            if not f.empty:
+                buf[board].append(f)
+                marks[board].append(d.strftime("%Y-%m-%d"))
+            elif d < self.recent_cut:
+                marks[board].append(d.strftime("%Y-%m-%d"))
+            stats["days"] += 1
+            if len(buf[board]) >= 40:
+                stats["rows"] += self._flush("etf", buf[board], f"etf:{board}", marks[board])
+                buf[board], marks[board] = [], []
+        for board in ("TWSE", "TPEX"):
+            stats["rows"] += self._flush("etf", buf[board], f"etf:{board}", marks[board])
         return stats
 
     # ------------------------------------------------------------------ FinMind per-stock fallback

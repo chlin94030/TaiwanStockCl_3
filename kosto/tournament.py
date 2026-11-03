@@ -107,6 +107,7 @@ def update(prev: dict | None, rows: list[dict], res: dict, cfg: dict, cfg_eff: d
     need = int(rcfg.get("auto_streak", 10))
     cool = int(rcfg.get("auto_cooldown", 20))
     today = res["protocol"]["last_date"]
+    same_day = (prev or {}).get("updated") == today          # 同一資料日重跑（備援排程、上傳程式觸發）→ 連續天數不重複累加
     t = pd.DataFrame(rows)
     table = {}
     for h in res["horizons"]:
@@ -134,7 +135,10 @@ def update(prev: dict | None, rows: list[dict], res: dict, cfg: dict, cfg_eff: d
         ld = st["leader"].get(h) or {}
         if len(q):
             lk = q.index[0]
-            streak = int(ld.get("streak", 0)) + 1 if ld.get("key") == lk else 1
+            if ld.get("key") == lk:
+                streak = int(ld.get("streak", 0)) + (0 if same_day else 1)
+            else:
+                streak = 1
             st["leader"][h] = {"key": lk, "params": q.iloc[0]["params"], "streak": streak, "d_excess": float(q.iloc[0]["d_excess"]),
                                "since": ld.get("since") if ld.get("key") == lk else today}
         else:

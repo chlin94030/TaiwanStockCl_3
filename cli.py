@@ -174,11 +174,33 @@ def cmd_summary(a, cfg):
     print("\n".join(lines))
 
 
+def latest_dates(cfg) -> dict:
+    """各資料集在本機資料庫的最新日期（只讀近 40 天，很快）。"""
+    import pandas as pd
+    from kosto.store import Store
+    out = {}
+    try:
+        st = Store(cfg["data"]["dir"])
+        since = pd.Timestamp.now(tz="Asia/Taipei").tz_localize(None).normalize() - pd.Timedelta(days=40)
+        for ds in ("price", "institutional", "margin", "valuation"):
+            try:
+                f = st.read(ds, since, None, columns=["date"])
+                out[ds] = str(pd.Timestamp(f["date"].max()).date()) if len(f) else None
+            except Exception:  # noqa: BLE001
+                out[ds] = None
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
 def write_status(cfg, path, extra=None):
     import json
     from kosto.build import progress
     st = progress(cfg)
     st.update(extra or {})
+    st["latest"] = latest_dates(cfg)                       # v1.9.1 備援排程判斷「今天的資料（含融資融券）是否已更新」
+    if os.getenv("RUN_STARTED"):
+        st["run_started"] = os.getenv("RUN_STARTED")
     if (ART / "results.pkl").is_file():
         try:
             with open(ART / "results.pkl", "rb") as f:

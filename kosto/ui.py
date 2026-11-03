@@ -117,6 +117,15 @@ table.kq td .sub, .kq-sub { color:var(--muted); font-size:11.5px; font-family:'N
 .kq-tile .s { color:var(--faint); font-size:11px; margin-top:2px; }
 .kq-tile svg { display:block; margin-top:6px; opacity:.9; }
 .kq-light { display:inline-flex; align-items:center; gap:8px; font-weight:600; }
+.kq-strip { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin:-2px 0 10px; font-size:12px; }
+.kq-chip { font-family:'Inter',sans-serif; font-variant-numeric:tabular-nums; padding:2px 8px; border-radius:999px;
+  border:1px solid var(--line); color:var(--muted); background:var(--panel); white-space:nowrap; }
+.kq-chip.late { color:#e9a23b; border-color:#e9a23b; }
+.kq-warn { border:1px solid #e9a23b; border-left-width:4px; border-radius:10px; padding:8px 12px; margin:0 0 10px;
+  font-size:13px; line-height:1.6; background:color-mix(in srgb, #e9a23b 8%, transparent); }
+.kq-warn a { color:var(--accent); font-weight:600; }
+.kq-tag { display:inline-block; font-size:11px; padding:1px 6px; border-radius:6px; margin-left:4px;
+  background:color-mix(in srgb, var(--accent) 18%, transparent); color:var(--accent); font-weight:600; }
 .kq-light i { width:11px; height:11px; border-radius:50%; display:inline-block; box-shadow:0 0 0 3px color-mix(in srgb, currentColor 22%, transparent); }
 /* ---------- price ladder */
 .kq-lad { min-width:180px; }

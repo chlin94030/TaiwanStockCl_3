@@ -123,7 +123,7 @@ def nav_figure(navs: dict, height: int = 300, log: bool = True, dark: bool = Tru
             fig.add_trace(go.Scatter(x=sr.index, y=sr / sr.iloc[0], name=nm, mode="lines",
                                      line=dict(width=2 if k == 0 else 1.4, color=colors[k % len(colors)])))
     fig.update_layout(height=height, paper_bgcolor=BG, plot_bgcolor=BG, font=dict(color=TXT),
-                      margin=dict(l=8, r=48, t=10, b=8), hovermode="x unified",
+                      margin=dict(l=8, r=48, t=10, b=26), hovermode="x unified",
                       legend=dict(orientation="h", y=1.02, x=0, bgcolor="rgba(0,0,0,0)"))
     fig.update_xaxes(showgrid=False, tickfont=dict(color=MUTED))
     fig.update_yaxes(gridcolor=GRID, tickfont=dict(color=MUTED), side="right", type="log" if log else "linear")

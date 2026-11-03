@@ -502,10 +502,45 @@ def actions_runs(repo, token):
     return [r for r in runs if "全自動" in (r.get("name") or "") or "pipeline" in (r.get("name") or "").lower()] or runs
 
 
-def data_status() -> tuple[str, str, str]:
-    """(燈號, 文字, 連結)：見 kosto/freshness.py。"""
+def data_status() -> tuple[str, str, str, str]:
+    """(燈號, 文字, 連結, 滑鼠提示)：見 kosto/freshness.py。"""
     runs = actions_runs(REPO, TOKEN) if REPO else []
-    return freshness.status(pd.Timestamp.now(tz="Asia/Taipei"), pd.Timestamp(B.sig_dates[-1]), runs[0] if runs else None)
+    run = runs[0] if runs else None
+    lvl, txt, url = freshness.status(pd.Timestamp.now(tz="Asia/Taipei"), pd.Timestamp(B.sig_dates[-1]), run)
+    return lvl, txt, url, freshness.run_desc(run)
+
+
+def update_now_row():
+    """資料落後時：有 GITHUB_TOKEN → 「立即更新」按鈕；沒有 → 告訴使用者到 GitHub 按 Run workflow。"""
+    if not REPO:
+        return
+    link = f"https://github.com/{REPO}/actions/workflows/pipeline.yml"
+    if TOKEN:
+        if st.session_state.get("kq_dispatched"):
+            st.markdown("<div class='kq-muted'>已啟動自動更新，約 30～60 分鐘完成；完成後重新整理頁面即可。</div>",
+                        unsafe_allow_html=True)
+            return
+        c1, c2 = st.columns([1, 4], vertical_alignment="center")
+        if c1.button("🔄 立即更新", key="kq_update_now", type="primary"):
+            err = None
+            for ref in ("main", "master"):
+                try:
+                    dispatch(REPO, "pipeline.yml", TOKEN, ref=ref, inputs={"mode": "auto"})
+                    err = None
+                    break
+                except Exception as e:  # noqa: BLE001
+                    err = e
+            if err is None:
+                st.session_state["kq_dispatched"] = True
+                actions_runs.clear()
+                st.toast("已啟動 GitHub 自動更新（約 30～60 分鐘）")
+            else:
+                c2.warning(f"啟動失敗：{err}。請改到 GitHub 手動執行。")
+        c2.markdown(f"<div class='kq-muted'>或到 <a href='{link}' target='_blank'>GitHub Actions</a> 按「Run workflow」。</div>",
+                    unsafe_allow_html=True)
+    else:
+        st.markdown(f"<div class='kq-muted'>手動更新：到 <a href='{link}' target='_blank'>GitHub Actions</a> → 右側「Run workflow」→ 綠色「Run workflow」，"
+                    "約 30～60 分鐘完成（之後也有 23:17、00:47、06:23 備援排程自動補跑）。</div>", unsafe_allow_html=True)
 
 
 def taiex_now() -> dict:
@@ -531,10 +566,11 @@ def header(world: bool = True):
     if tx:
         tag = ("即時" if ph in ("盤中", "盤前試撮") else "今日收盤") if tx.get("live") else f"{tx['date']:%m/%d} 收盤"
         html.append(f"<span class='kq-item'>加權<b>{tx['px']:,.0f}</b> {ui.chg(tx['chg'])} <span class='kq-sub'>{tag}</span></span>")
-    lvl, txt, url = data_status()
+    lvl, txt, url, tip = data_status()
     st_html = ui.light(lvl, txt)
     if url:
-        st_html = f"<a href='{url}' target='_blank' rel='noopener' style='text-decoration:none'>{st_html}</a>"
+        st_html = (f"<a href='{url}' target='_blank' rel='noopener' title='{ui.esc(tip)}' style='text-decoration:none'>"
+                   f"{st_html}</a>")
     html.append(f"<span class='kq-item'>研究資料日<b>{B.sig_dates[-1]:%m/%d}</b></span><span class='kq-small'>{st_html}</span>")
     if world:
         snap = world_snapshot()
@@ -549,6 +585,8 @@ def header(world: bool = True):
         html.append("<span class='kq-pill' style='background:#7c2d12;color:#fff'>示範資料</span>")
     html.append("</div>")
     st.markdown("".join(html), unsafe_allow_html=True)
+    if lvl == "red":
+        update_now_row()
 
 
 # ================================================================== stock view (chart + plan + chips)
@@ -841,8 +879,21 @@ def preopen_box() -> str:
             f"　<span class='kq-tag'>{ui.esc(lab)}</span><br><span class='kq-muted'>{row.get('stat', '')}</span><br>{ui.esc(adv)}</div>")
 
 
+def correction_banner():
+    """v2.0：大盤修正期（距高點 ≥10%）時提醒先看市場解讀。"""
+    _, _, sto = insight_frame(BID)
+    if not sto or not sto.get("corr"):
+        return
+    col = "#f0464b" if sto["score"] <= 2 else "#e9a23b"
+    st.markdown(f"<div class='kq-warn' style='border-color:{col}'>大盤修正中：距近半年高點 {ui.pct(sto['dd'], 1)}、止穩訊號 {sto['score']}/8。"
+                f"{'新資金建議分批、小量' if sto['score'] <= 2 else '可開始分批布局'}；"
+                "<a href='./insight' target='_self'>看市場解讀與反彈候選 →</a></div>", unsafe_allow_html=True)
+
+
 def page_picks():
     header()
+    data_strip()
+    correction_banner()
     h = st.segmented_control("選股期間", list(HZ), format_func=lambda x: f"{HZ[x]}", default="mid", key="pick_h") or "mid"
     lt = latest(h)
     hb = hblock(h)
@@ -1214,6 +1265,12 @@ def page_alloc():
     else:
         w = dict(planlib.PROFILES[prof])
         st.markdown(f"<div class='kq-muted'>{planlib.PROFILE_NOTE[prof]}</div>", unsafe_allow_html=True)
+    _, _, sto = insight_frame(BID)
+    if use50 and prof != "自訂" and sto and sto.get("corr") and sto.get("score", 9) <= 2:
+        from kosto import market as mklib
+        if st.toggle(f"套用修正期調整：0050 提高 20 個百分點（大盤距高點 {ui.pct(sto['dd'], 1)}、止穩訊號 {sto['score']}/8）",
+                     value=True, key="alloc_tilt", help="止穩訊號 ≥3 項或回落小於 10% 時，系統會自動恢復基本比例"):
+            w = mklib.tilt_weights(w, mklib.TILT)
     if not use50:
         w = no50(w) or {"mid": 0.5, "long": 0.5}
     mix_lbl = "＋".join(f"{('0050' if k == '0050' else HZ[k])} {v:.0%}" for k, v in w.items() if v > 0)
@@ -1340,6 +1397,7 @@ def market_frame(bid) -> tuple[pd.DataFrame, bool]:
 
 def page_market():
     header()
+    data_strip(("price", "institutional", "margin", "mkt"))
     st.markdown(ui.section("大盤", "加權指數 K 線、成交金額、三大法人、融資、漲跌家數｜法人與融資＝個股張數×收盤價加總估算（億元）"),
                 unsafe_allow_html=True)
     df, has_ohlc = market_frame(BID)
@@ -1355,11 +1413,18 @@ def page_market():
               f"{ui.chg(tx.get('chg', last['close'] / prev['close'] - 1))}　{(tx.get('date') or df.index[-1]):%m/%d}"),
              ("成交金額", f"{last.get('volume', np.nan):,.0f} 億" if ui.ok(last.get("volume")) else "–",
               f"20 日均 {df['volume'].tail(20).mean():,.0f} 億" if "volume" in df else ""),
-             ("三大法人合計", f"{ui.lots_fmt(inst)} 億" if ui.ok(inst) else "–",
-              "外資 " + (f"{last['foreign']:+,.0f}" if ui.ok(last.get("foreign")) else "–") + "｜投信 "
-              + (f"{last['trust']:+,.0f}" if ui.ok(last.get("trust")) else "–")),
-             ("融資餘額（市值估）", f"{last.get('mbal', np.nan):,.0f} 億" if ui.ok(last.get("mbal")) else "–",
-              f"今日增減 {mchg:+,.0f} 億（以張數變化計）" if ui.ok(mchg) else ""),
+             (("三大法人（上市官方）", f"{ui.lots_fmt(last['o_foreign'] + last['o_trust'] + last['o_dealer'])} 億",
+               f"外資 {last['o_foreign']:+,.0f}｜投信 {last['o_trust']:+,.0f}｜自營 {last['o_dealer']:+,.0f}")
+              if all(ui.ok(last.get(c)) for c in ("o_foreign", "o_trust", "o_dealer")) else
+              ("三大法人合計（估）", f"{ui.lots_fmt(inst)} 億" if ui.ok(inst) else "–",
+               "外資 " + (f"{last['foreign']:+,.0f}" if ui.ok(last.get("foreign")) else "–") + "｜投信 "
+               + (f"{last['trust']:+,.0f}" if ui.ok(last.get("trust")) else "–"))),
+             (("融資金額（上市官方）", f"{last['o_margin']:,.0f} 億",
+               f"今日 {last['o_margin'] - prev.get('o_margin', np.nan):+,.0f} 億｜張數 {ui.pct(last['o_mlots'] / prev.get('o_mlots', np.nan) - 1, 1)}"
+               if ui.ok(prev.get("o_margin")) else "")
+              if ui.ok(last.get("o_margin")) else
+              ("融資餘額（市值估）", f"{last.get('mbal', np.nan):,.0f} 億" if ui.ok(last.get("mbal")) else "–",
+               f"今日增減 {mchg:+,.0f} 億（以張數變化計）" if ui.ok(mchg) else "")),
              ("上漲／下跌家數", f"{last.get('up', np.nan):,.0f}／{last.get('down', np.nan):,.0f}" if ui.ok(last.get("up")) else "–",
               f"市場階段 {ui.esc(STAGE_ZH.get(stage, stage).split(' ')[0])}")]
     st.markdown(ui.cards(items), unsafe_allow_html=True)
@@ -1389,6 +1454,318 @@ def page_market():
                            xaxis=dict(type="category", nticks=10, gridcolor=GRID), yaxis=dict(gridcolor=GRID, side="right"))
         st.markdown(ui.section("多空家數（近 60 日）"), unsafe_allow_html=True)
         st.plotly_chart(fig2, width="stretch", theme=None, config={"displaylogo": False, "displayModeBar": False})
+
+
+# ================================================================== v2.0 資料依據（每頁顯示用了哪一天的資料）
+DD_LABEL = {"price": "收盤", "institutional": "法人", "margin": "融資券", "valuation": "本益比", "revenue": "月營收",
+            "world": "美股", "etf": "ETF", "mkt": "官方合計"}
+
+
+def data_strip(keys=("price", "institutional", "margin", "valuation", "revenue", "world")):
+    """「分析依據」：各資料集最新日期；比收盤日舊的標黃。研究資料日落後應有交易日 → 紅色提醒。"""
+    dd = B.meta.get("data_dates") or {"price": str(B.sig_dates[-1].date())}
+    base = dd.get("price")
+    chips = []
+    for k in keys:
+        v = dd.get(k)
+        if not v:
+            continue
+        late = k in ("institutional", "margin", "valuation", "etf", "mkt") and base and v < base
+        txt = v[5:] if len(v) == 10 else (v[:4] + "/" + v[5:] if len(v) == 7 else v)
+        chips.append(f"<span class='kq-chip{' late' if late else ''}'>{DD_LABEL.get(k, k)} {txt}</span>")
+    exp = freshness.expected_data_day(pd.Timestamp.now(tz="Asia/Taipei"))
+    warn = ""
+    if pd.Timestamp(base) < exp:
+        warn = (f"<div class='kq-warn'>⚠ 分析依據 {pd.Timestamp(base):%m/%d} 收盤；最新交易日應為 {exp:%m/%d}，"
+                "資料還沒更新（看頁首燈號）。盤中請搭配「盤中監控」的即時報價。</div>")
+    st.markdown(f"<div class='kq-strip'><span class='kq-muted'>分析依據</span>{''.join(chips)}</div>{warn}", unsafe_allow_html=True)
+
+
+# ================================================================== v2.0 市場解讀
+@st.cache_data(show_spinner=False)
+def insight_frame(bid):
+    from kosto import market as mklib
+    df, _ = market_frame(bid)
+    if df.empty:
+        return df, pd.DataFrame(), {}
+    if "foreign" in df and df["foreign"].notna().any():
+        c = mklib.checklist(df)
+        sto = mklib.state(df, c, latest("mid").get("market_stage", ""))
+    else:
+        c, sto = pd.DataFrame(), {}
+    return df, c, sto
+
+
+@st.cache_data(show_spinner=False)
+def group_moves(bid, n=5):
+    """類股（細產業）近 5／20 日中位數報酬與上漲家數比例（成交金額前 500 名）。"""
+    if "Q_C" not in B.a:
+        return pd.DataFrame()
+    C = pd.DataFrame(B.a["Q_C"].astype(float), index=pd.DatetimeIndex(B.meta["q_days"]), columns=B.tickers).ffill()
+    g = pd.Series({t: (CH.get(t) or {}).get("group", "其他") for t in B.tickers})
+    cap = B.a["CAP"][-1] if "CAP" in B.a else np.ones(len(B.tickers))
+    top = pd.Index(B.tickers)[np.argsort(-np.nan_to_num(cap))[:500]]
+    r5 = C.iloc[-1] / C.iloc[-6] - 1
+    r20 = C.iloc[-1] / C.iloc[-21] - 1
+    t = pd.DataFrame({"g": g, "r5": r5, "r20": r20}).loc[top]
+    t = t[t["g"].astype(str).str.len() > 0]
+    out = t.groupby("g").agg(n=("r5", "size"), r5=("r5", "median"), r20=("r20", "median"), up=("r5", lambda s: float((s > 0).mean())))
+    return out[out["n"] >= 4].sort_values("r5", ascending=False)
+
+
+def page_insight():
+    from kosto import market as mklib
+    header()
+    data_strip()
+    df, c, sto = insight_frame(BID)
+    st.markdown(ui.section("市場解讀", "大盤現在在哪裡、止穩了沒、資金在做什麼、哪些股票修正後反彈較好"), unsafe_allow_html=True)
+    if df.empty or not sto:
+        st.info("市場解讀需要新版每日研究資料（下一次 21:40 更新後提供）。")
+        return
+    last = df.iloc[-1]
+    tone_col = {"red": "#f0464b", "amber": "#e9a23b", "green": "#16a35f"}[sto["tone"]]
+    al = mklib.allocation("穩健型", sto)
+    st.markdown(
+        f"<div class='kq-panel' style='border-left:4px solid {tone_col}'>"
+        f"<div style='font-size:20px;font-weight:700;color:{tone_col};margin-bottom:6px'>{ui.esc(sto['view'])}</div>"
+        f"<div class='kq-muted' style='font-size:13.5px'>{ui.esc(sto['date'])} 收盤 {sto['close']:,.0f}，距近半年高點 {ui.pct(sto['dd'], 1)}"
+        f"（{ui.esc(sto['regime'])}）｜止穩訊號 <b>{sto['score']}/8</b>｜科斯托蘭尼階段 {ui.esc(STAGE_ZH.get(sto['stage'], sto['stage']).split(' ')[0])}"
+        f"｜穩健型配置參考：ETF {al['etf']:.0%}／個股 {al['stock']:.0%}（見「精選 ETF」頁）</div></div>", unsafe_allow_html=True)
+    f5 = df["foreign"].tail(5).sum() if "foreign" in df else np.nan
+    t5 = df["trust"].tail(5).sum() if "trust" in df else np.nan
+    o_f = last.get("o_foreign", np.nan)
+    mchg = (df["mlots"].iloc[-1] / df["mlots"].iloc[-11] - 1) if "mlots" in df and len(df) > 11 else np.nan
+    sox = df["sox"].ffill() if "sox" in df else pd.Series(dtype=float)
+    sox_dd = float(sox.iloc[-1] / sox.tail(250).max() - 1) if len(sox.dropna()) else np.nan
+    items = [("距高點", ui.pct(sto["dd"], 1), f"高點 {sto['high120']:,.0f}｜月線 {sto['ma'][20]:,.0f}"),
+             ("止穩訊號", f"{sto['score']} / 8", "≥3 開始分批、≥5 多數止穩"),
+             ("站上月線家數", ui.pct(last.get("ab20"), 0, sign=False), f"季線 {ui.pct(last.get('ab60'), 0, sign=False)}｜新低 {last.get('lo20', np.nan):,.0f} 家"),
+             ("外資近 5 日", f"{f5:+,.0f} 億" if ui.ok(f5) else "–", (f"今日上市官方 {o_f:+,.0f} 億" if ui.ok(o_f) else f"投信 {t5:+,.0f} 億")),
+             ("融資 10 日", ui.pct(mchg, 1), (f"上市融資 {last.get('o_margin'):,.0f} 億（官方）" if ui.ok(last.get("o_margin")) else "張數變化（個股加總）")),
+             ("費半", ui.pct(sox_dd, 1), f"VIX {last.get('vix', np.nan):.1f}" if ui.ok(last.get("vix")) else "")]
+    st.markdown(ui.cards(items), unsafe_allow_html=True)
+
+    hs = B.meta.get("mkt_stats") or {}
+    dev_items = (hs.get("items") or {}).get("dev", {})
+    rows, mrows = [], []
+    for k, nm, desc in mklib.CHECKS:
+        on = bool(c[k].iloc[-1]) if k in c else False
+        it = dev_items.get(k) or {}
+        hist = (f"{ui.pct(it.get('on'), 1, color=True)} vs {ui.pct(it.get('off'), 1, color=True)}" if it else "–")
+        mark = "<b style='color:#16a35f'>✓ 成立</b>" if on else "<span class='kq-muted'>✗ 未成立</span>"
+        rows.append([f"<b>{nm}</b>", ui.esc(desc), mark, hist])
+        mrows.append(ui.mcard(f"<span class='nm'>{nm}</span>", mark, ui.esc(desc), f"歷史（成立 vs 未成立，之後 20 日）{hist}"))
+    st.markdown(ui.section("止穩檢查表", "每項只用當天收盤後已知的資料；歷史欄＝2017–2023 修正期中，該項成立 vs 未成立時加權指數之後 20 日平均報酬"),
+                unsafe_allow_html=True)
+    st.markdown(ui.resp(ui.table(["項目", "定義", "今天", "歷史（成立 vs 未成立）"], rows, left=(0, 1)), "".join(mrows)), unsafe_allow_html=True)
+
+    bk = hs.get("buckets") or {}
+    if bk:
+        brow = []
+        for nm, lab in (("dev", "2017–2023"), ("val", "2024–2026")):
+            for r in bk.get(nm, []):
+                brow.append([lab, f"<b>{r['bucket']}</b>", f"{r['n']}", ui.pct(r["f20"], 1, color=True), ui.pct(r["win20"], 0, sign=False),
+                             ui.pct(r["low20"], 1), ui.pct(r["f60"], 1, color=True)])
+        st.markdown(ui.section("歷史上修正 10% 以上時：止穩分數 vs 之後走勢", "加權指數；之後 20 日內再跌＝這 20 日中最低點相對當天的幅度"), unsafe_allow_html=True)
+        st.markdown(ui.table(["期間", "止穩分數", "天數", "之後 20 日", "上漲機率", "20 日內再跌", "之後 60 日"], brow, left=(0, 1)), unsafe_allow_html=True)
+        eps = hs.get("episodes") or []
+        if eps:
+            st.markdown("<div class='kq-muted' style='margin:4px 0 2px'>2017 年以來回落 ≥10% 的修正：" + "；".join(
+                f"{e['start'][:7]} 最深 {e['max_dd']:.0%}（低點 {e['low_date'][5:]}" + (f"，之後 60 日 {e['after_low_60d']:+.0%}" if e.get("after_low_60d") is not None else "")
+                + "）" for e in eps) + "</div>", unsafe_allow_html=True)
+        st.markdown("<div class='kq-muted'>怎麼用：分數高時之後再跌的幅度明顯較小（兩段期間都成立）；但 2024 年後的修正都是 V 型反彈，"
+                    "分數低時進場報酬反而不差 → 檢查表適合用來<b>控制分批的速度</b>，不是預測漲跌。</div>", unsafe_allow_html=True)
+
+    st.markdown(ui.section("觀察重點", "趨勢、廣度、資金、國際、估值、類股"), unsafe_allow_html=True)
+    tx = df["close"]
+    ma = sto["ma"]
+    trend = ("均線多頭排列" if ma[5] > ma[20] > ma[60] else "均線空頭排列" if ma[5] < ma[20] < ma[60] else "均線糾結")
+    amt20 = df["volume"].tail(20).mean() if "volume" in df else np.nan
+    pe_now = last.get("pe_mkt", np.nan)
+    pe_hist = df["pe_mkt"].dropna() if "pe_mkt" in df else pd.Series(dtype=float)
+    pe_pct = float((pe_hist < pe_now).mean()) if len(pe_hist) > 100 and ui.ok(pe_now) else np.nan
+    gm = group_moves(BID)
+    lines = [f"<b>趨勢</b>：收盤 {sto['close']:,.0f}，{'站上' if sto['close'] > ma[20] else '跌破'}月線（{ma[20]:,.0f}）、"
+             f"{'站上' if sto['close'] > ma[60] else '跌破'}季線（{ma[60]:,.0f}）、年線 {ma[240]:,.0f}；{trend}。",
+             f"<b>廣度</b>：近 5 日上漲 {df['up'].tail(5).sum():,.0f} 家／下跌 {df['down'].tail(5).sum():,.0f} 家；"
+             f"站上月線的股票 {ui.pct(last.get('ab20'), 0, sign=False)}，20 日新高 {last.get('hi20', 0):,.0f} 家、新低 {last.get('lo20', 0):,.0f} 家。",
+             f"<b>資金</b>：成交金額 {last.get('volume', np.nan):,.0f} 億（20 日均 {amt20:,.0f} 億）；外資近 5 日 {f5:+,.0f} 億、"
+             f"投信 {t5:+,.0f} 億；融資張數 10 日 {ui.pct(mchg, 1)}（{'去槓桿中' if ui.ok(mchg) and mchg <= -0.03 else '尚未明顯去槓桿'}）。"]
+    if ui.ok(sox_dd):
+        lines.append(f"<b>國際</b>：費半距一年高點 {ui.pct(sox_dd, 1)}，VIX {last.get('vix', np.nan):.1f}；"
+                     f"美元／台幣 {last.get('twd', np.nan):.2f}（{'台幣轉弱、外資匯出壓力' if ui.ok(last.get('twd')) and df['twd'].ffill().iloc[-1] > df['twd'].ffill().iloc[-21] else '台幣持穩'}）。")
+    if ui.ok(pe_now):
+        lines.append(f"<b>估值</b>：大盤本益比約 {pe_now:.1f} 倍（近兩年 {ui.pct(pe_pct, 0, sign=False)} 分位）、現金殖利率 {last.get('dy_mkt', np.nan):.2f}%。")
+    if len(gm):
+        lines.append("<b>類股</b>：近 5 日相對強 " + "、".join(f"{ui.esc(g)} {r.r5:+.1%}" for g, r in gm.head(4).iterrows())
+                     + "；最弱 " + "、".join(f"{ui.esc(g)} {r.r5:+.1%}" for g, r in gm.tail(4).iloc[::-1].iterrows()) + "。")
+    lines.append("<b>資金觀望或進場</b>：" + ("修正未止穩時，歷史上之後 20 日內平均還會再跌 3～5%；想進場用「分批」：例如先投入 1/3，"
+                                       "止穩訊號 ≥3（特別是融資去槓桿、外資賣壓減輕）再投入 1/3，站回月線再投入最後 1/3。"
+                                       if sto["corr"] and sto["score"] <= 2 else
+                                       "止穩訊號增加中，可依計畫分批布局；跌破前波低點則暫停加碼。" if sto["corr"] else
+                                       "非修正期：照模型名單操作即可。"))
+    st.markdown(ui.panel("今天的重點", ui.bullets(lines)), unsafe_allow_html=True)
+
+    rb = B.meta.get("rebound") or []
+    st.markdown(ui.section("修正期反彈候選（與主模型分開）",
+                           f"依 {B.meta.get('rebound_asof', '')} 收盤；成交金額前 500 名中「近 20 日跌多、距 60 日高點跌深、營收年增優於同業、投信沒有追高」等權排名"),
+                unsafe_allow_html=True)
+    if not rb:
+        st.markdown("<div class='kq-muted'>下一次每日研究後提供。</div>", unsafe_allow_html=True)
+    else:
+        inpick = {}
+        for h in HORIZON_KEYS:
+            for p in latest(h).get("picks", []):
+                inpick.setdefault(p["ticker"], []).append(HZ[h])
+        rows, mrows = [], []
+        for k, x in enumerate(rb[:20], 1):
+            lab = CH.get(x["ticker"]) or chainlib.label(x["ticker"], x.get("sector", ""))
+            g = lab.get("segment") or lab.get("group") or ""
+            also = "、".join(inpick.get(x["ticker"], []))
+            name = f"<b>{x['ticker']} {ui.esc(x['name'])}</b>" + (f" <span class='kq-tag'>也在{also}名單</span>" if also else "")
+            rows.append([f"{k}", name, ui.esc(g), ui.num(x["close"]), ui.pct(x["ret20"], 1, color=True), ui.pct(x["dd60"], 1),
+                         f"{x['rev_rel'] * 100:+.0f}pp" if ui.ok(x.get("rev_rel")) else "–", ui.pct(x["trust20"], 2), f"{x['score']:.2f}"])
+            mrows.append(ui.mcard(f"<span class='nm'>{k}. {x['ticker']} {ui.esc(x['name'])}</span>", ui.num(x["close"]),
+                                  f"近20日 {ui.pct(x['ret20'], 1, color=True)}｜距60日高 {ui.pct(x['dd60'], 1)}｜{ui.esc(g)}",
+                                  (f"營收年增比同業 {x['rev_rel'] * 100:+.0f}pp｜" if ui.ok(x.get("rev_rel")) else "") + f"分數 {x['score']:.2f}"
+                                  + (f"｜也在{also}名單" if also else "")))
+        st.markdown(ui.resp(ui.table(["#", "股票", "族群", "收盤", "近20日", "距60日高", "近3月營收年增 vs 同業", "投信20日/股本", "反彈分數"], rows, left=(1, 2)),
+                            "".join(mrows)), unsafe_allow_html=True)
+        st.markdown("<div class='kq-muted'>研究（docs/v2.0_rebound_protocol.md）：2017–2026 共 6 次修正中，這個分數的前 20 名之後 20 日平均 +6%、"
+                    "勝過同期大型股平均約 3 個百分點（2024–2026 驗證期 +6.3% vs 平均 +3.3%、0050 +5.2%）；但 2024 年 8 月那次輸給 0050。"
+                    "跌深股波動也大，請小量、分批，並設停損。主模型名單在 2024 年後的修正中表現與它相當，所以兩份名單重疊的股票最值得優先看。</div>",
+                    unsafe_allow_html=True)
+    with st.expander("模型裡原本就有的「跌深／止跌」設計"):
+        st.markdown(ui.bullets([
+            "短期反轉因子「近 5 日跌多」（t_rev5）：在短線候選池中，由每日研究決定是否使用。",
+            "科斯托蘭尼雞蛋階段：B3（下跌末段）要有「止跌確認」（W 底支撐或站回 5 日線且 5 日上漲）才會買。",
+            "市場階段持股水位：v1.1 測過「依階段降低持股」，真實資料兩段期間都拖累績效，所以預設不降水位。",
+            "v2.0 研究結論：修正期間「近期跌深、營收仍優於同業、不是投信擁擠股」反彈最好；修正前的強勢股（相對強度高、接近新高）"
+            "之後 20 日反彈較弱，這和主模型偏好的動能因子相反——所以修正期另外提供反彈候選，而不是改主模型。"]), unsafe_allow_html=True)
+
+
+# ================================================================== v2.0 精選 ETF
+@st.cache_data(show_spinner=False)
+def etf_table(bid) -> pd.DataFrame:
+    t = pd.DataFrame(B.meta.get("etf_table") or [])
+    return t
+
+
+def page_etf():
+    from kosto import etf as etflib
+    from kosto import market as mklib
+    header()
+    data_strip(("price", "etf"))
+    st.markdown(ui.section("精選 ETF", "含息報酬（配息再投入）；配息與不配息分開排名，依長期年化報酬（近 3 年，不足 3 年以近 1 年）由高到低"),
+                unsafe_allow_html=True)
+    _, _, sto = insight_frame(BID)
+    prof = st.segmented_control("你的風險屬性（與「資金配置」頁相同）", list(mklib.PROFILES), default="穩健型", key="etf_prof") or "穩健型"
+    al = mklib.allocation(prof, sto or {})
+    mix = None
+    hb = (RES or {}).get("horizons", {}).get("mid") if RES else None
+    if hb is not None and isinstance(hb.get("mix"), pd.DataFrame):
+        mix = hb["mix"]
+    st.markdown(ui.cards([("ETF（核心，長期持有）", f"{al['etf']:.0%}", "以 0050 等大盤型為主，配息與否不影響總報酬"),
+                          ("個股（衛星，照模型換股）", f"{al['stock']:.0%}", "中線名單為主，短長線依喜好"),
+                          ("市場狀態調整", f"{al['tilt']:+.0%}" if al["tilt"] else "不調整", ui.esc(al["why"][:40]) + "…" if len(al["why"]) > 40 else ui.esc(al["why"]))]),
+                unsafe_allow_html=True)
+    if mix is not None and len(mix):
+        rows = [[ui.esc(r["組合"]), ui.pct(r.get("oos_cagr"), 1, color=True), ui.pct(r.get("oos_mdd"), 1), f"{r.get('oos_sharpe', np.nan):.2f}",
+                 ui.pct(r.get("holdout_cagr"), 1, color=True)] for _, r in mix.iterrows()]
+        st.markdown(ui.table(["0050 核心＋中線模型（回測 2021 起）", "年化", "最大回撤", "Sharpe", "近一年"], rows, left=(0,)), unsafe_allow_html=True)
+    st.markdown("<div class='kq-muted'>建議：ETF 當核心長期持有（不需擇時）；個股部位照模型換股。修正期且止穩訊號 ≤2 時把 ETF 提高 20 個百分點，"
+                "回測 2021–2026 年化約 +1.5～2 個百分點、回撤略小（樣本只有約 5 次修正，參考就好）。配息與不配息的總報酬比較看「年化」即可；"
+                "配息另有所得稅與二代健保補充保費（單次 ≥2 萬元扣 2.11%），在意的話優先不配息或低配息。</div>", unsafe_allow_html=True)
+
+    t = etf_table(BID)
+    if t.empty:
+        st.info("ETF 資料將在下一次每日更新後開始累積：最新日期優先，約 1 個晚上有近 1 年報酬、4 個晚上補滿 5 年。")
+        return
+    st.markdown(f"<div class='kq-muted'>資料至 {B.meta.get('etf_asof', '')}｜上市＋上櫃 ETF {len(t)} 檔｜"
+                "排除：上市未滿 1 年、近 60 日平均成交金額 < 0.1 億；槓桿反向、期貨商品型另列（不列入建議）</div>", unsafe_allow_html=True)
+    tabs = st.tabs(["🏛️ 大盤型（核心）", "💰 配息", "📈 不配息", "🏦 債券", "⚠️ 槓桿反向", "🔍 全部／搜尋", "⚖️ 與選股模型比較"])
+
+    def show(x: pd.DataFrame, key: str):
+        if x.empty:
+            st.markdown("<div class='kq-muted'>沒有符合條件的 ETF。</div>", unsafe_allow_html=True)
+            return
+        rows, mrows = [], []
+        for k, (_, r) in enumerate(x.iterrows(), 1):
+            nm = f"<b>{r['ticker']} {ui.esc(r['name'])}</b>"
+            rows.append([f"{k}", nm, ui.esc(r["type"]), ui.pct(r["長期年化"], 1, color=True) + f"<span class='kq-muted'> {r['長期依據']}</span>",
+                         ui.pct(r["1月"], 1, color=True), ui.pct(r["3月"], 1, color=True), ui.pct(r["6月"], 1, color=True),
+                         ui.pct(r["1年"], 1, color=True), ui.pct(r["3年"], 1, color=True), ui.pct(r["5年"], 1, color=True),
+                         (ui.pct(r["殖利率"], 1, sign=False) + f" {ui.esc(r['頻率'])}") if r["配息"] else ui.esc(r["頻率"]),
+                         ui.pct(r["波動"], 0, sign=False), ui.pct(r["最大回撤"], 0), f"{r['成交額']:,.1f}" if ui.ok(r["成交額"]) else "–"])
+            mrows.append(ui.mcard(f"<span class='nm'>{k}. {r['ticker']} {ui.esc(r['name'])}</span>",
+                                  ui.pct(r["長期年化"], 1, color=True),
+                                  f"1月 {ui.pct(r['1月'], 1, color=True)}｜3月 {ui.pct(r['3月'], 1, color=True)}｜1年 {ui.pct(r['1年'], 1, color=True)}｜3年年化 {ui.pct(r['3年'], 1, color=True)}",
+                                  f"{ui.esc(r['type'])}｜{ui.esc(r['頻率'])}" + (f" 殖利率 {ui.pct(r['殖利率'], 1, sign=False)}" if r["配息"] else "")
+                                  + f"｜回撤 {ui.pct(r['最大回撤'], 0)}"))
+        st.markdown(ui.resp(ui.table(["#", "ETF", "類型", "長期年化", "1月", "3月", "6月", "1年", "3年年化", "5年年化", "殖利率／頻率",
+                                      "波動", "最大回撤", "成交額(億)"], rows, left=(1, 2)), "".join(mrows)), unsafe_allow_html=True)
+        sel = x["ticker"].head(5).tolist()
+        tr = etf_tr(BID)
+        if not tr.empty and sel:
+            yrs = st.segmented_control("走勢", ["1年", "3年", "5年"], default="1年", key=f"etf_rng_{key}") or "1年"
+            n = {"1年": 252, "3年": 756, "5年": 1260}[yrs]
+            cols = [c for c in sel + (["0050"] if "0050" not in sel else []) if c in tr]
+            seg = tr[cols].iloc[-n:]
+            navs = {f"{c} {etf_name(c)}": seg[c] / seg[c].dropna().iloc[0] for c in cols if seg[c].notna().sum() > 20}
+            from kosto.charts import nav_figure
+            st.plotly_chart(nav_figure(navs, height=300, log=False, dark=DARK), width="stretch", theme=None, key=f"etf_nav_{key}",
+                            config={"displaylogo": False, "displayModeBar": False})
+
+    with tabs[0]:
+        st.markdown("<div class='kq-muted'>和 0050 走勢幾乎同步（近一年日報酬相關係數 ≥0.95）的國內股票型 ETF：最適合當「核心」長期持有，"
+                    "差別主要在費用、配息方式與追蹤誤差。</div>", unsafe_allow_html=True)
+        show(etflib.picks(t, "大盤型", 12), "core")
+    with tabs[1]:
+        st.markdown("<div class='kq-muted'>提醒：近年報酬最高的多是半導體／科技主題 ETF，和 0050（台積電權重最大）高度重疊、波動也大；"
+                    "可以當衛星，不建議取代大盤型核心。高股息 ETF 在下跌時通常跌得較少。</div>", unsafe_allow_html=True)
+        show(etflib.picks(t, "配息", 15), "div")
+    with tabs[2]:
+        show(etflib.picks(t, "不配息", 15), "nodiv")
+    with tabs[3]:
+        show(etflib.picks(t, "債券", 10), "bond")
+    with tabs[4]:
+        st.markdown("<div class='kq-warn'>槓桿／反向 ETF 每天重設倍數，長期持有會有「波動耗損」，報酬不等於指數的 2 倍；"
+                    "大跌時回撤可達 50% 以上。只適合短線、看對方向時使用，不列入配置建議。</div>", unsafe_allow_html=True)
+        show(etflib.picks(t, "槓桿反向", 10, min_amt=0.0), "lev")
+    with tabs[5]:
+        q = st.text_input("搜尋代號或名稱（例：0056、高股息、美國）", key="etf_q")
+        x = t.copy()
+        if q:
+            x = x[x["ticker"].str.contains(q, case=False) | x["name"].str.contains(q, case=False)]
+        show(x.head(40), "all")
+    with tabs[6]:
+        st.markdown("<div class='kq-muted'>ETF 是一籃子股票、不用換股；選股模型是每週換股的 8 檔組合。把它們放在一起比，只能比「同一段時間的報酬與風險」：</div>",
+                    unsafe_allow_html=True)
+        rows = []
+        for h in HORIZON_KEYS:
+            ph = phase_stats(h)
+            if ph:
+                rows.append([f"<b>選股模型・{HZ[h]}</b>（回測）", ui.pct(ph["近一年_平均"], 1, color=True), ui.pct(ph["樣本外年化_平均"], 1, color=True) + "（2021 起）",
+                             ui.pct(ph["最大回撤_平均"], 0), "每週換股、交易成本已扣"])
+        for _, r in pd.concat([etflib.picks(t, "配息", 3), etflib.picks(t, "不配息", 3)]).iterrows():
+            rows.append([f"{r['ticker']} {ui.esc(r['name'])}", ui.pct(r["1年"], 1, color=True), ui.pct(r["3年"], 1, color=True) + "（近 3 年）",
+                         ui.pct(r["最大回撤"], 0), "買進持有、含息"])
+        st.markdown(ui.table(["標的", "近一年", "年化", "最大回撤", "說明"], rows, left=(0, 4)), unsafe_allow_html=True)
+        st.markdown("<div class='kq-muted'>模型的回測年化較高，但 2019–2020（研究沒用到的期間）輸 0050；ETF 不會有選錯股的風險。"
+                    "這就是建議「ETF 核心＋個股衛星」而不是二選一的原因。</div>", unsafe_allow_html=True)
+
+
+@st.cache_data(show_spinner=False)
+def etf_tr(bid) -> pd.DataFrame:
+    if "ETF_TR" not in B.a or not B.meta.get("etf_tickers"):
+        return pd.DataFrame()
+    return pd.DataFrame(B.a["ETF_TR"].astype(float), index=pd.DatetimeIndex(B.meta["etf_days"]), columns=B.meta["etf_tickers"])
+
+
+def etf_name(code: str) -> str:
+    t = etf_table(BID)
+    m = t[t["ticker"] == code] if len(t) else t
+    return str(m["name"].iloc[0]) if len(m) else ""
 
 
 # ================================================================== page: 國際盤
@@ -1519,7 +1896,7 @@ def page_guide():
             "現價在建議買進區 → 可進場（分 2–3 筆）。",
             "高於追價上限 → 不追，等拉回；漲停鎖住 → 放棄。",
             "回到拉回買點 → 適合加碼承接。"]),
-        ("持有｜何時賣出", "模型不設固定停利停損，讓獲利奔跑。", [
+        ("持有｜何時賣出", "模型不設固定停利停損，讓獲利奔跑；大盤急跌時先看「市場解讀」。", [
             "短線每週、中線每週一份、長線每 4 週一份做檢查。",
             f"排名仍在續抱門檻內（短 {BUF('short')}／中 {BUF('mid')}／長 {BUF('long')} 名）→ 續抱；跌出 → 隔天開盤換成新名單（「今日選股」的持股追蹤會直接列出）。",
             "跌破警戒價 → 重新檢視籌碼與基本面，不一定要賣。"]),
@@ -1533,7 +1910,9 @@ def page_guide():
     st.markdown(ui.panel("資金怎麼分", ui.bullets([
         "到「資金配置」輸入金額，系統算出每檔張數；每個期間持有 8 檔。",
         "保守：0050 50%＋中線 20%＋長線 30%｜穩健：0050 20%＋中線 40%＋長線 40%｜積極：短線 60%＋長線 40%。",
-        "0050 不是必要：關閉「包含 0050」即為全股票配置（報酬較高、波動較大）。短線與中線名單重疊約 8 成，兩者擇一。"])),
+        "0050 不是必要：關閉「包含 0050」即為全股票配置（報酬較高、波動較大）。短線與中線名單重疊約 8 成，兩者擇一。",
+        "v2.0：大盤修正 ≥10% 且「市場解讀」的止穩訊號 ≤2 項時，0050（或其他大盤型 ETF）暫時多 20 個百分點；止穩後恢復。",
+        "ETF 當核心長期持有、不用擇時；配息與不配息看含息「年化報酬」比較即可（見「精選ETF」）。"])),
         unsafe_allow_html=True)
     st.markdown(ui.section("價位怎麼算"), unsafe_allow_html=True)
     st.markdown(ui.table(["項目", "計算方式", "用途"], [
@@ -1862,7 +2241,9 @@ def page_lab():
 # ================================================================== navigation
 pages = [st.Page(page_picks, title="今日選股", icon="📋", url_path="picks", default=True),
          st.Page(page_live, title="盤中監控", icon="⏱️", url_path="live"),
+         st.Page(page_insight, title="市場解讀", icon="🧭", url_path="insight"),
          st.Page(page_market, title="大盤", icon="📈", url_path="market"),
+         st.Page(page_etf, title="精選ETF", icon="💰", url_path="etf"),
          st.Page(page_world, title="國際盤", icon="🌏", url_path="world"),
          st.Page(page_stock, title="個股診斷", icon="🔍", url_path="stock"),
          st.Page(page_alloc, title="資金配置", icon="⚖️", url_path="alloc"),

@@ -81,7 +81,8 @@ def latest_runs(repo: str, token: str | None, n: int = 5) -> list:
     if r.status_code != 200:
         return []
     return [{"name": x["name"], "status": x["status"], "conclusion": x["conclusion"], "created": x["created_at"],
-             "url": x["html_url"]} for x in r.json().get("workflow_runs", [])]
+             "updated": x.get("updated_at"), "event": x.get("event"), "url": x["html_url"]}
+            for x in r.json().get("workflow_runs", [])]
 
 
 # ------------------------------------------------------------------ group packs (used by Actions)

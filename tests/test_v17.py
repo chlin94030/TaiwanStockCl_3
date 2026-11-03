@@ -246,20 +246,57 @@ def test_v19_freshness_status():
     from kosto import freshness as F
     tz = "Asia/Taipei"
     T = lambda s: pd.Timestamp(s, tz=tz)  # noqa: E731
-    # 週五 10:00：資料到週四 → 已是最新
+    run = lambda c, con="success", stt="completed": {"status": stt, "conclusion": con, "created": c, "event": "schedule", "url": "u"}  # noqa: E731
+    # 週五 10:00：資料到週四 → 已是最新；週五 15:00 → 提示今日 21:40 更新
     assert F.status(T("2026-10-30 10:00"), pd.Timestamp("2026-10-29"), None)[0] == "green"
-    # 週五 15:00：已是最新，提示今日 21:40 更新
     lv, tx, _ = F.status(T("2026-10-30 15:00"), pd.Timestamp("2026-10-29"), None)
     assert lv == "green" and "21:40" in tx
-    # 週六 01:00：應到週五；只到週四 → 本機模式黃燈（可能假日），GitHub 有成功紀錄但更早 → 紅燈
+    # 使用者回報的情況：週二 00:39，資料到上週五 10/30，最近一次執行是週六 → 週一的排程沒有啟動 → 紅燈
+    lv, tx, _ = F.status(T("2026-11-03 00:39"), pd.Timestamp("2026-10-30"), run("2026-10-31T02:00:00Z"))
+    assert lv == "red" and "11/02" in tx and "沒有啟動" in tx
+    # 週一 21:40 之後有成功執行但沒有新資料 → 黃燈（休市？）
+    assert F.status(T("2026-11-03 00:39"), pd.Timestamp("2026-10-30"), run("2026-11-02T13:45:00Z"))[0] == "amber"
+    # 執行中（含排隊、等待）→ 黃燈；失敗 → 紅燈
+    for stt in ("in_progress", "queued", "pending", "waiting"):
+        assert F.status(T("2026-11-02 22:10"), pd.Timestamp("2026-10-30"), run("2026-11-02T13:41:00Z", None, stt))[0] == "amber"
+    assert F.status(T("2026-11-02 22:10"), pd.Timestamp("2026-10-30"), run("2026-11-02T13:41:00Z", "failure"))[0] == "red"
+    # 本機模式：差 1 個交易日 → 黃燈；落後一週 → 紅燈
     assert F.status(T("2026-10-31 01:00"), pd.Timestamp("2026-10-29"), None)[0] == "amber"
-    old = {"status": "completed", "conclusion": "success", "created": "2026-10-29T13:40:00Z", "url": "u"}
-    assert F.status(T("2026-10-31 01:00"), pd.Timestamp("2026-10-29"), old)[0] == "red"
-    # 週五是假日：週五 21:40 之後有成功執行 → 綠燈
-    new = {"status": "completed", "conclusion": "success", "created": "2026-10-30T13:41:00Z", "url": "u"}
-    assert F.status(T("2026-10-31 01:00"), pd.Timestamp("2026-10-29"), new)[0] == "green"
-    # 執行中／失敗
-    assert F.status(T("2026-10-30 22:10"), pd.Timestamp("2026-10-29"), {"status": "in_progress", "url": "u"})[0] == "amber"
-    assert F.status(T("2026-10-30 22:10"), pd.Timestamp("2026-10-29"), {"status": "completed", "conclusion": "failure"})[0] == "red"
-    # 落後一週 → 紅燈
     assert F.status(T("2026-10-31 01:00"), pd.Timestamp("2026-10-22"), None)[0] == "red"
+    assert "11/02 21:52" in F.run_desc(run("2026-11-02T13:52:00Z"))
+
+
+def test_v191_fresh_check_and_same_day_streak():
+    import datetime as dt
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location("fc", Path(__file__).parents[1] / "scripts" / "fresh_check.py")
+    fc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fc)
+    tpe = fc.TPE
+    now = dt.datetime(2026, 11, 2, 23, 17, tzinfo=tpe)                       # 週一 23:17 備援
+    ok = {"research": {"last_date": "2026-11-02"}, "latest": {"margin": "2026-11-02"}}
+    assert fc.decide(ok, now)[0] is True
+    assert fc.decide({"research": {"last_date": "2026-10-30"}, "latest": {"margin": "2026-10-30"}}, now)[0] is False
+    assert fc.decide({"research": {"last_date": "2026-11-02"}, "latest": {"margin": "2026-10-30"}}, now)[0] is False
+    assert fc.decide({}, now)[0] is False
+    assert fc.expected_day(dt.datetime(2026, 11, 3, 6, 23, tzinfo=tpe)).isoformat() == "2026-11-02"   # 隔天早上的備援
+    assert fc.expected_day(dt.datetime(2026, 11, 2, 12, 0, tzinfo=tpe)).isoformat() == "2026-10-30"   # 週一中午 → 上週五
+    # 同一資料日重跑（備援、上傳程式）→ 連續天數不重複累加
+    from kosto import tournament as T
+    from kosto.config import load_config
+    cfg = load_config()
+    champ = T.base_params(cfg, "mid")
+    better = T.challengers(champ)[0]
+    rows = [r for ph in range(5) for r in (
+        {"phase": ph, "h": "mid", "key": T.key(champ), "params": champ, "dev_excess": 0.2, "dev_ir": 0.7, "hold_cagr": 0.9},
+        {"phase": ph, "h": "mid", "key": T.key(better), "params": better, "dev_excess": 0.25, "dev_ir": 0.8, "hold_cagr": 0.9})]
+    res = {"protocol": {"last_date": "2026-11-02"}, "horizons": {"mid": {}}}
+    st = T.update({}, rows, res, cfg, cfg)
+    st = T.update(st, rows, res, cfg, cfg)
+    assert st["leader"]["mid"]["streak"] == 1
+    res["protocol"]["last_date"] = "2026-11-03"
+    st = T.update(st, rows, res, cfg, cfg)
+    assert st["leader"]["mid"]["streak"] == 2
+
+

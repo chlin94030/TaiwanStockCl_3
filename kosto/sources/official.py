@@ -34,6 +34,7 @@ HEADERS = {
 }
 STOCK_RE = re.compile(r"^[0-9]{4}$")          # common stocks
 KEEP_RE = re.compile(r"^(?:[1-9][0-9]{3}|0050)$")  # stocks + 0050 benchmark
+ETF_RE = re.compile(r"^00[0-9]{2,4}[A-Z]?$")       # v2.0 ETF（0050、0056、00878、00631L、00679B、00400A…）
 
 
 class SourceError(RuntimeError):
@@ -232,7 +233,87 @@ def parse_twse_price(payload: dict, d) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def parse_twse_exright(payload: dict) -> pd.DataFrame:
+def parse_twse_etf(payload: dict, d) -> pd.DataFrame:
+    """v2.0 MI_INDEX type=0099P（只有 ETF）→ date ticker board name open high low close volume amount change event。"""
+    if _twse_empty(payload):
+        return pd.DataFrame()
+    rows = []
+    for fields, data in _twse_tables(payload):
+        ic = find_col(fields, "證券代號")
+        if ic is None or find_col(fields, "收盤價") is None:
+            continue
+        col = {k: find_col(fields, *v) for k, v in {
+            "name": ("證券名稱",), "volume": ("成交股數",), "amount": ("成交金額",), "open": ("開盤價",),
+            "high": ("最高價",), "low": ("最低價",), "close": ("收盤價",), "sign": ("漲跌(+/-)",), "chg": ("漲跌價差",)}.items()}
+        for r in data:
+            code = clean(r[ic])
+            if not ETF_RE.match(code):
+                continue
+            sign = clean(r[col["sign"]]) if col["sign"] is not None else ""
+            ch = num(r[col["chg"]]) if col["chg"] is not None else np.nan
+            event = ""
+            if sign == "X":
+                event, ch = "X", np.nan
+            elif sign == "-":
+                ch = -ch
+            elif sign != "+":
+                ch = 0.0 if ch == 0 or np.isnan(ch) else ch
+            rows.append({"date": pd.Timestamp(d), "ticker": code, "board": "TWSE", "name": clean(r[col["name"]]),
+                         "open": num(r[col["open"]]), "high": num(r[col["high"]]), "low": num(r[col["low"]]),
+                         "close": num(r[col["close"]]), "volume": num(r[col["volume"]]), "amount": num(r[col["amount"]]),
+                         "change": ch, "event": event})
+    return pd.DataFrame(rows)
+
+
+def parse_twse_bfi82u(payload: dict) -> dict:
+    """v2.0 上市三大法人買賣金額統計（元）→ {foreign, trust, dealer, inst_total}（買賣超，元）。"""
+    if _twse_empty(payload):
+        return {}
+    out = {}
+    for fields, data in _twse_tables(payload):
+        idiff = find_col(fields, "買賣差額")
+        if idiff is None:
+            continue
+        for r in data:
+            k = clean(r[0])
+            v = num(r[idiff])
+            if k.startswith("外資及陸資"):
+                out["foreign"] = out.get("foreign", 0.0) + v
+            elif k.startswith("外資自營商"):
+                out["foreign"] = out.get("foreign", 0.0) + (0.0 if np.isnan(v) else v)
+            elif k == "投信":
+                out["trust"] = v
+            elif k.startswith("自營商"):
+                out["dealer"] = out.get("dealer", 0.0) + v
+            elif k == "合計":
+                out["inst_total"] = v
+    return out
+
+
+def parse_twse_margin_ms(payload: dict) -> dict:
+    """v2.0 上市信用交易統計 → {margin_amt（融資金額，元）, margin_lots, short_lots}。"""
+    if _twse_empty(payload):
+        return {}
+    out = {}
+    for fields, data in _twse_tables(payload):
+        if norm(fields[0]) != "項目":
+            continue
+        it = find_col(fields, "今日餘額")
+        if it is None:
+            continue
+        for r in data:
+            k = clean(r[0])
+            if k.startswith("融資金額"):
+                out["margin_amt"] = num(r[it]) * 1000.0
+            elif k.startswith("融資"):
+                out["margin_lots"] = num(r[it])
+            elif k.startswith("融券"):
+                out["short_lots"] = num(r[it])
+        break
+    return out
+
+
+def parse_twse_exright(payload: dict, keep=KEEP_RE) -> pd.DataFrame:
     if _twse_empty(payload):
         return pd.DataFrame()
     rows = []
@@ -243,7 +324,7 @@ def parse_twse_exright(payload: dict) -> pd.DataFrame:
             continue
         for r in data:
             code = clean(r[ic])
-            if KEEP_RE.match(code):
+            if keep.match(code):
                 rows.append({"date": roc_to_date(r[idt]), "ticker": code, "board": "TWSE",
                              "before": num(r[ib]), "ref": num(r[ir])})
     f = pd.DataFrame(rows)
@@ -337,7 +418,7 @@ def _tpex_tables(payload: dict):
         yield None, payload["aaData"]
 
 
-def parse_tpex_price(payload: dict, d) -> pd.DataFrame:
+def parse_tpex_price(payload: dict, d, keep=KEEP_RE) -> pd.DataFrame:
     rows = []
     for fields, data in _tpex_tables(payload):
         if fields is None or find_col(fields, "代號") is None:
@@ -348,7 +429,7 @@ def parse_tpex_price(payload: dict, d) -> pd.DataFrame:
             "shares": ("發行股數",)}.items()}
         for r in data:
             code = clean(r[c["code"]])
-            if not KEEP_RE.match(code):
+            if not keep.match(code):
                 continue
             raw = clean(r[c["chg"]]).replace(" ", "")
             event, ch = "", num(raw)
@@ -362,7 +443,7 @@ def parse_tpex_price(payload: dict, d) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def parse_tpex_exright(payload: dict) -> pd.DataFrame:
+def parse_tpex_exright(payload: dict, keep=KEEP_RE) -> pd.DataFrame:
     rows = []
     for fields, data in _tpex_tables(payload):
         if fields is None:
@@ -373,7 +454,7 @@ def parse_tpex_exright(payload: dict) -> pd.DataFrame:
             continue
         for r in data:
             code = clean(r[ic])
-            if KEEP_RE.match(code):
+            if keep.match(code):
                 rows.append({"date": roc_to_date(r[idt]), "ticker": code, "board": "TPEX",
                              "before": num(r[ib]), "ref": num(r[ir])})
     f = pd.DataFrame(rows)
@@ -541,6 +622,32 @@ class Official:
     def tpex_exright(self, start, end):
         return parse_tpex_exright(self.http.get(f"{TPEX}/www/zh-tw/bulletin/exDailyQ",
                                                 {"startDate": _slash(start), "endDate": _slash(end), "response": "json"}))
+
+    # v2.0 ETF（價格：上市 type=0099P 只有 ETF；上櫃沿用 EW 行情只留 ETF 代號）與配息
+    def twse_etf(self, d):
+        return parse_twse_etf(self.http.get(f"{TWSE}/rwd/zh/afterTrading/MI_INDEX",
+                                            {"date": _ymd(d), "type": "0099P", "response": "json"}), d)
+
+    def tpex_etf(self, d):
+        return parse_tpex_price(self.http.get(f"{TPEX}/www/zh-tw/afterTrading/otc",
+                                              {"date": _slash(d), "type": "EW", "response": "json"}), d, keep=ETF_RE)
+
+    def twse_exright_etf(self, start, end):
+        return parse_twse_exright(self.http.get(f"{TWSE}/rwd/zh/exRight/TWT49U",
+                                                {"startDate": _ymd(start), "endDate": _ymd(end), "response": "json"}), keep=ETF_RE)
+
+    def tpex_exright_etf(self, start, end):
+        return parse_tpex_exright(self.http.get(f"{TPEX}/www/zh-tw/bulletin/exDailyQ",
+                                                {"startDate": _slash(start), "endDate": _slash(end), "response": "json"}), keep=ETF_RE)
+
+    # v2.0 上市大盤官方合計：三大法人買賣金額＋信用交易統計（融資金額）
+    def twse_mkt(self, d) -> pd.DataFrame:
+        a = parse_twse_bfi82u(self.http.get(f"{TWSE}/rwd/zh/fund/BFI82U", {"dayDate": _ymd(d), "type": "day", "response": "json"}))
+        b = parse_twse_margin_ms(self.http.get(f"{TWSE}/rwd/zh/marginTrading/MI_MARGN",
+                                               {"date": _ymd(d), "selectType": "MS", "response": "json"}))
+        if not a and not b:
+            return pd.DataFrame()
+        return pd.DataFrame([{"date": pd.Timestamp(d), "ticker": "TWSE", **a, **b}])
 
     # 加權指數歷史（每月一次）
     def twse_index_month(self, d) -> pd.DataFrame:

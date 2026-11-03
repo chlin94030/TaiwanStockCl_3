@@ -32,6 +32,9 @@ class Panel:
     rev_m: pd.DataFrame = None                       # monthly revenue (index ym int, columns ticker)
     world: pd.DataFrame = None                       # v1.7 國際市場收盤，已對齊到「台股 T 日收盤後可知」（見 align_world）
     index_daily: pd.DataFrame = None                 # v1.9 加權指數日 K：open high low close volume(股) amount(元)
+    etf_px: pd.DataFrame = None                      # v2.0 ETF 日行情（long format；只給 ETF 頁）
+    etf_div: pd.DataFrame = None                     # v2.0 ETF 除息
+    mkt_off: pd.DataFrame = None                     # v2.0 上市官方合計（三大法人買賣金額、融資金額）index=date
     synthetic: bool = False
     quality: dict = field(default_factory=dict)
 
@@ -153,10 +156,12 @@ def build_panel(store: Store, start=None, end=None, min_names_per_day: int = 50)
     for c in ("foreign", "trust", "dealer", "total"):
         P.m[c] = _pivot(inst, c, dates, tickers).where(P.m["tradable"]).fillna(0).astype(F32)
     P.quality["institutional_coverage"] = float((inst["date"].nunique() / len(dates)) if not inst.empty else 0)
+    P.quality["institutional_last"] = str(pd.Timestamp(inst["date"].max()).date()) if not inst.empty else None
     mg = store.read("margin", start, end)
     for c in ("mbal", "mlimit", "sbal"):
         P.m[c] = _pivot(mg, c, dates, tickers).ffill(limit=5).astype(F32)
     P.quality["margin_coverage"] = float((mg["date"].nunique() / len(dates)) if not mg.empty else 0)
+    P.quality["margin_last"] = str(pd.Timestamp(mg["date"].max()).date()) if not mg.empty else None
 
     # TDCC weekly big holders (optional; forward-filled up to 3 weeks)
     ho = store.read("holders", start, end)
@@ -173,6 +178,7 @@ def build_panel(store: Store, start=None, end=None, min_names_per_day: int = 50)
         P.m[c] = _pivot(va, c, dates, tickers).ffill(limit=5).astype(F32)
     P.m["pe"] = P.m["pe"].where(P.m["pe"] > 0)
     P.quality["valuation_coverage"] = float((va["date"].nunique() / len(dates)) if not va.empty else 0)
+    P.quality["valuation_last"] = str(pd.Timestamp(va["date"].max()).date()) if not va.empty else None
 
     # monthly revenue (point-in-time mapping happens in factors)
     rv = store.read("revenue")
@@ -184,12 +190,34 @@ def build_panel(store: Store, start=None, end=None, min_names_per_day: int = 50)
         P.rev_m = rm.reindex([p.year * 100 + p.month for p in per])  # contiguous months for YoY shifts
     P.quality["revenue_months"] = 0 if rv.empty else int(rv["ym"].nunique())
 
-    P.world = align_world(store.read("world"), dates)
+    wraw = store.read("world")
+    P.world = align_world(wraw, dates)
+    if not wraw.empty:
+        sox = wraw[wraw["ticker"].astype(str) == "SOX"]
+        P.quality["world_last"] = str(pd.Timestamp((sox if len(sox) else wraw)["date"].max()).date())
     ix = store.read("index")
     if not ix.empty:
         ix = ix[ix["ticker"].astype(str) == "TAIEX"].drop_duplicates("date", keep="last").set_index("date").sort_index()
         P.index_daily = ix[[c for c in ("open", "high", "low", "close", "volume", "amount") if c in ix]].astype(float)
     P.quality["world_series"] = int(P.world.shape[1])
+    for key, attr in (("etf", "etf_px"), ("etf_div", "etf_div")):              # v2.0 ETF（不進選股模型）
+        try:
+            f = store.read(key, None, end)
+        except Exception:  # noqa: BLE001
+            f = pd.DataFrame()
+        if not f.empty:
+            f = f.copy()
+            f["ticker"] = f["ticker"].astype(str)
+            for c in ("name", "board", "event"):
+                if c in f:
+                    f[c] = f[c].astype(object)
+            setattr(P, attr, f)
+    try:
+        mo = store.read("mkt", None, end)
+        if not mo.empty:
+            P.mkt_off = mo.drop_duplicates("date", keep="last").set_index("date").sort_index().drop(columns=["ticker"], errors="ignore")
+    except Exception:  # noqa: BLE001
+        pass
 
     info = store.read("info")
     names = price.dropna(subset=["name"]).groupby("ticker")["name"].last() if "name" in price else pd.Series(dtype=str)
