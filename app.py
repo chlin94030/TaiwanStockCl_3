@@ -20,6 +20,7 @@ import streamlit as st
 from kosto import APP_NAME, __version__
 from kosto import chain as chainlib
 from kosto import freshness
+from kosto import intraday as IDY
 from kosto import linkage
 from kosto import plan as planlib
 from kosto import ta
@@ -412,6 +413,15 @@ def world_live() -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def world_tile_chart(di, spark) -> str:
+    """國際盤小卡的圖：有分時用分時（平盤虛線）；沒有就用近 1 月收盤（期初虛線）。"""
+    if di is not None:
+        html = ui.intraday_mini(di, h=44, labels=False)
+        if html:
+            return html
+    return ui.trend_mini(spark, h=40, labels=False) if spark else ""
+
+
 def world_snapshot() -> dict:
     """{key: {price, chg, time, spark, live}}；即時抓不到時用研究資料（前一個美股交易日收盤）。"""
     out = {}
@@ -559,6 +569,101 @@ def taiex_now() -> dict:
             out = {"px": float(q["price"].iloc[0]), "chg": float(q["chg"].iloc[0]), "live": True,
                    "date": pd.Timestamp.now(tz="Asia/Taipei").normalize().tz_localize(None), "time": q["time"].iloc[0]}
     return out
+
+
+# ================================================================== v2.1.1 當日分時走勢（平盤線、紅漲綠跌）
+def _tw_live() -> bool:
+    return market_phase() in ("盤中", "盤前試撮")
+
+
+def _slot(fast: bool) -> str:
+    """快取時間槽：盤中每分鐘更新，其他時間每 10 分鐘。"""
+    now = pd.Timestamp.now(tz="Asia/Taipei")
+    return f"{now:%Y%m%d%H%M}" if fast else f"{now:%Y%m%d%H}{now.minute // 10}"
+
+
+@st.cache_data(ttl=1800, show_spinner=False, max_entries=64)
+def intraday_raw(syms: tuple, slot: str, interval: str = "2m") -> dict:
+    try:
+        return IDY.fetch_many(list(syms), interval)
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def tw_intraday(tickers, interval: str = "2m") -> dict:
+    """台股個股分時（Yahoo）＋盤中以證交所即時價補最新一點、以官方昨收為平盤。"""
+    tk = [t for t in dict.fromkeys(tickers) if t in TIDX]
+    if not tk:
+        return {}
+    sym = {t: IDY.yahoo_symbol(t, BOARDS[TIDX[t]]) for t in tk}
+    live = _tw_live()
+    raw = intraday_raw(tuple(sorted(set(sym.values()))), _slot(live), interval)
+    out = {t: raw.get(s) for t, s in sym.items()}
+    if live:
+        q, _ = quotes_for(tk)
+        for t in tk:
+            if len(q) and t in q.index:
+                out[t] = IDY.merge_live(out[t], q.loc[t].to_dict())
+    return {t: d for t, d in out.items() if d is not None and len(d["v"]) >= 2}
+
+
+def taiex_intraday() -> dict | None:
+    live = _tw_live()
+    d = intraday_raw((IDY.TAIEX,), _slot(live), "1m").get(IDY.TAIEX)
+    if live:
+        q, _ = live_quotes((INDEX_CH["加權指數"],))
+        if len(q):
+            d = IDY.merge_live(d, q.iloc[0].to_dict())
+    return d if d is not None and len(d["v"]) >= 2 else None
+
+
+def world_intraday(keys) -> dict:
+    """國際指數／期貨／個股的最近一個交易時段分時（美股晚上盤中每分鐘更新）。"""
+    from kosto.sources import world as W
+    sym = {k: W.SYMBOLS[k] for k in keys if k in W.SYMBOLS}
+    raw = intraday_raw(tuple(sorted(set(sym.values()))), _slot(True), "5m")
+    return {k: raw[s] for k, s in sym.items() if s in raw and len(raw[s]["v"]) >= 2}
+
+
+def intraday_title(d) -> str:
+    r = d["last"] / d["prev"] - 1 if d["prev"] else np.nan
+    return f"{IDY.status(d)} <b style='color:{ui.color_of(r)}'>{r * 100:+.2f}%</b>" if ui.ok(r) else IDY.status(d)
+
+
+def intraday_stats(d, digits: int = 2, unit: str = "") -> str:
+    """分時圖上方的數字列：現價、漲跌點與幅度、開高低、振幅、平盤、時間。"""
+    f = (lambda x: ui.num(x, digits)) if digits is not None else ui.price
+    diff = d["last"] - d["prev"]
+    r = diff / d["prev"]
+    c = ui.color_of(r)
+    arrow = "▲" if diff > 0 else ("▼" if diff < 0 else "")
+    amp = (d["high"] - d["low"]) / d["prev"]
+    return (f"<div class='kq-istat'><span class='big' style='color:{c}'>{f(d['last'])}</span>"
+            f"<span style='color:{c};font-weight:600'>{arrow}{f(abs(diff))}（{r * 100:+.2f}%）</span>"
+            f"<span>開 <b>{f(d['open'])}</b></span><span>高 <b style='color:{ui.color_of(d['high'] - d['prev'])}'>{f(d['high'])}</b></span>"
+            f"<span>低 <b style='color:{ui.color_of(d['low'] - d['prev'])}'>{f(d['low'])}</b></span>"
+            f"<span>振幅 <b>{amp * 100:.2f}%</b></span><span>平盤 <b>{f(d['prev'])}</b></span>"
+            f"<span>{ui.esc(IDY.status(d))}{unit}</span></div>")
+
+
+def intraday_chart(d, key: str, height: int = 300, digits: int = 2, volume: bool = True):
+    from kosto.charts import intraday_figure
+    st.plotly_chart(intraday_figure(d, height=height, dark=DARK, digits=digits, volume=volume), width="stretch", theme=None,
+                    key=key, config={"displaylogo": False, "displayModeBar": False, "scrollZoom": False})
+
+
+def mini_rows(rows) -> str:
+    """[(名稱, 分時資料, 補充)] → 一列一檔的小分時圖清單。"""
+    out = []
+    for name, d, extra in rows:
+        if d is None:
+            continue
+        r = d["last"] / d["prev"] - 1
+        out.append(f"<div class='kq-imini'><span class='n' title='{ui.esc(name)}'>{ui.esc(name)}</span>"
+                   f"<span class='g'>{ui.intraday_mini(d, h=30, labels=False)}</span>"
+                   f"<span class='c' style='color:{ui.color_of(r)}'>{r * 100:+.2f}%</span></div>"
+                   + (f"<div class='kq-muted' style='margin:-4px 0 4px'>{extra}</div>" if extra else ""))
+    return "".join(out)
 
 
 def header(world: bool = True):
@@ -734,8 +839,8 @@ def _ret_n(arr, n):
     return float(a[-1] / a[-1 - n] - 1) if len(a) > n and a[-1 - n] > 0 else np.nan
 
 
-def group_compare_html(j) -> tuple[str, str]:
-    from kosto import brief as brieflib
+def group_members(j) -> tuple[str, list]:
+    """同族群成員（細產業 → 不足時用主題 → 再不足用產業鏈族群），依市值取前 10，本股排第一或在內。"""
     from kosto import peers as peerslib
     t = B.tickers[j]
     seg = _seg_of(t)
@@ -753,6 +858,12 @@ def group_compare_html(j) -> tuple[str, str]:
     mem = sorted(set(mem), key=lambda k: -np.nan_to_num(cap[k]))[:10]
     if j not in mem:
         mem = [j] + mem[:9]
+    return seg, mem
+
+
+def group_compare_html(j) -> tuple[str, str]:
+    from kosto import brief as brieflib
+    seg, mem = group_members(j)
     C = B.a.get("Q_C")
     rows, mrows = [], []
     for k in mem:
@@ -817,6 +928,39 @@ def peers_html(j) -> str:
     return out
 
 
+def _px_digits(x) -> int:
+    return 2 if ui.ok(x) and float(x) < 50 else (1 if ui.ok(x) and float(x) < 500 else 0)
+
+
+def stock_today(j, key: str = "sv"):
+    """個股今日走勢（分時＋量）與同族群今日走勢（每列以平盤為中線）。"""
+    t = B.tickers[j]
+    seg, mem = group_members(j)
+    peers = [B.tickers[k] for k in mem if k != j][:7]
+    intr = tw_intraday([t] + peers)
+    d = intr.get(t)
+    i1, i2 = st.columns([1.75, 1])
+    with i1:
+        st.markdown(f"<div class='kq-h' style='margin:8px 0 4px'><span class='t'>今日走勢｜{ui.esc(NAMES[j])}</span>"
+                    "<span class='s'>分時｜虛線＝平盤（昨收），線在上方紅、下方綠；下方為每 2 分鐘成交量（張）</span></div>",
+                    unsafe_allow_html=True)
+        if d is None:
+            st.markdown("<div class='kq-muted'>分時資料暫時無法取得（Yahoo Finance），請稍後重新整理；下方 K 線不受影響。</div>",
+                        unsafe_allow_html=True)
+        else:
+            st.markdown(intraday_stats(d, None), unsafe_allow_html=True)
+            intraday_chart(d, key=f"{key}_intra_{t}", height=300, digits=_px_digits(d["prev"]), volume=True)
+    rows = [(f"{x} {NAMES[TIDX[x]]}", intr.get(x), "") for x in peers if x in TIDX]
+    body = mini_rows(rows)
+    up = sum(1 for _, x, _ in rows if x is not None and x["last"] > x["prev"])
+    dn = sum(1 for _, x, _ in rows if x is not None and x["last"] < x["prev"])
+    note = (f"<div class='kq-muted' style='margin-top:6px'>同族群 {up} 漲 {dn} 跌" + ("，與本股同向" if d is not None and (
+        (d["last"] > d["prev"] and up > dn) or (d["last"] < d["prev"] and dn > up)) else "") + "。族群共漲共跌多半在開盤就反映（見國際盤「連動研究」）。</div>"
+            if body else "")
+    i2.markdown(ui.panel(f"同族群今日走勢｜{seg}", (body or "<div class='kq-muted'>分時資料暫時無法取得。</div>") + note),
+                unsafe_allow_html=True)
+
+
 def stock_view(j, h="mid", key="sv"):
     t = B.tickers[j]
     c = CH.get(t, {})
@@ -843,6 +987,7 @@ def stock_view(j, h="mid", key="sv"):
     c2.markdown(ui.panel("籌碼動向｜三大法人・融資券・大戶", chips_html(chips(BID, j))), unsafe_allow_html=True)
     c3.markdown(ui.panel("基本面快照與短評", brief_html(j) + "<div style='margin-top:8px'></div>" + fundamentals_html(j)),
                 unsafe_allow_html=True)
+    stock_today(j, key)
     g1, g2 = st.columns([1.6, 1])
     seg, grp_html = group_compare_html(j)
     g1.markdown(ui.panel(f"同族群比較｜{seg}", grp_html), unsafe_allow_html=True)
@@ -861,13 +1006,6 @@ def stock_view(j, h="mid", key="sv"):
 
 
 # ================================================================== page: 今日選股
-def spark_of(j, n=60, fluid=False) -> str:
-    if not HAS_Q:
-        return ""
-    df = raw_frame(BID, j)
-    return ui.spark(df["close"].tail(n).tolist(), fluid=fluid) if len(df) > 5 else ""
-
-
 def phase_stats(h):
     t = (RES or {}).get("phases")
     if t is None or not len(t):
@@ -896,23 +1034,46 @@ def pick_items(h, lt) -> list[dict]:
     return out
 
 
-def pick_card(it) -> str:
+CARD_CHART = {"today": "今日分時", "m1": "近 1 月", "m3": "近 3 月"}
+
+
+def card_chart(j, mode: str, d=None) -> str:
+    """選股卡片的走勢圖：今日分時（平盤虛線、紅漲綠跌）或近 1／3 月（期初價虛線）；分時取不到時改顯示近 3 月。"""
+    if mode == "today" and d is not None:
+        html = ui.intraday_mini(d, title=intraday_title(d))
+        if html:
+            return html
+        mode = "m3"
+    if not HAS_Q:
+        return ""
+    n = 21 if mode == "m1" else 63
+    df = raw_frame(BID, j)
+    lab = {"m1": "近1月", "m3": "近3月"}.get(mode, "近3月")
+    return ui.trend_mini(df["close"].tail(n + 1).tolist(), period=lab) if len(df) > 5 else ""
+
+
+def pick_card(it, mode: str = "m3", d=None) -> str:
     t, j, pl = it["t"], it["j"], it["pl"]
     c = CH.get(t, {})
     status = ui.badge("續抱", "#5b21b6") if it["kept"] else ui.badge("新進・明日買", "#1d4ed8")
     tone = ui.tone_badge(it["cs"].get("tone", "中性")) if it["cs"] else ""
-    lad = ui.ladder(it["close"], pl.buy_low, pl.buy_high, pl.chase, pl.alert, compact=True) if pl else ""
+    px, ch, tag = it["close"], it["ch"], ""
+    if d is not None and d["date"] > B.sig_dates[-1].date():          # 今天的價格比研究資料新 → 顯示今天的（盤中＝即時）
+        px, ch = d["last"], d["last"] / d["prev"] - 1
+        tag = "<span class='kq-sub' style='display:block;font-size:10.5px;font-weight:400'>" + ui.esc(IDY.status(d)) + "</span>"
+    lad = ui.ladder(px, pl.buy_low, pl.buy_high, pl.chase, pl.alert, compact=True) if pl else ""
     themes = "".join(ui.tag(x, "g") for x in c.get("themes", [])[:2])
     return (f"<div class='kq-pcard'><div class='hd'><div><span class='rk'>{it['n']}</span><span class='kq-cd'>{t}</span>"
             f"<span class='nm'>{ui.esc(NAMES[j])}</span><span class='kq-sub'> {BOARD_ZH.get(BOARDS[j], '')}</span></div>"
-            f"<div class='px'>{ui.price(it['close'])}<small>{ui.chg(it['ch'])}</small></div></div>"
+            f"<div class='px'>{ui.price(px)}<small>{ui.chg(ch)}</small>{tag}</div></div>"
             f"<div class='grp'>{ui.tag(c.get('group', SECTORS[j]), 'gold')}<span class='kq-sub'>{ui.esc(c.get('segment', ''))}</span>{themes}</div>"
-            f"<div class='sp'>{spark_of(j, fluid=True)}</div>{lad}"
+            f"<div class='sp'>{card_chart(j, mode, d)}</div>{lad}"
             f"<div class='ft'>{status} {tone}<span class='why'>{ui.esc(it['reasons'])}</span></div></div>")
 
 
-def render_picks(items) -> str:
-    return "<div class='kq-grid'>" + "".join(pick_card(it) for it in items) + "</div>"
+def render_picks(items, mode: str = "m3") -> str:
+    intr = tw_intraday([it["t"] for it in items]) if mode == "today" else {}
+    return "<div class='kq-grid'>" + "".join(pick_card(it, mode, intr.get(it["t"])) for it in items) + "</div>"
 
 
 @st.cache_data(show_spinner=False, max_entries=8)
@@ -1058,11 +1219,14 @@ def page_picks():
     tabs = st.tabs([f"📋 推薦 {len(its) or KH(h)} 檔", f"🧭 持股追蹤（何時賣）{'・' + str(n_sell) + ' 檔預計賣出' if n_sell else ''}",
                     "🔎 候補與排除"])
     with tabs[0]:
+        mode = st.segmented_control("卡片走勢圖", list(CARD_CHART), format_func=CARD_CHART.get, default="today",
+                                    key="pick_chart") or "today"
         st.markdown(f"<div class='kq-muted' style='margin:2px 0 8px'>市場階段 {ui.esc(STAGE_ZH.get(lt.get('market_stage'), '').split(' ')[0])}"
-                    "｜價位尺：<span style='color:#f0464b'>紅＝警戒價</span>、<span style='color:#5aa9ff'>藍＝建議買進區</span>、"
-                    "<span style='color:#e9b949'>金＝可小量追</span>、白線＝收盤價</div>", unsafe_allow_html=True)
+                    "｜走勢圖：虛線＝" + ("平盤（昨收），線在虛線上方紅、下方綠" if mode == "today" else "期初價，高於期初紅、低於綠")
+                    + "｜價位尺：<span style='color:#f0464b'>紅＝警戒價</span>、<span style='color:#5aa9ff'>藍＝建議買進區</span>、"
+                    "<span style='color:#e9b949'>金＝可小量追</span>、白線＝最新價</div>", unsafe_allow_html=True)
         if its:
-            st.markdown(render_picks(its), unsafe_allow_html=True)
+            st.markdown(render_picks(its, mode), unsafe_allow_html=True)
         else:
             st.info("目前沒有符合條件的標的。")
     with tabs[1]:
@@ -1149,6 +1313,8 @@ def page_live():
         q, err = quotes_for(uni) if ph != "休市" else (pd.DataFrame(), "")
         if err:
             st.caption(f"⚠ {err}")
+        market_today(compact=True)
+        intr = tw_intraday(uni)
         rows, chances, mcards = [], [], []
         for t in uni:
             j = TIDX[t]
@@ -1179,7 +1345,9 @@ def page_live():
             if code in ("buy", "dip"):
                 chances.append(t)
             vol = f"{q.loc[t, 'volume']:,.0f}" if live and ui.ok(q.loc[t, "volume"]) else "–"
+            di = intr.get(t)
             rows.append([stock_cell(t), chain_html(t, themes=False), f"<b>{ui.price(px)}</b>", ui.chg(chg),
+                         ui.intraday_mini(di, h=34, fluid=False, w=120, labels=False) or "–",
                          (f"{ui.price(q.loc[t, 'open'])}/{ui.price(q.loc[t, 'high'])}/{ui.price(q.loc[t, 'low'])}" if live else "–"),
                          vol, f"{ui.price(pl.buy_low)}～{ui.price(pl.buy_high)}" if pl else "–",
                          ui.price(pl.chase) if pl else "–", ui.price(pl.alert) if pl else "–",
@@ -1188,13 +1356,14 @@ def page_live():
             mcards.append(ui.mcard(f"<span class='kq-cd'>{t}</span><span class='nm'>{ui.esc(NAMES[j])}</span> "
                                    + " ".join(ui.tag(HZ[x]) for x in hs) + (ui.tag("持股", "g") if t in holds else ""),
                                    f"{ui.price(px)}<small>{ui.chg(chg)}</small>",
-                                   ui.ladder(px, pl.buy_low, pl.buy_high, pl.chase, pl.alert, compact=True) if pl else "",
+                                   ui.intraday_mini(di, h=44, labels=False)
+                                   + (ui.ladder(px, pl.buy_low, pl.buy_high, pl.chase, pl.alert, compact=True) if pl else ""),
                                    ui.badge(txt, planlib.STATUS_STYLE[code]) + (f" <span>量 {vol} 張</span>" if vol != "–" else "")))
         tm = q["time"].iloc[0] if len(q) else "收盤價"
         st.markdown(f"<div class='kq-muted'>更新 {pd.Timestamp.now(tz='Asia/Taipei'):%H:%M:%S}｜報價時間 {ui.esc(tm)}｜{ph}</div>",
                     unsafe_allow_html=True)
-        st.markdown(ui.resp(ui.table(["股票", "族群", "現價", "漲跌", "開/高/低", "量(張)", "買進區", "追價上限", "警戒價", "狀態", "名單"],
-                                     rows, left=(0, 1, 9, 10)), "".join(mcards)), unsafe_allow_html=True)
+        st.markdown(ui.resp(ui.table(["股票", "族群", "現價", "漲跌", "今日走勢（虛線＝平盤）", "開/高/低", "量(張)", "買進區", "追價上限",
+                                      "警戒價", "狀態", "名單"], rows, left=(0, 1, 10, 11)), "".join(mcards)), unsafe_allow_html=True)
         st.markdown("<div class='kq-muted' style='margin-top:6px'>" + "　".join(
             f"{ui.badge(k_, planlib.STATUS_STYLE[c_])} {ui.esc(planlib.STATUS_HELP[c_].split('→')[-1].strip())}"
             for c_, k_ in (("buy", "可進場"), ("dip", "拉回買點"), ("wait", "等拉回"), ("warn", "跌破警戒"), ("lock", "漲停不追")))
@@ -1525,6 +1694,41 @@ def market_frame(bid) -> tuple[pd.DataFrame, bool]:
     return df, has_ohlc
 
 
+MARKET_REF_TW = ["2330", "2454", "2317", "2308", "2382"]       # 權值股：台積電、聯發科、鴻海、台達電、廣達
+
+
+def market_today(compact: bool = False):
+    """大盤今日走勢：加權指數分時（平盤線置中、紅漲綠跌）＋盤中參考（權值股、那斯達克期貨、櫃買）。"""
+    d = taiex_intraday()
+    c1, c2 = st.columns([1.75, 1]) if not compact else (st.container(), None)
+    with c1:
+        st.markdown("<div class='kq-h' style='margin:8px 0 4px'><span class='t'>加權指數｜今日走勢</span>"
+                    "<span class='s'>分時｜虛線＝平盤（昨收），線在上方紅、下方綠</span></div>", unsafe_allow_html=True)
+        if d is None:
+            st.markdown("<div class='kq-muted'>分時資料暫時無法取得（Yahoo Finance），請稍後重新整理；K 線與統計不受影響。</div>",
+                        unsafe_allow_html=True)
+        else:
+            st.markdown(intraday_stats(d, 2), unsafe_allow_html=True)
+            intraday_chart(d, key=f"tx_intra_{'c' if compact else 'm'}", height=250 if compact else 300, digits=2, volume=False)
+    if c2 is None:
+        return
+    rows = []
+    tw = tw_intraday(MARKET_REF_TW)
+    rows += [(f"{t} {NAMES[TIDX[t]]}", tw.get(t), "") for t in MARKET_REF_TW if t in TIDX]
+    wd = world_intraday(["NQF", "SOX"])
+    rows += [("那斯達克期貨", wd.get("NQF"), ""), ("費城半導體", wd.get("SOX"), "")]
+    otc = ""
+    if market_phase() in ("盤中", "盤後", "盤前試撮"):
+        q, _ = live_quotes((INDEX_CH["櫃買指數"],))
+        if len(q) and ui.ok(q["price"].iloc[0]):
+            otc = (f"<div class='kq-imini'><span class='n'>櫃買指數</span><span class='g kq-muted'>{ui.num(q['price'].iloc[0], 2)}</span>"
+                   f"<span class='c' style='color:{ui.color_of(q['chg'].iloc[0])}'>{q['chg'].iloc[0] * 100:+.2f}%</span></div>")
+    body = mini_rows(rows) + otc
+    c2.markdown(ui.panel("盤中參考｜權值股・美股期貨", (body or "<div class='kq-muted'>分時資料暫時無法取得。</div>")
+                         + "<div class='kq-muted' style='margin-top:6px'>每列小圖都以平盤為中線。v2.1 研究：今年台股盤中跟著那斯達克期貨走的程度明顯變高"
+                           "（每小時相關 0.34→0.54），盤中大跌時可先看期貨是否止跌。</div>"), unsafe_allow_html=True)
+
+
 def page_market():
     header()
     data_strip(("price", "institutional", "margin", "mkt"))
@@ -1558,6 +1762,7 @@ def page_market():
              ("上漲／下跌家數", f"{last.get('up', np.nan):,.0f}／{last.get('down', np.nan):,.0f}" if ui.ok(last.get("up")) else "–",
               f"市場階段 {ui.esc(STAGE_ZH.get(stage, stage).split(' ')[0])}")]
     st.markdown(ui.cards(items), unsafe_allow_html=True)
+    market_today()
     opts = {k: v for k, v in IND_OPTS.items() if k != "holders"}
     opts["volume"] = "成交金額"
     per, rng, mas, inds = chart_controls("mk", [5, 20, 60, 240], opts, ["boll", "volume", "kd", "macd", "inst", "margin"], 2)
@@ -1935,17 +2140,22 @@ def theme_section():
     for tab, (name, keys, pat) in zip(tabs, peerslib.THEMES):
         with tab:
             tiles = []
+            wi = world_intraday(keys)
             for k in keys:
                 d = live.get(k)
-                if d:
+                di = wi.get(k)
+                if di is not None:
+                    tiles.append(ui.tile(peerslib.name_of(k), ui.num(di["last"], 2), di["last"] / di["prev"] - 1, IDY.status(di),
+                                         world_tile_chart(di, None)))
+                elif d:
                     tiles.append(ui.tile(peerslib.name_of(k), ui.num(d["price"], 2), d["chg"], f"即時 {d['time']:%m/%d %H:%M}",
-                                         ui.spark(d.get("spark"), 70, 22, fill=False)))
+                                         world_tile_chart(None, d.get("spark"))))
                 elif k in Wd and Wd[k].notna().sum() > 2:
                     s_ = Wd[k].dropna()
                     s_ = s_[s_.diff().fillna(1) != 0]
                     if len(s_) >= 2:
                         tiles.append(ui.tile(peerslib.name_of(k), ui.num(s_.iloc[-1], 2), float(s_.iloc[-1] / s_.iloc[-2] - 1), "最近收盤",
-                                             ui.spark(s_.tail(22).tolist(), 70, 22, fill=False)))
+                                             world_tile_chart(None, s_.tail(22).tolist())))
             if tiles:
                 st.markdown("<div class='kq-tiles'>" + "".join(tiles) + "</div>", unsafe_allow_html=True)
             else:
@@ -2012,10 +2222,14 @@ def page_world():
         st.info("國際市場資料尚未建立：下一次每日更新會自動抓取，或目前網路無法連到 Yahoo Finance。")
         return
     tiles = []
+    wi = world_intraday(WORLD_ORDER)
     for k in WORLD_ORDER:
         if k not in snap:
             continue
-        d = snap[k]
+        d = dict(snap[k])
+        di = wi.get(k)
+        if di is not None:                                     # 有分時：價格、漲跌與圖的平盤一致
+            d.update(price=di["last"], chg=di["last"] / di["prev"] - 1, time=IDY.status(di), live=False)
         val = ui.num(d["price"], 2 if d["price"] < 1000 else 0)
         sub = ui.esc(WORLD_SUB.get(k, "")) + f"<br>{'即時 ' if d.get('live') else ''}{ui.esc(d['time'])}"
         if k == "TSM" and "TWD" in snap and HAS_Q and "2330" in TIDX:
@@ -2024,8 +2238,11 @@ def page_world():
             if ui.ok(prem):
                 sub = f"ADR 溢價 {ui.pct(prem, 1)}（vs 2330 收盤）<br>{'即時 ' if d.get('live') else ''}{ui.esc(d['time'])}"
         name = {"NQF": "那斯達克期貨", "ESF": "標普期貨", "TSM": "台積電 ADR", "TWD": "美元／台幣"}.get(k, linkage_name(k))
-        tiles.append(ui.tile(name, val, d["chg"], sub, ui.spark(d.get("spark"), 70, 22, fill=False)))
+        tiles.append(ui.tile(name, val, d["chg"], sub, world_tile_chart(di, d.get("spark"))))
     st.markdown("<div class='kq-tiles'>" + "".join(tiles) + "</div>", unsafe_allow_html=True)
+    st.markdown("<div class='kq-muted' style='margin:-6px 0 10px'>小圖＝最近一個交易時段的分時走勢，虛線＝平盤（前一日收盤），"
+                "線在上方紅、下方綠；美股收盤後顯示前一晚的完整走勢（台北時間）。取不到分時時改顯示近 1 月收盤（虛線＝期初）。</div>",
+                unsafe_allow_html=True)
     lvl, txt, risk = risk_light()
     stt = ls.get("state") or {}
     c1, c2 = st.columns([1, 1.25])

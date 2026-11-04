@@ -128,3 +128,128 @@ def nav_figure(navs: dict, height: int = 300, log: bool = True, dark: bool = Tru
     fig.update_xaxes(showgrid=False, tickfont=dict(color=MUTED))
     fig.update_yaxes(gridcolor=GRID, tickfont=dict(color=MUTED), side="right", type="log" if log else "linear")
     return fig
+
+
+# ------------------------------------------------------------------ v2.1.1 當日分時走勢（平盤線、紅漲綠跌）
+def _cross(x: np.ndarray, y: np.ndarray, base: float) -> tuple[np.ndarray, np.ndarray]:
+    """在穿越平盤的地方插入交點，讓紅、綠兩段剛好在平盤線上銜接。x：int64 奈秒。"""
+    xs, ys = [x[0]], [y[0]]
+    for i in range(1, len(y)):
+        a, b = y[i - 1] - base, y[i] - base
+        if a * b < 0:
+            f = a / (a - b)
+            xs.append(x[i - 1] + (x[i] - x[i - 1]) * f)
+            ys.append(base)
+        xs.append(x[i])
+        ys.append(y[i])
+    return np.asarray(xs, dtype="int64"), np.asarray(ys, float)
+
+
+def _polys(x, y, base, up: bool):
+    """平盤上方（或下方）每一段的填色多邊形，以 None 分段（fill='toself' 會各自封閉）。"""
+    keep = (y >= base) if up else (y <= base)
+    px, py, i, n = [], [], 0, len(y)
+    while i < n:
+        if not keep[i]:
+            i += 1
+            continue
+        j = i
+        while j + 1 < n and keep[j + 1]:
+            j += 1
+        if j > i:
+            px += list(x[i:j + 1]) + [x[j], x[i], None]
+            py += list(y[i:j + 1]) + [base, base, None]
+        i = j + 1
+    return px, py
+
+
+def _nice_step(amp_pct: float) -> float:
+    for s in (0.1, 0.2, 0.25, 0.5, 1, 2, 2.5, 5, 10):
+        if amp_pct / s <= 4.5:
+            return s
+    return 10.0
+
+
+def intraday_figure(d: dict, height: int = 300, dark: bool = True, digits: int = 2, volume: bool = True,
+                    vol_div: float = 1000.0, vol_label: str = "量(張)") -> go.Figure:
+    """分時走勢：平盤虛線置中（上下對稱），右側價格、左側漲跌幅；線在平盤上方為紅、下方為綠；
+    標出最高、最低與最新價；有成交量時下方畫量（紅＝比前一筆漲、綠＝跌）。"""
+    BG, GRID, TXT, MUTED = THEME[bool(dark)]
+    t = pd.DatetimeIndex(d["t"])
+    y = np.asarray(d["v"], float)
+    base = float(d["prev"])
+    vol = np.asarray(d.get("vol", np.full(len(y), np.nan)), float) / vol_div
+    has_vol = volume and np.nansum(np.nan_to_num(vol)) > 0 and len(y) > 5
+    fig = make_subplots(rows=2 if has_vol else 1, cols=1, shared_xaxes=True, vertical_spacing=0.03,
+                        row_heights=[0.78, 0.22] if has_vol else [1.0])
+    xs, ys = _cross(t.values.astype("datetime64[ns]").astype("int64"), y, base)
+    xdt = pd.to_datetime(xs)
+    up_y = np.where(ys >= base, ys, np.nan)
+    dn_y = np.where(ys <= base, ys, np.nan)
+    for upside, col, yy in ((True, UP, up_y), (False, DOWN, dn_y)):
+        px, py = _polys(xs, ys, base, upside)
+        if px:
+            fig.add_trace(go.Scatter(x=[pd.Timestamp(v) if v is not None else None for v in px], y=py, mode="lines",
+                                     fill="toself", fillcolor=(f"rgba(240,70,75,{0.16 if dark else 0.12})" if upside
+                                                               else f"rgba(22,163,95,{0.16 if dark else 0.12})"),
+                                     line=dict(width=0), hoverinfo="skip", showlegend=False), row=1, col=1)
+        fig.add_trace(go.Scatter(x=xdt, y=yy, mode="lines", line=dict(color=col, width=2), connectgaps=False,
+                                 hoverinfo="skip", showlegend=False), row=1, col=1)
+    pct = (y / base - 1) * 100
+    fig.add_trace(go.Scatter(x=t, y=y, mode="lines", line=dict(width=0, color="rgba(0,0,0,0)"), showlegend=False,
+                             customdata=np.c_[pct], name="",
+                             hovertemplate=f"%{{x|%H:%M}}　%{{y:,.{digits}f}}　(%{{customdata[0]:+.2f}}%)<extra></extra>"),
+                  row=1, col=1)
+    hi, lo = float(d["high"]), float(d["low"])
+    amp = max(abs(hi - base), abs(lo - base), abs(y - base).max(), base * 0.003) * 1.3
+    step = _nice_step(amp / base * 100)
+    k = int(np.floor(amp / base * 100 / step + 1e-9))
+    tv = [base * (1 + i * step / 100) for i in range(-k, k + 1)]
+
+    def pcol(i):
+        return UP if i > 0 else (DOWN if i < 0 else MUTED)
+    fig.update_yaxes(range=[base - amp, base + amp], tickvals=tv, side="right", gridcolor=GRID, zeroline=False,
+                     ticktext=[f"<span style='color:{pcol(i)}'>{v:,.{digits}f}</span>" for i, v in zip(range(-k, k + 1), tv)],
+                     tickfont=dict(size=10, color=MUTED), row=1, col=1)
+    # 左側漲跌幅（同一組刻度）
+    fig.add_trace(go.Scatter(x=[t[0], t[0]], y=[base - amp, base + amp], yaxis="y3", mode="markers",
+                             marker=dict(opacity=0), hoverinfo="skip", showlegend=False))
+    fig.update_layout(yaxis3=dict(overlaying="y", side="left", range=[-amp / base * 100, amp / base * 100],
+                                  tickvals=[i * step for i in range(-k, k + 1)], showgrid=False, zeroline=False,
+                                  ticktext=[f"<span style='color:{pcol(i)}'>{i * step:+.{1 if step < 1 else 0}f}%</span>"
+                                            if i else "0%" for i in range(-k, k + 1)],
+                                  tickfont=dict(size=10, color=MUTED)))
+    fig.add_hline(y=base, line=dict(color=MUTED, dash="dash", width=1.2), row=1, col=1)
+    fig.add_annotation(x=d["end"], y=base, xref="x", yref="y", text=f"平盤 {base:,.{digits}f}", showarrow=False,
+                       xanchor="right", yanchor="bottom", font=dict(size=10.5, color=MUTED), bgcolor=BG, borderpad=1)
+    span_s = max((d["end"] - d["start"]).total_seconds(), 1.0)
+    # 最高、最低（放在線的最高、最低點；數值用當日官方高低）
+    for val, idx, sym, ya, col in ((hi, int(np.argmax(y)), "最高", "bottom", UP if hi > base else DOWN),
+                                   (lo, int(np.argmin(y)), "最低", "top", UP if lo > base else DOWN)):
+        yy_ = val if abs(val / y[idx] - 1) < 0.01 else y[idx]
+        fx = (t[idx] - d["start"]).total_seconds() / span_s
+        fig.add_annotation(x=t[idx], y=yy_, text=f"{sym} {val:,.{digits}f}（{(val / base - 1) * 100:+.2f}%）",
+                           showarrow=True, arrowhead=0, arrowwidth=1, arrowcolor=col, ax=0, ay=-10 if ya == "bottom" else 10,
+                           xanchor="left" if fx < 0.15 else ("right" if fx > 0.85 else "center"),
+                           font=dict(size=10.5, color=col), bgcolor=BG, borderpad=1, row=1, col=1)
+    last = float(y[-1])
+    lc = UP if last > base else (DOWN if last < base else MUTED)
+    fig.add_trace(go.Scatter(x=[t[-1]], y=[last], mode="markers", marker=dict(size=8, color=lc, line=dict(color=BG, width=2)),
+                             hoverinfo="skip", showlegend=False, cliponaxis=False), row=1, col=1)
+    if has_vol:
+        vv = np.nan_to_num(vol)
+        cc = [UP if i == 0 and y[0] >= base or i > 0 and y[i] >= y[i - 1] else DOWN for i in range(len(y))]
+        fig.add_trace(go.Bar(x=t, y=vv, marker=dict(color=cc, line=dict(width=0)), opacity=0.75, name=vol_label,
+                             hovertemplate=f"%{{x|%H:%M}}　{vol_label} %{{y:,.0f}}<extra></extra>", showlegend=False), row=2, col=1)
+        fig.update_yaxes(side="right", gridcolor=GRID, tickfont=dict(size=9, color=MUTED), row=2, col=1,
+                         title=dict(text=vol_label, font=dict(size=9, color=MUTED)))
+    span = (d["end"] - d["start"]).total_seconds()
+    fig.update_xaxes(range=[d["start"], d["end"]], tickformat="%H:%M", showgrid=True, gridcolor=GRID,
+                     dtick=3600000 if span <= 9 * 3600 else 4 * 3600000, tick0=d["start"].floor("h"),
+                     tickfont=dict(size=10, color=MUTED), showspikes=True, spikemode="across", spikethickness=1,
+                     spikecolor="#64748b", spikedash="dot")
+    fig.update_layout(height=height, paper_bgcolor=BG, plot_bgcolor=BG, hovermode="x",
+                      font=dict(color=TXT, family="Inter, Noto Sans TC, PingFang TC, Microsoft JhengHei, sans-serif"),
+                      margin=dict(l=46, r=64, t=8, b=24), dragmode=False, showlegend=False,
+                      hoverlabel=dict(bgcolor=BG, font=dict(color=TXT, size=12)))
+    return fig

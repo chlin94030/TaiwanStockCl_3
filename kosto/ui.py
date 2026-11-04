@@ -6,8 +6,10 @@
 from __future__ import annotations
 
 import html
+import itertools
 
 import numpy as np
+import pandas as pd
 
 UP, DOWN, FLAT = "#f0464b", "#16a35f", "#94a3b8"
 
@@ -148,6 +150,27 @@ table.kq td .sub, .kq-sub { color:var(--muted); font-size:11.5px; font-family:'N
 .kq-pcard .px small { display:block; font-size:12px; margin-top:2px; }
 .kq-pcard .grp { line-height:1.5; min-height:22px; }
 .kq-pcard .sp svg { display:block; }
+.kq-ch { position:relative; }
+.kq-ch svg { position:absolute; left:0; top:0; display:block; margin:0 !important; opacity:1 !important; overflow:visible; }
+.kq-ch .dt { position:absolute; width:7px; height:7px; border-radius:50%; transform:translate(-50%,-50%);
+  box-shadow:0 0 0 2px var(--panel); pointer-events:none; }
+.kq-ch .lb { position:absolute; font-size:10.5px; line-height:1.1; color:var(--muted); white-space:nowrap; pointer-events:none;
+  font-family:'Inter', 'Noto Sans TC', sans-serif; font-variant-numeric: tabular-nums; letter-spacing:-.1px;
+  text-shadow:0 0 3px var(--panel), 0 0 3px var(--panel), 0 0 2px var(--panel), 0 0 1px var(--panel); }
+.kq-ch .lb b { color:var(--text); font-weight:600; }
+.kq-ch .tl { left:3px; top:1px; } .kq-ch .tr { right:3px; top:1px; } .kq-ch .br { right:3px; bottom:0; }
+.kq-ch .bl { left:3px; bottom:0; color:var(--faint); }
+.kq-ch .bsw { display:inline-block; width:12px; border-top:1px dashed var(--muted); vertical-align:middle; margin-right:4px; } .kq-ch .bs { right:3px; transform:translateY(-50%); color:var(--faint); font-size:10px; }
+.kq-pcard .sp { margin:6px 0 4px; }
+.kq-tile .kq-ch { margin-top:7px; }
+.kq-imini { display:flex; align-items:center; gap:8px; padding:5px 0; border-bottom:1px dashed var(--line); font-size:13px; }
+.kq-imini:last-child { border-bottom:0; }
+.kq-imini .n { flex:0 0 92px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:var(--text); }
+.kq-imini .c { flex:0 0 62px; text-align:right; font-family:'Inter', 'Noto Sans TC', sans-serif; font-variant-numeric: tabular-nums; font-weight:600; }
+.kq-imini .g { flex:1 1 auto; min-width:60px; }
+.kq-istat { display:flex; flex-wrap:wrap; gap:4px 16px; align-items:baseline; margin:2px 0 6px; font-size:12.5px; color:var(--muted); }
+.kq-istat .big { font-family:'Inter', 'Noto Sans TC', sans-serif; font-variant-numeric: tabular-nums; font-size:22px; font-weight:700; color:var(--strong); }
+.kq-istat b { font-family:'Inter', 'Noto Sans TC', sans-serif; font-variant-numeric: tabular-nums; color:var(--text); font-weight:600; }
 .kq-pcard .ft { display:flex; flex-wrap:wrap; gap:5px; align-items:center; font-size:12px; color:var(--muted); }
 .kq-pcard .ft .why { flex:1 1 100%; color:var(--muted); line-height:1.45; }
 table.kq td.l { white-space:normal; }
@@ -311,6 +334,120 @@ def spark(vals, w: int = 92, h: int = 26, color: str | None = None, fill: bool =
     return (f"<svg width='{w}' height='{h}' viewBox='0 0 {w} {h}' style='vertical-align:middle'>{area}"
             f"<polyline points='{pts}' fill='none' stroke='{c}' stroke-width='1.6' stroke-linejoin='round'/>"
             f"<circle cx='{xs[-1]:.1f}' cy='{ys[-1]:.1f}' r='2' fill='{c}'/></svg>")
+
+
+_CHART_IDS = itertools.count(1)
+
+
+def base_chart(xf, vals, base, *, h: int = 64, fluid: bool = True, w: int = 300, sym: bool = True,
+               min_amp: float = 0.004, ticks=(), labels: dict | None = None, dot: bool = True) -> str:
+    """v2.1.1 有「參考線」的迷你走勢圖（SVG＋HTML 標籤）：
+    參考線（分時＝平盤／昨收；多日＝期初價）以虛線標出，線在上方為紅、下方為綠，並以漸層填色到參考線。
+    sym=True：以參考線為中心上下對稱（分時，一眼看出漲跌幅）；False：依高低點自動縮放（多日）。
+    xf：每一點的水平位置 0～1（分時用交易時段位置，盤中未走完的部分留白）。"""
+    v = np.asarray(vals if vals is not None else [], float)
+    xf = np.asarray(xf if xf is not None else [], float)
+    if len(xf) != len(v):
+        xf = np.linspace(0, 1, len(v))
+    m = np.isfinite(v) & np.isfinite(xf)
+    v, xf = v[m], xf[m]
+    if len(v) < 2 or not ok(base) or float(base) <= 0:
+        return ""
+    base = float(base)
+    W = 300 if fluid else int(w)
+    if sym:
+        amp = max(float(np.abs(v - base).max()), base * min_amp) * 1.12
+        lo, hi = base - amp, base + amp
+    else:
+        lo, hi = min(float(v.min()), base), max(float(v.max()), base)
+        sp = (hi - lo) or base * 0.01
+        lo, hi = lo - sp * 0.08, hi + sp * 0.08
+    pt = pb = (11.0 if labels else 3.0)            # 有標籤時上下留白給文字，線不會壓到「高／低」
+
+    def Y(x):
+        return pt + (hi - x) / (hi - lo) * (h - pt - pb)
+    xs, ys, by = 1 + xf * (W - 2), Y(v), float(Y(base))
+    line = "M" + " L".join(f"{a:.1f},{b:.1f}" for a, b in zip(xs, ys))
+    area = line + f" L{xs[-1]:.1f},{by:.1f} L{xs[0]:.1f},{by:.1f} Z"
+    i = next(_CHART_IDS)
+    nse = "vector-effect='non-scaling-stroke'"
+    grid = "".join(f"<line x1='{1 + f * (W - 2):.1f}' x2='{1 + f * (W - 2):.1f}' y1='0' y2='{h}' style='stroke:var(--line)' "
+                   f"stroke-width='1' {nse}/>" for f in ticks)
+    svg = (f"<svg width='{'100%' if fluid else W}' height='{h}' viewBox='0 0 {W} {h}' preserveAspectRatio='none'>"
+           f"<defs><clipPath id='kcu{i}'><rect x='0' y='0' width='{W}' height='{by:.2f}'/></clipPath>"
+           f"<clipPath id='kcd{i}'><rect x='0' y='{by:.2f}' width='{W}' height='{max(h - by, 0):.2f}'/></clipPath>"
+           f"<linearGradient id='kgu{i}' gradientUnits='userSpaceOnUse' x1='0' y1='{pt}' x2='0' y2='{by:.2f}'>"
+           f"<stop offset='0' stop-color='{UP}' stop-opacity='.34'/><stop offset='1' stop-color='{UP}' stop-opacity='.04'/></linearGradient>"
+           f"<linearGradient id='kgd{i}' gradientUnits='userSpaceOnUse' x1='0' y1='{by:.2f}' x2='0' y2='{h - pb}'>"
+           f"<stop offset='0' stop-color='{DOWN}' stop-opacity='.04'/><stop offset='1' stop-color='{DOWN}' stop-opacity='.34'/></linearGradient>"
+           f"</defs>{grid}"
+           f"<path d='{area}' fill='url(#kgu{i})' clip-path='url(#kcu{i})'/>"
+           f"<path d='{area}' fill='url(#kgd{i})' clip-path='url(#kcd{i})'/>"
+           f"<line x1='0' x2='{W}' y1='{by:.2f}' y2='{by:.2f}' style='stroke:var(--muted)' stroke-width='1' "
+           f"stroke-dasharray='4 3' opacity='.8' {nse}/>"
+           f"<path d='{line}' fill='none' stroke='{UP}' stroke-width='1.7' stroke-linejoin='round' clip-path='url(#kcu{i})' {nse}/>"
+           f"<path d='{line}' fill='none' stroke='{DOWN}' stroke-width='1.7' stroke-linejoin='round' clip-path='url(#kcd{i})' {nse}/>"
+           "</svg>")
+    c = UP if v[-1] > base else (DOWN if v[-1] < base else FLAT)
+    out = [f"<div class='kq-ch' style='height:{h}px;width:{'100%' if fluid else f'{W}px'}'>", svg]
+    if dot:
+        out.append(f"<i class='dt' style='left:{xs[-1] / W * 100:.2f}%;top:{ys[-1] / h * 100:.2f}%;background:{c}'></i>")
+    for k, txt in (labels or {}).items():
+        if not txt:
+            continue
+        if k == "base":
+            out.append(f"<span class='lb bs' style='top:{by / h * 100:.1f}%'>{txt}</span>")
+        else:
+            out.append(f"<span class='lb {k}'>{txt}</span>")
+    out.append("</div>")
+    return "".join(out)
+
+
+def session_ticks(d) -> list:
+    """分時圖的整點格線位置（0～1）。"""
+    s, e = d["start"], d["end"]
+    span = (e - s).total_seconds()
+    if span <= 0 or span > 26 * 3600:
+        return []
+    step = 3600 if span <= 8 * 3600 else 4 * 3600
+    t = s.ceil("h")
+    out = []
+    while t < e:
+        f = (t - s).total_seconds() / span
+        if 0.02 < f < 0.98:
+            out.append(f)
+        t += pd.Timedelta(seconds=step)
+    return out
+
+
+def intraday_mini(d, *, h: int = 84, fluid: bool = True, w: int = 300, labels: bool = True, digits=None,
+                  title: str = "") -> str:
+    """分時迷你圖：平盤虛線、紅漲綠跌，盤中未走完的時段留白。d：kosto.intraday 的資料。"""
+    if not d or len(d.get("v", [])) < 2:
+        return ""
+    from . import intraday as ID
+    x, y = ID.thin(ID.frac(d), np.asarray(d["v"], float), 180 if fluid else 90)
+    fmt = (lambda z: num(z, digits)) if digits is not None else price
+    lab = None
+    if labels:
+        lab = {"tl": title, "tr": f"高 <b>{fmt(d['high'])}</b>", "br": f"低 <b>{fmt(d['low'])}</b>",
+               "bl": f"<i class='bsw'></i>平盤 {fmt(d['prev'])}"}
+    return base_chart(x, y, d["prev"], h=h, fluid=fluid, w=w, sym=True, min_amp=0.003, ticks=session_ticks(d), labels=lab)
+
+
+def trend_mini(vals, *, h: int = 84, fluid: bool = True, w: int = 300, labels: bool = True, period: str = "",
+               digits=None) -> str:
+    """多日迷你圖：以期初價為參考虛線（高於期初＝紅、低於＝綠），依高低點自動縮放。"""
+    v = np.asarray([x for x in (vals if vals is not None else []) if ok(x)], float)
+    if len(v) < 3:
+        return ""
+    fmt = (lambda z: num(z, digits)) if digits is not None else price
+    r = v[-1] / v[0] - 1
+    lab = None
+    if labels:
+        lab = {"tl": f"{period} <b style='color:{color_of(r)}'>{r * 100:+.1f}%</b>", "tr": f"高 <b>{fmt(v.max())}</b>",
+               "br": f"低 <b>{fmt(v.min())}</b>", "bl": f"<i class='bsw'></i>期初 {fmt(v[0])}"}
+    return base_chart(np.linspace(0, 1, len(v)), v, v[0], h=h, fluid=fluid, w=w, sym=False, labels=lab)
 
 
 def ladder(px, low, high, chase, alert, compact: bool = False) -> str:
