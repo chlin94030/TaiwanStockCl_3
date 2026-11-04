@@ -1,4 +1,4 @@
-"""資料新鮮度燈號（v1.9.1）：每日研究 21:40 開始、約 23:00 完成（判斷保留緩衝到 23:30）；
+"""資料新鮮度燈號（v2.1）：每日 17:23 初版（約 18:30 完成，融資券待補）、21:40 完整版（約 23:00 完成）；
 GitHub 排程若延遲或被略過，另有 23:17、00:47、06:23 備援排程。"""
 from __future__ import annotations
 
@@ -9,11 +9,18 @@ RUNNING = ("queued", "in_progress", "waiting", "requested", "pending")
 EVENT = {"schedule": "排程", "push": "上傳程式", "workflow_dispatch": "手動"}
 
 
-def expected_data_day(now: pd.Timestamp) -> pd.Timestamp:
-    """現在這個時間點，每日研究「應該」已經涵蓋到哪一個交易日（不含國定假日判斷）。"""
+def expected_data_day(now: pd.Timestamp, cutoff: int = 19 * 60) -> pd.Timestamp:
+    """現在這個時間點，每日研究「應該」已經涵蓋到哪一個交易日：19:00 後＝今天（17:23 初版約 18:30 完成），之前＝前一個平日。"""
     d = pd.Timestamp(now.date())
-    if now.hour * 60 + now.minute < 23 * 60 + 30:
+    if now.hour * 60 + now.minute < cutoff:
         d -= pd.Timedelta(days=1)
+    while d.weekday() >= 5:
+        d -= pd.Timedelta(days=1)
+    return d
+
+
+def _prev_weekday(d: pd.Timestamp) -> pd.Timestamp:
+    d = d - pd.Timedelta(days=1)
     while d.weekday() >= 5:
         d -= pd.Timedelta(days=1)
     return d
@@ -50,11 +57,14 @@ def status(now: pd.Timestamp, last: pd.Timestamp, run: dict | None) -> tuple[str
     exp = expected_data_day(now)
     hm = now.hour * 60 + now.minute
     if last >= exp:
-        if now.weekday() < 5 and 13 * 60 + 30 <= hm < 23 * 60 + 30 and last < pd.Timestamp(now.date()):
-            return "green", "已是最新｜今日資料 21:40 起更新", url
+        if now.weekday() < 5 and 13 * 60 + 30 <= hm < 19 * 60 and last < pd.Timestamp(now.date()):
+            return "green", "已是最新｜今日初版 17:20 起更新", url
         return "green", "已是最新", url
     t = _tpe((run or {}).get("created"))
-    due = (exp + pd.Timedelta(hours=21, minutes=30)).tz_localize(TZ)
+    due = (exp + pd.Timedelta(hours=17)).tz_localize(TZ)                  # 17:23 初版排程之後
+    late_today = (pd.Timestamp(now.date()) == exp and 19 * 60 <= hm < 23 * 60 + 30 and last >= _prev_weekday(exp))
+    if late_today and not (run and t is not None and t >= due and run.get("conclusion") == "success"):
+        return "amber", "今日初版尚未完成（GitHub 排程延遲），21:40 完整版會補上", url
     if run and t is not None and t >= due:
         if run.get("conclusion") == "success":            # 之後已成功跑過但沒有新資料 → 多半是休市（或資料源延遲）
             return "amber", f"已更新，沒有 {exp:%m/%d} 的資料（休市？）", url

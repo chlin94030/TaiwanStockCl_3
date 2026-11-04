@@ -115,3 +115,52 @@ def test_v20_checklist_allocation_and_bundle(world):
     cols = B.meta["q_mkt_cols"]
     assert "ab20" in cols and "mlots" in cols and B.a["Q_MKT"].shape[1] == len(cols)
     assert isinstance(B.meta.get("rebound", []), list)
+
+
+def test_v21_mops_income_fin_pack_peers_and_status():
+    from kosto.sources.official import parse_mops_income
+    from kosto.bundle import fin_pack
+    html = ("<table><tr><th>公司代號</th><th>公司名稱</th><th>營業收入</th><th>營業成本</th><th>營業毛利（毛損）</th>"
+            "<th>營業毛利（毛損）淨額</th><th>營業利益（損失）</th><th>本期淨利（淨損）</th><th>淨利（淨損）歸屬於母公司業主</th>"
+            "<th>基本每股盈餘（元）</th></tr>"
+            "<tr><td>2344</td><td>華邦電</td><td>98,096,329</td><td>38,036,047</td><td>60,060,282</td><td>60,060,282</td>"
+            "<td>41,529,830</td><td>34,316,577</td><td>34,431,342</td><td>7.65</td></tr></table>"
+            "<table><tr><th>公司代號</th><th>公司名稱</th><th>利息淨收益</th><th>本期稅後淨利（淨損）</th><th>基本每股盈餘（元）</th></tr>"
+            "<tr><td>2801</td><td>彰銀</td><td>15,221,502</td><td>11,314,353</td><td>0.98</td></tr></table>")
+    f = parse_mops_income(html, 2026, 2).set_index("ticker")
+    assert abs(f.loc["2344", "revenue"] - 98096329e3) < 1 and f.loc["2344", "eps"] == 7.65
+    assert abs(f.loc["2344", "net"] - 34431342e3) < 1 and f.loc["2344", "yq"] == 20262   # 歸屬母公司優先
+    assert pd.isna(f.loc["2801"].get("revenue")) and abs(f.loc["2801", "net"] - 11314353e3) < 1      # 銀行：無營收欄、淨利照抓
+    fin = pd.DataFrame([{"ticker": "2344", "yq": 20261, "revenue": 40e9, "gross": 20e9, "op": 12e9, "net": 10e9, "eps": 2.5},
+                        {"ticker": "2344", "yq": 20262, "revenue": 98e9, "gross": 60e9, "op": 41e9, "net": 34e9, "eps": 7.65},
+                        {"ticker": "2408", "yq": 20262, "revenue": 50e9, "gross": 25e9, "op": 10e9, "net": 8e9, "eps": 2.0}])
+    arr, lab = fin_pack(fin, ["2344", "2408"], n=4)
+    assert lab[-2:] == [20261, 20262] and lab[:2] == [None, None]
+    assert abs(arr[-1, 0, 0] - 58e9) < 1e3 and abs(arr[-1, 0, 4] - 5.15) < 1e-5        # 第二季單季＝累計 − 第一季
+    assert np.isnan(arr[-1, 1, 0])                                                       # 2408 缺第一季 → 單季無法計算
+    from kosto import peers as PE
+    lab_mem = {"group": "電子中游-半導體", "segment": "記憶體（DRAM）", "label": "", "themes": []}
+    assert PE.peers_for(lab_mem)[:3] == ["HYNIX", "SAMSUNG", "MU"]
+    assert "ZIM" in PE.peers_for({"group": "傳產-交通運輸及航運", "segment": "貨櫃航運"})
+    assert PE.peers_for({"group": "傳產-食品", "segment": "食品"}) == []
+    from kosto.sources import world as W
+    assert "MAERSK" in W.US and "HYNIX" in W.ASIA and W.SYMBOLS["HYNIX"] == "000660.KS"
+    # 名單定版判斷：融資券還沒公布，但模型沒用到融資因子 → 定版
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location("kcli", Path(__file__).parents[1] / "cli.py")
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+    B = type("B", (), {"meta": {"data_dates": {"price": "2026-11-04", "institutional": "2026-11-04", "margin": "2026-11-03",
+                                                "valuation": "2026-11-04"}}})()
+    res = {"horizons": {"mid": {"latest": {"weights": {"t_rs120": 0.3, "f_rev_rel": 0.15}}},
+                        "long": {"latest": {"weights": {"t_rs120": 0.3}}}}}
+    ds = cli.data_status(B, res)
+    assert ds["final"] and not ds["complete"] and "定版" in ds["text"]
+    res["horizons"]["mid"]["latest"]["weights"]["k_paid"] = 0.05
+    ds = cli.data_status(B, res)
+    assert not ds["final"] and ds["margin_factors"] == {"mid": ["k_paid"]}
+    from kosto import tournament as T
+    st = T.log_picks({}, {"protocol": {"last_date": "2026-11-04"}, "horizons": {"mid": {"days": 20, "latest": {"picks": [{"ticker": "2330"}]}}}})
+    st = T.log_picks(st, {"protocol": {"last_date": "2026-11-04"}, "horizons": {"mid": {"days": 20, "latest": {"picks": [{"ticker": "2317"}]}}}})
+    assert len(st["picks_log"]) == 1 and st["picks_log"][0]["picks"] == ["2317"]          # 同一天以最後一次（完整版）為準

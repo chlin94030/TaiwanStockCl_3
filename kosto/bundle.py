@@ -177,6 +177,41 @@ def _market_series(P):
     return market_series(P)
 
 
+FIN_COLS = ["revenue", "gross", "op", "net", "eps"]
+
+
+def fin_pack(fin: pd.DataFrame | None, tickers, n: int = 8) -> tuple[np.ndarray | None, list]:
+    """v2.1 每季財報 → 單季數字（累計值相減），最近 n 季：[n, 檔數, 5]（營收、毛利、營業利益、淨利 元；EPS 元）。"""
+    if fin is None or fin.empty:
+        return None, []
+    f = fin.drop_duplicates(["ticker", "yq"], keep="last").copy()
+    f = f[f["ticker"].isin(set(tickers))]
+    if f.empty:
+        return None, []
+    qs = sorted(f["yq"].unique())
+    # 至少 5% 公司已申報的季別（期限前先申報的公司也能看到最新一季）
+    cnt = f.groupby("yq")["ticker"].nunique()
+    qs = [q for q in qs if cnt.get(q, 0) >= 0.05 * cnt.max()]
+    out = np.full((n, len(tickers), len(FIN_COLS)), np.nan, np.float32)
+    pos = {t: j for j, t in enumerate(tickers)}
+    cum = {c: f.pivot(index="ticker", columns="yq", values=c) for c in FIN_COLS if c in f}
+    keep = qs[-n:]
+    for k, q in enumerate(keep):
+        y, s_ = divmod(int(q), 10)
+        prev = y * 10 + s_ - 1 if s_ > 1 else None
+        for ci, c in enumerate(FIN_COLS):
+            if c not in cum or q not in cum[c]:
+                continue
+            v = cum[c][q]
+            if prev is not None:
+                pv = cum[c][prev] if prev in cum[c] else pd.Series(np.nan, index=v.index)
+                v = v - pv
+            idx = [pos[t] for t in v.index if t in pos]
+            out[k + (n - len(keep)), idx, ci] = v.reindex([t for t in v.index if t in pos]).to_numpy(np.float32)
+    labels = [None] * (n - len(keep)) + [int(q) for q in keep]
+    return out, labels
+
+
 def data_dates(P: Panel) -> dict:
     """v2.0 各資料集最新日期（App 顯示「分析依據」與過期警示）。"""
     def last_valid(df):
@@ -197,6 +232,9 @@ def data_dates(P: Panel) -> dict:
         out["index"] = str(P.index_daily.index[-1].date())
     if P.etf_px is not None and len(P.etf_px):
         out["etf"] = str(pd.Timestamp(P.etf_px["date"].max()).date())
+    if getattr(P, "fin", None) is not None and len(P.fin):
+        q = int(P.fin["yq"].max())
+        out["fin"] = f"{q // 10}Q{q % 10}"
     if getattr(P, "mkt_off", None) is not None and len(P.mkt_off):
         out["mkt"] = str(P.mkt_off.index[-1].date())
     return out
@@ -322,6 +360,12 @@ def build_bundle(P: Panel, cfg: dict, log=print) -> Bundle:
             log(f"ETF {len(em.get('etf_tickers', []))} 檔，資料至 {em.get('etf_asof')}")
     except Exception as e:  # noqa: BLE001
         log(f"ETF 整理失敗（不影響選股）：{e}")
+    try:                                                                   # v2.1 每季財報（同族群比較、基本面短評）
+        fq, fl = fin_pack(getattr(P, "fin", None), list(P.tickers[cols]))
+        if fq is not None:
+            a["FIN_Q"], meta["fin_q"], meta["fin_cols"] = fq, fl, FIN_COLS
+    except Exception as e:  # noqa: BLE001
+        log(f"財報整理失敗（不影響選股）：{e}")
     meta["data_dates"] = data_dates(P)
     a["Q_TAIEX"] = (P.taiex.reindex(qdays).to_numpy(np.float32) if P.taiex is not None
                     else np.full(len(qdays), np.nan, np.float32))

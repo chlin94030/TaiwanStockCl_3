@@ -17,6 +17,15 @@ NAME_ZH = {"SOX": "費城半導體", "IXIC": "那斯達克", "GSPC": "標普500"
            "KS11": "韓國KOSPI", "TWD": "美元/台幣", "TSM": "台積電ADR", "NQF": "那斯達克期貨", "ESF": "標普期貨"}
 US = {"SOX", "IXIC", "GSPC", "VIX", "TSM", "NQF", "ESF", "TWD"}       # 收盤晚於台股研究時間 → 落後一日使用
 ASIA = {"N225", "KS11"}
+CORE = ["SOX", "IXIC", "GSPC", "VIX", "N225", "KS11", "TWD", "TSM"]    # 研究因子用（v1.7）
+
+# v2.1 國際同業（台股連動主題，只做資訊顯示）：美股／歐股落後一日、日韓同日
+from ..peers import GLOBAL as _PEERS  # noqa: E402
+for _k, (_sym, _zh, _rg) in _PEERS.items():
+    SYMBOLS.setdefault(_k, _sym)
+    NAME_ZH.setdefault(_k, _zh)
+    (ASIA if _rg == "asia" else US).add(_k)
+PEER_KEYS = list(_PEERS)
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"}
 
 
@@ -43,7 +52,7 @@ def fetch(keys=None, start="2016-11-01", end=None, session=None, pause=1.0, log=
     p1 = int(pd.Timestamp(start).timestamp())
     p2 = int((pd.Timestamp(end) if end else pd.Timestamp.now() + pd.Timedelta(days=2)).timestamp())
     out, dead = [], 0
-    for k in keys or ["SOX", "IXIC", "GSPC", "VIX", "N225", "KS11", "TWD", "TSM"]:
+    for k in keys or CORE:
         sym = SYMBOLS[k]
         for attempt in range(3):
             try:
@@ -102,3 +111,54 @@ def quote(keys=None, timeout: float = 6, workers: int = 6) -> pd.DataFrame:
     with ThreadPoolExecutor(max_workers=workers) as ex:
         rows = [x for x in ex.map(safe, keys) if x]
     return pd.DataFrame(rows)
+
+
+
+def _bars(sym: str, rng: str, interval: str, session=None) -> pd.DataFrame:
+    s = session or requests.Session()
+    s.headers.update(UA)
+    r = s.get(YAHOO + requests.utils.quote(sym, safe=""), params={"range": rng, "interval": interval}, timeout=30)
+    r.raise_for_status()
+    m = r.json()["chart"]["result"][0]
+    q = (m.get("indicators") or {}).get("quote", [{}])[0]
+    f = pd.DataFrame({"t": m.get("timestamp") or [], "o": q.get("open") or [], "c": q.get("close") or []}).dropna()
+    f["t"] = pd.to_datetime(f["t"], unit="s", utc=True)
+    return f.set_index("t")
+
+
+def intraday_link(session=None) -> list[dict]:
+    """v2.1 台股盤中與那斯達克期貨的連動（逐季）：
+    hourly＝台股交易時段內每小時報酬的相關係數；session＝加權指數開盤→收盤 vs 同時段期貨報酬。"""
+    tw = _bars("^TWII", "730d", "60m", session)
+    nq = _bars("NQ=F", "730d", "60m", session)
+    if tw.empty or nq.empty:
+        return []
+    tw["d"] = (tw.index + pd.Timedelta(hours=8)).date
+    rows = {}
+    for d, g in tw.groupby("d"):
+        g = g.sort_index()
+        if len(g) < 3:
+            continue
+        q = f"{g.index[0].year}Q{(g.index[0].month - 1) // 3 + 1}"
+        r = rows.setdefault(q, {"h_tw": [], "h_nq": [], "s_tw": [], "s_nq": []})
+        for i in range(1, len(g)):
+            t, tp = g.index[i], g.index[i - 1]
+            if t in nq.index and tp in nq.index:
+                r["h_tw"].append(g["c"].iloc[i] / g["c"].iloc[i - 1] - 1)
+                r["h_nq"].append(nq.at[t, "c"] / nq.at[tp, "c"] - 1)
+        t0, t4 = g.index[0], g.index[0] + pd.Timedelta(hours=3)
+        if t0 in nq.index and t4 in nq.index:
+            r["s_tw"].append(g["c"].iloc[-1] / g["o"].iloc[0] - 1)
+            r["s_nq"].append(nq.at[t4, "c"] / nq.at[t0, "o"] - 1)
+    out = []
+    for q in sorted(rows):
+        r = rows[q]
+        row = {"季": q, "小時數": len(r["h_tw"]), "天數": len(r["s_tw"])}
+        for k, a, b in (("盤中每小時相關", "h_tw", "h_nq"), ("開盤到收盤相關", "s_tw", "s_nq")):
+            x, y = np.asarray(r[a], float), np.asarray(r[b], float)
+            ok = np.isfinite(x) & np.isfinite(y)
+            row[k] = float(np.corrcoef(x[ok], y[ok])[0, 1]) if ok.sum() > 15 else None
+            if k == "盤中每小時相關" and ok.sum() > 15 and np.var(y[ok]) > 0:
+                row["盤中β"] = float(np.cov(x[ok], y[ok])[0, 1] / np.var(y[ok], ddof=1))
+        out.append(row)
+    return out

@@ -46,6 +46,13 @@ def cmd_bundle(a, cfg):
     P = build_panel(st, start=cfg["data"]["start"], end=cfg["data"].get("end"))
     log(f"panel: {len(P.dates)} 日 × {len(P.tickers)} 檔；品質 {P.quality}")
     B = build_bundle(P, cfg, log=log)
+    if not P.synthetic:                                   # v2.1 台股盤中 vs 那斯達克期貨（逐季）；連不到 Yahoo 就略過
+        try:
+            from kosto.sources import world as W
+            B.meta["intraday_link"] = W.intraday_link()
+            log(f"盤中連動：{len(B.meta['intraday_link'])} 季")
+        except Exception as e:  # noqa: BLE001
+            log(f"盤中連動略過：{str(e)[:80]}")
     ART.mkdir(exist_ok=True)
     B.save(ART / "bundle.npz")
     if a.compare_panel:
@@ -111,6 +118,12 @@ def cmd_research(a, cfg):
                 if x["date"] == res["protocol"]["last_date"]:
                     log(f"★ {x['h']} 自動換上新模型（明天起生效）：{x['text']}")
     res["auto"] = T.log_picks(auto, res)
+    res["data_status"] = data_status(B, res)
+    try:
+        res["linkage_ic"] = linkage_ic(R, res)                       # v2.1 連動因子逐年有效性（監控用，不進模型）
+    except Exception as e:  # noqa: BLE001
+        log(f"連動因子監控略過：{e}")
+    log("資料狀態：" + res["data_status"]["text"])
     comparison = None
     if a.compare:
         comparison = run_compare(a.compare, res, B, cfg_eff)
@@ -119,6 +132,54 @@ def cmd_research(a, cfg):
         pickle.dump({"res": res, "cfg": cfg_eff, "comparison": comparison}, f, protocol=4)
     (ART / "report.zip").write_bytes(build_zip(res, cfg_eff, comparison))
     log(f"報告：{ART/'report.zip'}  ({res['elapsed']:.0f}s)")
+
+
+MARGIN_FACTORS = {"c_margin_chg20", "c_short_ratio", "k_hands", "k_paid", "k_calm", "k_egg"}   # 用到融資券資料的因子
+
+
+def data_status(B, res) -> dict:
+    """v2.1 今日名單是否已定版：融資券（約 21:00 公布）尚未更新時，若各期間模型都沒用到融資相關因子，名單不會再變。"""
+    dd = B.meta.get("data_dates") or {}
+    price = dd.get("price")
+    late = {k: dd.get(k) for k in ("institutional", "margin", "valuation") if dd.get(k) and price and dd.get(k) < price}
+    used = {}
+    for h, hb in res.get("horizons", {}).items():
+        w = (hb.get("latest") or {}).get("weights") or {}
+        m = [f for f, x in w.items() if f in MARGIN_FACTORS and abs(x) > 1e-6]
+        if m:
+            used[h] = m
+    complete = not late
+    final = complete or (set(late) == {"margin"} and not used)
+    if complete:
+        text = "資料完整（收盤、法人、融資券、本益比都是同一天），名單已定版"
+    elif final:
+        text = f"融資券資料還沒公布（目前到 {late['margin']}），但模型沒有用到融資因子 → 名單已定版"
+    else:
+        miss = "、".join({"institutional": "三大法人", "margin": "融資券", "valuation": "本益比"}[k] + f"（到 {v}）" for k, v in late.items())
+        text = f"初版：{miss} 還沒更新，晚上 21:40 更新後名單可能微調"
+    return {"price": price, "late": late, "margin_factors": used, "complete": complete, "final": final, "text": text}
+
+
+LINK_FACTORS = ["g_us_beta", "g_us_lead", "g_asia_lead", "t_ind_mom", "g_seg_mom20", "g_seg_lag5", "g_seg_breadth5"]
+
+
+def linkage_ic(R, res) -> dict:
+    """中線（每日研究選定的母池）：各連動因子與之後 20 日報酬的等級相關（IC），逐年平均。"""
+    import numpy as np
+    import pandas as pd
+    hb = res["horizons"].get("mid")
+    if hb is None:
+        return {}
+    rule, size = hb["chosen_pool"]["rule"], int(hb["chosen_pool"]["size"])
+    ic = R.ic(rule, size, "mid")
+    fac = list(R.B.factors)
+    yrs = pd.Series(R.B.sig_dates.year)
+    out = {}
+    for f in LINK_FACTORS:
+        if f in fac:
+            s = pd.Series(ic[:, fac.index(f)]).groupby(yrs).mean()
+            out[f] = {int(y): (float(v) if np.isfinite(v) else None) for y, v in s.items()}
+    return {"pool": f"{rule}{size}", "ic": out}
 
 
 def run_compare(paths, res, B, cfg):

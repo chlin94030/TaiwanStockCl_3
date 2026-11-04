@@ -28,7 +28,8 @@ KEYS = {
     "index": ["date", "ticker"],
     "etf": ["date", "ticker"],        # v2.0 ETF 日行情（上市 0099P＋上櫃 ETF 代號）
     "etf_div": ["date", "ticker"],    # v2.0 ETF 除息（除息前收盤、參考價）
-    "mkt": ["date", "ticker"],        # v2.0 上市官方合計：三大法人買賣金額、融資金額／張數      # v1.9 加權指數日 K（開高低收、成交金額）      # v1.7 國際市場日收盤（ticker = SOX/IXIC/VIX/N225/KS11/TWD/TSM…）
+    "mkt": ["date", "ticker"],        # v2.0 上市官方合計：三大法人買賣金額、融資金額／張數
+    "fin": ["ticker", "yq"],          # v2.1 每季綜合損益（累計至該季）：營收、毛利、營業利益、淨利、EPS      # v1.9 加權指數日 K（開高低收、成交金額）      # v1.7 國際市場日收盤（ticker = SOX/IXIC/VIX/N225/KS11/TWD/TSM…）
 }
 _LOCK = threading.RLock()  # two download threads (TWSE / TPEx) may write the same dataset files
 YEARLY = {"price", "exright", "institutional", "margin", "valuation", "shares", "holders", "etf"}
@@ -38,7 +39,7 @@ GROUPS = {
     "institutional": ["institutional"],
     "margin": ["margin"],
     "valuation": ["valuation"],
-    "misc": ["exright", "shares", "revenue", "info", "holders", "world", "index", "mkt", "etf_div", "etf"],
+    "misc": ["exright", "shares", "revenue", "info", "holders", "world", "index", "mkt", "fin", "etf_div", "etf"],
 }
 
 

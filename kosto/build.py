@@ -61,6 +61,8 @@ class Builder:
                 report[ds] = self.index()
             elif ds == "mkt":
                 report[ds] = self.mkt()
+            elif ds == "fin":
+                report[ds] = self.fin()
             elif ds == "etf_div":
                 report[ds] = self.etf_div()
             elif ds == "etf":
@@ -123,7 +125,7 @@ class Builder:
         """v1.9：21:40 更新時若「今天」的融資融券還沒公布，每 5 分鐘重試，最多到台北 22:45；
         先確認今天是交易日（當天收盤行情有資料）才等，假日不浪費時間。"""
         now = pd.Timestamp.now(tz="Asia/Taipei")
-        if d.date() != now.date() or now.hour < 18:
+        if d.date() != now.date() or now.hour < 21:                 # 17:20 初版執行不等融資，直接先出
             return pd.DataFrame()
         try:
             px = self.off.twse_price(d) if board == "TWSE" else self.off.tpex_price(d)
@@ -270,11 +272,22 @@ class Builder:
         """Yahoo Finance 日收盤，增量更新（重抓最近 20 天以補修正值）；抓不到不影響研究，只是國際因子與擇時暫停。"""
         from .sources import world as W
         old = self.store.read("world")
-        start = (pd.Timestamp(old["date"].max()) - pd.Timedelta(days=20)) if not old.empty else self.start - pd.Timedelta(days=90)
+        last = old.groupby("ticker")["date"].max() if not old.empty else pd.Series(dtype="datetime64[ns]")
+        keys = list(W.CORE) + [k for k in W.PEER_KEYS if k not in W.CORE]
+        fresh = [k for k in keys if k in last.index]                     # 已有歷史：只補最近 20 天
+        new = [k for k in keys if k not in last.index]                    # v2.1 新加入的國際同業：補完整歷史
+        parts = []
         try:
-            f = W.fetch(start=start, end=self.end + pd.Timedelta(days=2), log=self.log)
+            if fresh:
+                st0 = pd.Timestamp(last.reindex(fresh).min()) - pd.Timedelta(days=20)
+                parts.append(W.fetch(fresh, start=st0, end=self.end + pd.Timedelta(days=2), log=self.log))
+            if new:
+                parts.append(W.fetch(new, start=self.start - pd.Timedelta(days=90), end=self.end + pd.Timedelta(days=2), log=self.log))
         except Exception as e:  # noqa: BLE001 - optional dataset
             self.log(f"  world 失敗（不影響研究，只少了國際連動因子）: {e}")
+            return {"rows": 0}
+        f = pd.concat([p for p in parts if len(p)], ignore_index=True) if any(len(p) for p in parts) else pd.DataFrame()
+        if f.empty:
             return {"rows": 0}
         self.store.append("world", f)
         return {"rows": len(f), "symbols": int(f["ticker"].nunique()) if len(f) else 0,
@@ -330,6 +343,40 @@ class Builder:
                 marks.append(d.strftime("%Y-%m-%d"))
             stats["days"] += 1
         stats["rows"] = self._flush("mkt", buf, "mkt", marks)
+        return stats
+
+    # ------------------------------------------------------------------ v2.1 每季財報（MOPS 綜合損益表彙總）
+    def fin(self) -> dict:
+        """近 3 年每季；申報期限（Q1 5/15、Q2 8/14、Q3 11/14、Q4 隔年 3/31）過後 20 天就不再重抓。"""
+        stats = {"quarters": 0, "rows": 0}
+        done = self.store.done_set("fin")
+        end = pd.Timestamp(self.end)
+        quarters = []
+        for y in range(end.year - 3, end.year + 1):
+            for q in (1, 2, 3, 4):
+                qend = pd.Timestamp(y, 3 * q, 1) + pd.offsets.MonthEnd(0)
+                if end < qend + pd.Timedelta(days=25):            # 季底後 25 天才可能有人申報
+                    continue
+                dl = {1: pd.Timestamp(y, 5, 15), 2: pd.Timestamp(y, 8, 14), 3: pd.Timestamp(y, 11, 14), 4: pd.Timestamp(y + 1, 3, 31)}[q]
+                quarters.append((y, q, dl))
+        todo = [(y, q, dl) for y, q, dl in quarters if f"{y}Q{q}" not in done][::-1]     # 最新季優先
+        for y, q, dl in todo[: int(self.cfg["data"].get("fin_max_quarters", 6))]:
+            if self.out_of_time():
+                break
+            try:
+                f = self.off.income(y, q)
+            except Exception as e:                                # 財報只用於顯示 → 任何錯誤都不可中斷其他資料
+                self.log(f"  fin {y}Q{q} 失敗（不影響研究，只少了財報比較）: {str(e)[:120]}")
+                break
+            if f.empty:
+                self.log(f"  fin {y}Q{q}：公開資訊觀測站沒有回傳資料（可能尚未公布或網頁格式改變）")
+            else:
+                self.store.append("fin", f)
+                stats["rows"] += len(f)
+            stats["quarters"] += 1
+            if end > dl + pd.Timedelta(days=20) and not f.empty:
+                self.store.mark_done("fin", [f"{y}Q{q}"])
+                self.store.save_state()
         return stats
 
     # ------------------------------------------------------------------ v2.0 ETF 行情與配息

@@ -161,13 +161,11 @@ def update(prev: dict | None, rows: list[dict], res: dict, cfg: dict, cfg_eff: d
 
 
 def log_picks(st: dict, res: dict, keep: int = 400) -> dict:
-    """前瞻紀錄：保存每天實際公布的名單（日期、期間、名單）。"""
-    log = list(st.get("picks_log", []))
+    """前瞻紀錄：保存每天實際公布的名單（日期、期間、名單）；同一天多次執行以最後一次（完整資料）為準。"""
     d = res["protocol"]["last_date"]
-    seen = {(x["date"], x["h"]) for x in log}
+    hs = set(res["horizons"])
+    log = [x for x in st.get("picks_log", []) if not (x["date"] == d and x["h"] in hs)]   # 同一天重跑（初版→完整版）以最後一次為準
     for h, hb in res["horizons"].items():
-        if (d, h) in seen:
-            continue
         log.append({"date": d, "h": h, "days": int(hb["days"]), "picks": [p["ticker"] for p in hb["latest"]["picks"]]})
     st["picks_log"] = log[-keep * 3:]
     st.setdefault("live_since", log[0]["date"] if log else d)

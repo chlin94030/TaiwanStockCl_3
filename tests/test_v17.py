@@ -250,7 +250,7 @@ def test_v19_freshness_status():
     # 週五 10:00：資料到週四 → 已是最新；週五 15:00 → 提示今日 21:40 更新
     assert F.status(T("2026-10-30 10:00"), pd.Timestamp("2026-10-29"), None)[0] == "green"
     lv, tx, _ = F.status(T("2026-10-30 15:00"), pd.Timestamp("2026-10-29"), None)
-    assert lv == "green" and "21:40" in tx
+    assert lv == "green" and "17:20" in tx
     # 使用者回報的情況：週二 00:39，資料到上週五 10/30，最近一次執行是週六 → 週一的排程沒有啟動 → 紅燈
     lv, tx, _ = F.status(T("2026-11-03 00:39"), pd.Timestamp("2026-10-30"), run("2026-10-31T02:00:00Z"))
     assert lv == "red" and "11/02" in tx and "沒有啟動" in tx
@@ -264,6 +264,12 @@ def test_v19_freshness_status():
     assert F.status(T("2026-10-31 01:00"), pd.Timestamp("2026-10-29"), None)[0] == "amber"
     assert F.status(T("2026-10-31 01:00"), pd.Timestamp("2026-10-22"), None)[0] == "red"
     assert "11/02 21:52" in F.run_desc(run("2026-11-02T13:52:00Z"))
+    # v2.1：19:00 後應有今日初版；還沒有 → 黃燈（21:40 會補），23:30 後仍沒有 → 紅燈
+    lv, tx, _ = F.status(T("2026-11-04 21:04"), pd.Timestamp("2026-11-03"), run("2026-11-03T13:45:00Z"))
+    assert lv == "amber" and "初版" in tx
+    assert F.status(T("2026-11-04 18:00"), pd.Timestamp("2026-11-03"), run("2026-11-03T13:45:00Z"))[0] == "green"
+    assert F.status(T("2026-11-04 23:40"), pd.Timestamp("2026-11-03"), run("2026-11-03T13:45:00Z"))[0] == "red"
+    assert F.status(T("2026-11-04 19:30"), pd.Timestamp("2026-11-04"), run("2026-11-04T09:30:00Z"))[0] == "green"
 
 
 def test_v191_fresh_check_and_same_day_streak():
@@ -280,6 +286,13 @@ def test_v191_fresh_check_and_same_day_streak():
     assert fc.decide({"research": {"last_date": "2026-10-30"}, "latest": {"margin": "2026-10-30"}}, now)[0] is False
     assert fc.decide({"research": {"last_date": "2026-11-02"}, "latest": {"margin": "2026-10-30"}}, now)[0] is False
     assert fc.decide({}, now)[0] is False
+    # v2.1 初版（17:23）：收盤已有、融資還沒有 → 執行；初版完成後同一晚 21:40 前不重跑，21:40 後要補融資
+    mon = lambda h, m: dt.datetime(2026, 11, 2, h, m, tzinfo=tpe)  # noqa: E731
+    old = {"research": {"last_date": "2026-10-30"}, "latest": {"margin": "2026-10-30", "institutional": "2026-10-30"}}
+    early = {"research": {"last_date": "2026-11-02"}, "latest": {"margin": "2026-10-30", "institutional": "2026-11-02"}}
+    assert fc.decide(old, mon(17, 23))[0] is False and fc.decide(early, mon(18, 40))[0] is True
+    assert fc.decide(early, mon(21, 40))[0] is False
+    assert fc.decide(old, mon(17, 23), {"2026-11-02"})[0] is True               # 今天休市 → 不必跑
     assert fc.expected_day(dt.datetime(2026, 11, 3, 6, 23, tzinfo=tpe)).isoformat() == "2026-11-02"   # 隔天早上的備援
     assert fc.expected_day(dt.datetime(2026, 11, 2, 12, 0, tzinfo=tpe)).isoformat() == "2026-10-30"   # 週一中午 → 上週五
     # 同一資料日重跑（備援、上傳程式）→ 連續天數不重複累加

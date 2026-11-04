@@ -88,10 +88,15 @@ def yearly_linkage(B, T: pd.DataFrame | None = None) -> pd.DataFrame:
     T = _large_cap_daily(B) if T is None else T
     if T.empty:
         return pd.DataFrame()
-    x = T[["day"]].join(_rets(W), how="inner")
+    x = T[[c for c in ("day", "gap", "oc") if c in T]].join(_rets(W), how="inner")
     out = []
     for y, g in x.groupby(x.index.year):
         row = {"年": int(y), "天數": int(len(g))}
+        if "SOX" in g:                                              # v2.1 隔夜消息是開盤一次反映，還是盤中繼續延續？
+            for c, zh in (("gap", "開盤跳空"), ("oc", "開盤到收盤")):
+                if c in g:
+                    z = g[[c, "SOX"]].dropna()
+                    row[f"相關_費半→{zh}"] = float(z[c].corr(z["SOX"])) if len(z) > 30 else np.nan
         for k, zh in (("SOX", "費半(前一夜)"), ("IXIC", "那斯達克(前一夜)"), ("KS11", "韓股(同日)"), ("N225", "日經(同日)")):
             if k not in g:
                 continue

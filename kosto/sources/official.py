@@ -164,6 +164,37 @@ class Http:
         raise SourceError(str(err))
 
 
+def _http_post(self, url: str, data: dict, encoding=None) -> str:
+    """v2.1 MOPS 彙總報表（POST，回 HTML）。"""
+    err = None
+    for attempt in range(self.retries):
+        wait = self.pause - (time.time() - self._last)
+        if wait > 0:
+            time.sleep(wait)
+        self._last = time.time()
+        try:
+            r = self.s.post(url, data=data, timeout=max(self.timeout, 60))
+            self.calls += 1
+            if r.status_code in (403, 429, 503):
+                raise SourceError(f"HTTP {r.status_code} (可能被暫時封鎖)")
+            r.raise_for_status()
+            if encoding:
+                r.encoding = encoding
+            txt = r.text
+            if "查詢過量" in txt or "FOR SECURITY REASONS" in txt.upper():
+                raise SourceError("MOPS 查詢過量，稍後再試")
+            return txt
+        except (requests.RequestException, SourceError) as e:
+            err = e
+            backoff = self.pause * (3 ** attempt) + 5
+            self.log(f"  ! MOPS 連線失敗（{str(e)[:60]}），{backoff:.0f} 秒後重試")
+            time.sleep(backoff)
+    raise SourceError(str(err))
+
+
+Http.post = _http_post
+
+
 def _ymd(d) -> str:
     return pd.Timestamp(d).strftime("%Y%m%d")
 
@@ -533,6 +564,43 @@ def parse_mops_revenue(html: str, year: int, month: int) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+_TABLE = re.compile(r"<table[^>]*>(.*?)</table>", re.S | re.I)
+FIN_COLS = {"revenue": ("營業收入", "淨收益", "收益"),
+            "gross": ("營業毛利（毛損）淨額", "營業毛利（毛損）"),
+            "op": ("營業利益（損失）",),
+            "net": ("淨利（淨損）歸屬於母公司業主", "本期淨利（淨損）", "本期稅後淨利（淨損）", "本期淨利（淨損）"),
+            "eps": ("基本每股盈餘（元）", "基本每股盈餘")}
+
+
+def parse_mops_income(html: str, year: int, season: int) -> pd.DataFrame:
+    """v2.1 MOPS t163sb04 綜合損益表彙總（累計至該季，單位仟元）→ ticker, yq, revenue, gross, op, net（元）, eps（元）。"""
+    rows = []
+    for tb in _TABLE.findall(html):
+        trs = _TR.findall(tb)
+        head = None
+        for tr in trs:
+            tds = [clean(x) for x in _TD.findall(tr)]
+            if not tds:
+                continue
+            if tds[0] == "公司代號":
+                head = {}
+                for k, cands in FIN_COLS.items():
+                    for c in cands:
+                        if c in tds:
+                            head[k] = tds.index(c)
+                            break
+                continue
+            if head is None or not STOCK_RE.match(tds[0]):
+                continue
+            r = {"ticker": tds[0], "yq": year * 10 + season}
+            for k, i in head.items():
+                v = num(tds[i]) if i < len(tds) else np.nan
+                r[k] = v if k == "eps" else v * 1000.0
+            rows.append(r)
+    f = pd.DataFrame(rows)
+    return f.drop_duplicates(["ticker", "yq"], keep="first") if len(f) else f
+
+
 def parse_tdcc_holders(text: str) -> pd.DataFrame:
     """集保戶股權分散表（每週）→ 每檔一列：大戶(≥400張)、千張大戶、散戶(<50張) 持股比例與股東人數。
 
@@ -660,6 +728,17 @@ class Official:
     # TDCC 集保戶股權分散表（最新一週，全市場）
     def tdcc_holders(self) -> pd.DataFrame:
         return parse_tdcc_holders(self.http.get(f"{TDCC}/getOD.ashx", {"id": "1-5"}, as_json=False, encoding="utf-8"))
+
+    # v2.1 MOPS 綜合損益表彙總（每季；上市＋上櫃）
+    def income(self, year: int, season: int) -> pd.DataFrame:
+        parts = []
+        for market in ("sii", "otc"):
+            html = self.http.post(f"{MOPS}/mops/web/ajax_t163sb04",
+                                  {"encodeURIComponent": "1", "step": "1", "firstin": "1", "off": "1", "isQuery": "Y",
+                                   "TYPEK": market, "year": str(year - 1911), "season": f"{season:02d}"})
+            parts.append(parse_mops_income(html, year, season))
+        f = pd.concat([p for p in parts if len(p)], ignore_index=True) if any(len(p) for p in parts) else pd.DataFrame()
+        return f.drop_duplicates(["ticker", "yq"], keep="first") if len(f) else f
 
     # MOPS
     def revenue(self, year: int, month: int) -> pd.DataFrame:

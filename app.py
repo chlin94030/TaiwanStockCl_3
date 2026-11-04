@@ -507,6 +507,9 @@ def data_status() -> tuple[str, str, str, str]:
     runs = actions_runs(REPO, TOKEN) if REPO else []
     run = runs[0] if runs else None
     lvl, txt, url = freshness.status(pd.Timestamp.now(tz="Asia/Taipei"), pd.Timestamp(B.sig_dates[-1]), run)
+    dd = B.meta.get("data_dates") or {}
+    if lvl == "green" and dd.get("margin") and dd.get("price") and dd["margin"] < dd["price"]:
+        txt += "｜融資券 21:40 補上"
     return lvl, txt, url, freshness.run_desc(run)
 
 
@@ -630,8 +633,8 @@ def brief_html(j) -> str:
         out += "<div style='font-size:13px;line-height:1.75'>" + "<br>".join(lines) + "</div>"
     out += rev_bars(b["rev"])
     lk = "　".join(f"<a href='{u}' target='_blank' rel='noopener'>{ui.esc(n)}</a>"
-                  for n, u in brieflib.links(B.tickers[j], BOARDS[j]))
-    out += (f"<div class='kq-muted' style='margin-top:6px'>以上由月營收、近四季 EPS、估值自動整理；"
+                  for n, u in brieflib.links(B.tickers[j], BOARDS[j], CH.get(B.tickers[j])))
+    out += (f"<div class='kq-muted' style='margin-top:6px'>以上由月營收、每季財報、估值自動整理；"
             f"法說會展望與新聞請看：{lk}</div>")
     return out
 
@@ -704,6 +707,116 @@ def chips_html(c) -> str:
     return out
 
 
+# ================================================================== v2.1 同族群比較、國際同業
+@st.cache_data(show_spinner=False)
+def world_frame(bid) -> pd.DataFrame:
+    keys = B.meta.get("world_keys") or []
+    if "WORLD" not in B.a or not keys:
+        return pd.DataFrame()
+    return pd.DataFrame(B.a["WORLD"].astype(float), index=B.days, columns=keys)
+
+
+def _seg_of(t):
+    lab = CH.get(t) or {}
+    return lab.get("segment") or lab.get("group") or "其他"
+
+
+@st.cache_data(show_spinner=False)
+def seg_members(bid) -> dict:
+    out = {}
+    for k, t in enumerate(B.tickers):
+        out.setdefault(_seg_of(t), []).append(k)
+    return out
+
+
+def _ret_n(arr, n):
+    a = arr[np.isfinite(arr)]
+    return float(a[-1] / a[-1 - n] - 1) if len(a) > n and a[-1 - n] > 0 else np.nan
+
+
+def group_compare_html(j) -> tuple[str, str]:
+    from kosto import brief as brieflib
+    from kosto import peers as peerslib
+    t = B.tickers[j]
+    seg = _seg_of(t)
+    mem = seg_members(BID).get(seg, [])
+    th = peerslib.themes_for(CH.get(t) or {})
+    if len(mem) < 4 and th:                                       # 細產業太少 → 用主題（例：記憶體＝DRAM、Flash、模組、控制 IC…）
+        name, _, pat = next(x for x in peerslib.THEMES if x[0] == th[0][0])
+        mem = [TIDX[x] for x in peerslib.tw_members(pat, CH) if x in TIDX]
+        seg = f"{name}（主題）"
+    if len(mem) < 3:                                              # 仍太少 → 用產業鏈族群
+        g = (CH.get(t) or {}).get("group")
+        mem = [k for k, x in enumerate(B.tickers) if (CH.get(x) or {}).get("group") == g]
+        seg = g or seg
+    cap = B.a["CAP"][-1] if "CAP" in B.a else np.zeros(len(B.tickers))
+    mem = sorted(set(mem), key=lambda k: -np.nan_to_num(cap[k]))[:10]
+    if j not in mem:
+        mem = [j] + mem[:9]
+    C = B.a.get("Q_C")
+    rows, mrows = [], []
+    for k in mem:
+        c = C[:, k].astype(float) if C is not None else np.array([])
+        fs = brieflib.fin_summary(B, k)
+        rv = brieflib.revenue_frame(B, k)
+        y3 = float(rv["rev"].iloc[-3:].sum() / rv["rev"].iloc[-15:-12].sum() - 1) if len(rv) >= 15 and rv["rev"].iloc[-15:-12].sum() > 0 else np.nan
+        pe = float(B.a["Q_PE"][-1, k]) if "Q_PE" in B.a and np.isfinite(B.a["Q_PE"][-1, k]) and B.a["Q_PE"][-1, k] > 0 else np.nan
+        gm, gml = fs.get("gm", np.nan), fs.get("gm_ly", np.nan)
+        dgm = (gm - gml) if ui.ok(gm) and ui.ok(gml) else np.nan
+        nm = (f"<b style='white-space:nowrap'>{B.tickers[k]} {ui.esc(NAMES[k])}</b>" if k == j
+              else f"<span style='white-space:nowrap'>{B.tickers[k]} {ui.esc(NAMES[k])}</span>")
+        r1, r5, r20 = _ret_n(c, 1), _ret_n(c, 5), _ret_n(c, 20)
+        rows.append([nm, ui.pct(r1, 1, color=True), ui.pct(r5, 1, color=True), ui.pct(r20, 1, color=True),
+                     f"{pe:.1f}" if ui.ok(pe) else "–", ui.pct(y3, 0, color=True),
+                     f"{fs['eps_ttm']:.2f}" if ui.ok(fs.get("eps_ttm")) else "–",
+                     ui.pct(gm, 1, sign=False) + (f"<span class='kq-muted'> {dgm * 100:+.1f}</span>" if ui.ok(dgm) else ""),
+                     ui.pct(fs.get("om"), 1, sign=False)])
+        pe_s = f"{pe:.1f}" if ui.ok(pe) else "–"
+        eps_s = f"{fs['eps_ttm']:.2f}" if ui.ok(fs.get("eps_ttm")) else "–"
+        mrows.append(ui.mcard(f"<span class='nm'>{nm}</span>", ui.pct(r1, 1, color=True),
+                              f"5日 {ui.pct(r5, 1, color=True)}｜20日 {ui.pct(r20, 1, color=True)}｜本益比 {pe_s}",
+                              f"營收年增 {ui.pct(y3, 0)}｜EPS(四季) {eps_s}｜毛利率 {ui.pct(gm, 1, sign=False)}"))
+    q = next((brieflib.fin_summary(B, k).get("q") for k in mem if brieflib.fin_summary(B, k)), None)
+    head = ["股票", "1日", "5日", "20日", "本益比", "營收年增", "EPS", "毛利率", "營益率"]
+    html = ui.resp(ui.table(head, rows, left=(0,)), "".join(mrows))
+    if "FIN_Q" not in B.a:
+        html += "<div class='kq-muted'>每季財報（EPS、毛利率）會在下一次每日更新後提供。</div>"
+    else:
+        html += ("<div class='kq-muted' style='margin-top:4px'>營收年增＝近 3 個月合計對去年同期；EPS＝近四季合計；"
+                 f"毛利率、營益率＝{ui.esc(q or '最新一季')}單季，灰字為較去年同季增減（百分點）。</div>")
+    return seg, html
+
+
+def peers_html(j) -> str:
+    from kosto import peers as peerslib
+    lab = CH.get(B.tickers[j]) or {}
+    th = peerslib.themes_for(lab)
+    W = world_frame(BID)
+    keys = [k for k in peerslib.peers_for(lab) if k in W and W[k].notna().sum() > 60]
+    if not keys:
+        return ("<span class='kq-muted'>" + ("國際同業資料將在下一次每日更新後提供（第一次會補 10 年歷史）。" if th else "此族群沒有明確對應的國際同業。")
+                + "</span>")
+    r = pd.Series(B.a["R"][:, j].astype(float), index=B.days)
+    rows, mrows = [], []
+    for k in keys:
+        s = W[k].dropna()
+        x = s.pct_change().where(lambda v: v.abs() < 0.3)
+        z = pd.concat([r, x], axis=1).dropna().tail(250)
+        cor = float(z.iloc[:, 0].corr(z.iloc[:, 1])) if len(z) > 60 else np.nan
+        a = s.to_numpy()
+        r1, r5, r20 = _ret_n(a, 1), _ret_n(a, 5), _ret_n(a, 20)
+        rows.append([ui.esc(peerslib.name_of(k)), ui.pct(r1, 1, color=True), ui.pct(r5, 1, color=True), ui.pct(r20, 1, color=True),
+                     f"{cor:.2f}" if ui.ok(cor) else "–"])
+        mrows.append(ui.mcard(f"<span class='nm'>{ui.esc(peerslib.name_of(k))}</span>", ui.pct(r1, 1, color=True),
+                              f"5日 {ui.pct(r5, 1, color=True)}｜20日 {ui.pct(r20, 1, color=True)}", f"連動係數 {cor:.2f}" if ui.ok(cor) else ""))
+    out = (f"<div class='kq-muted' style='margin-bottom:4px'>主題：{ui.esc('、'.join(n for n, _ in th))}｜"
+           f"資料至 {W.index[-1]:%m/%d}（美股＝前一晚）</div>")
+    out += ui.resp(ui.table(["同業", "1日", "5日", "20日", "連動(近一年)"], rows, left=(0,)), "".join(mrows))
+    out += ("<div class='kq-muted' style='margin-top:4px'>連動＝近一年此股日報酬與同業（前一晚）報酬的相關係數；"
+            "研究顯示同業的消息多半在台股<b>開盤就反映完</b>，適合當開盤前參考，不適合追價（見國際盤「連動研究」）。</div>")
+    return out
+
+
 def stock_view(j, h="mid", key="sv"):
     t = B.tickers[j]
     c = CH.get(t, {})
@@ -730,6 +843,10 @@ def stock_view(j, h="mid", key="sv"):
     c2.markdown(ui.panel("籌碼動向｜三大法人・融資券・大戶", chips_html(chips(BID, j))), unsafe_allow_html=True)
     c3.markdown(ui.panel("基本面快照與短評", brief_html(j) + "<div style='margin-top:8px'></div>" + fundamentals_html(j)),
                 unsafe_allow_html=True)
+    g1, g2 = st.columns([1.6, 1])
+    seg, grp_html = group_compare_html(j)
+    g1.markdown(ui.panel(f"同族群比較｜{seg}", grp_html), unsafe_allow_html=True)
+    g2.markdown(ui.panel("國際同業｜美股為前一晚收盤", peers_html(j)), unsafe_allow_html=True)
     per, rng, mas, inds = chart_controls(key, [5, 20, 60], IND_OPTS, ["boll", "volume", "kd", "macd", "inst"], 1)
     from kosto.charts import kline
     ind = ind_frame(BID, j, per)
@@ -890,9 +1007,22 @@ def correction_banner():
                 "<a href='./insight' target='_self'>看市場解讀與反彈候選 →</a></div>", unsafe_allow_html=True)
 
 
+def picks_status_banner():
+    """v2.1：17:20 初版／21:40 完整版的名單狀態。"""
+    ds = (RES or {}).get("data_status") or {}
+    if not ds or ds.get("complete"):
+        return
+    col = "#16a35f" if ds.get("final") else "#e9a23b"
+    used = ds.get("margin_factors") or {}
+    extra = ("；用到融資因子的期間：" + "、".join(f"{HZ.get(h, h)}（{'、'.join(FZH.get(f, f) for f in fs)}）" for h, fs in used.items())) if used else ""
+    st.markdown(f"<div class='kq-warn' style='border-color:{col}'>{'✅ 名單已定版' if ds.get('final') else '🕒 初版名單'}：{ui.esc(ds.get('text', ''))}{ui.esc(extra)}</div>",
+                unsafe_allow_html=True)
+
+
 def page_picks():
     header()
     data_strip()
+    picks_status_banner()
     correction_banner()
     h = st.segmented_control("選股期間", list(HZ), format_func=lambda x: f"{HZ[x]}", default="mid", key="pick_h") or "mid"
     lt = latest(h)
@@ -1118,7 +1248,7 @@ def page_live():
     board()
     with st.expander("盤後：決定明日標的（每晚自動更新）", expanded=ph in ("盤後", "休市", "盤前")):
         st.markdown(f"""
-- 系統每個交易日 **21:40** 自動抓取當日收盤、法人、融資券資料並重新選股，約 23:00 完成；隔天開盤前打開「今日選股」即可看到明日名單（目前名單日：**{latest('short')['date']}**）。
+- 系統每個交易日 **17:23** 先用收盤、法人、本益比出初版（約 18:30 完成），**21:40** 補上融資券出完整版（約 23:00 完成）；隔天開盤前打開「今日選股」即可看到明日名單（目前名單日：**{latest('short')['date']}**）。
 - **明日要買**：名單中標「新進」的股票；**續抱**：標「續抱」或仍在續抱門檻內；**要賣**：手上有、但已跌出續抱門檻（看「今日選股」的持股追蹤或下方「持股健檢」）。
 - 隔日 **開盤前** 先看「國際盤」：昨夜費半大跌 → 台股多半開低後盤中小幅收斂，不要開盤殺低；大漲 → 開高後常回落，不追開盤。
 - 以「建議買進區上緣」以內掛單；**開盤跳空超過追價上限就不追**，盤中回到買進區再分批買。
@@ -1520,7 +1650,7 @@ def page_insight():
     df, c, sto = insight_frame(BID)
     st.markdown(ui.section("市場解讀", "大盤現在在哪裡、止穩了沒、資金在做什麼、哪些股票修正後反彈較好"), unsafe_allow_html=True)
     if df.empty or not sto:
-        st.info("市場解讀需要新版每日研究資料（下一次 21:40 更新後提供）。")
+        st.info("市場解讀需要新版每日研究資料（下一次每日更新後提供）。")
         return
     last = df.iloc[-1]
     tone_col = {"red": "#f0464b", "amber": "#e9a23b", "green": "#16a35f"}[sto["tone"]]
@@ -1769,13 +1899,117 @@ def etf_name(code: str) -> str:
 
 
 # ================================================================== page: 國際盤
+def link_oc_text(yl) -> str:
+    """v2.1：前一夜費半 → 台股開盤跳空 vs 開盤到收盤（盤中延續）的逐年相關。"""
+    c1, c2 = "相關_費半→開盤跳空", "相關_費半→開盤到收盤"
+    if yl is None or c2 not in yl or yl[c2].notna().sum() < 3:
+        return ("連動主要反映在<b>開盤跳空</b>：美股的影響多半在台股開盤就反映 → 用美股漲跌去「預測」台股接下來幾週哪些股票會贏，"
+                "實測沒有幫助（見下方研究結論）。")
+    z = yl.dropna(subset=[c2])
+    old, new = z.iloc[:-2][c2].mean(), z.iloc[-1][c2]
+    return (f"以前美股的影響幾乎在台股<b>開盤</b>一次反映（{int(z.iloc[0]['年'])}–{int(z.iloc[-3]['年'])} 年 費半→開盤到收盤 相關約 {old:.2f}）；"
+            f"{int(z.iloc[-1]['年'])} 年升到 <b>{new:.2f}</b>，代表盤中仍持續跟著美股（期貨）走，像 11/4 跌 1,400 點後隨美股期貨翻紅急拉的 V 型走勢。"
+            "週頻選股仍不受影響；盤中操作請同時看那斯達克期貨。")
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def peers_live() -> pd.DataFrame:
+    from kosto.sources import world as W
+    try:
+        return W.quote(W.PEER_KEYS, workers=8)
+    except Exception:  # noqa: BLE001
+        return pd.DataFrame()
+
+
+def theme_section():
+    """v2.1 台股連動精選：依主題的國際指標股（即時）＋台股對應族群與近一年連動係數。"""
+    from kosto import peers as peerslib
+    Wd = world_frame(BID)
+    q = peers_live()
+    live = {r["key"]: r for r in q.to_dict("records")} if len(q) else {}
+    st.markdown(ui.section("台股連動精選", "國際指標股即時報價（美股含盤前盤後最新價）；台股族群為研究日收盤；連動＝近一年日報酬相關"),
+                unsafe_allow_html=True)
+    R = pd.DataFrame(B.a["R"].astype(float), index=B.days, columns=B.tickers) if "R" in B.a else pd.DataFrame()
+    cap = B.a["CAP"][-1] if "CAP" in B.a else np.zeros(len(B.tickers))
+    tabs = st.tabs([n for n, _, _ in peerslib.THEMES])
+    for tab, (name, keys, pat) in zip(tabs, peerslib.THEMES):
+        with tab:
+            tiles = []
+            for k in keys:
+                d = live.get(k)
+                if d:
+                    tiles.append(ui.tile(peerslib.name_of(k), ui.num(d["price"], 2), d["chg"], f"即時 {d['time']:%m/%d %H:%M}",
+                                         ui.spark(d.get("spark"), 70, 22, fill=False)))
+                elif k in Wd and Wd[k].notna().sum() > 2:
+                    s_ = Wd[k].dropna()
+                    s_ = s_[s_.diff().fillna(1) != 0]
+                    if len(s_) >= 2:
+                        tiles.append(ui.tile(peerslib.name_of(k), ui.num(s_.iloc[-1], 2), float(s_.iloc[-1] / s_.iloc[-2] - 1), "最近收盤",
+                                             ui.spark(s_.tail(22).tolist(), 70, 22, fill=False)))
+            if tiles:
+                st.markdown("<div class='kq-tiles'>" + "".join(tiles) + "</div>", unsafe_allow_html=True)
+            else:
+                st.markdown("<div class='kq-muted'>國際同業資料將在下一次每日更新後提供。</div>", unsafe_allow_html=True)
+            mem = [t for t in peerslib.tw_members(pat, CH) if t in TIDX]
+            mem = sorted(mem, key=lambda t: -np.nan_to_num(cap[TIDX[t]]))[:8]
+            if not mem or R.empty:
+                continue
+            basket = pd.concat([Wd[k].pct_change(fill_method=None) for k in keys if k in Wd], axis=1).mean(axis=1) if any(k in Wd for k in keys) else None
+            rows = []
+            for t in mem:
+                r = R[t]
+                cor = float(pd.concat([r, basket], axis=1).dropna().tail(250).corr().iloc[0, 1]) if basket is not None else np.nan
+                c = B.a["Q_C"][:, TIDX[t]].astype(float) if "Q_C" in B.a else np.array([])
+                rows.append([f"{t} {ui.esc(NAMES[TIDX[t]])}", ui.esc(_seg_of(t)), ui.pct(_ret_n(c, 1), 1, color=True),
+                             ui.pct(_ret_n(c, 5), 1, color=True), ui.pct(_ret_n(c, 20), 1, color=True), f"{cor:.2f}" if ui.ok(cor) else "–"])
+            st.markdown(ui.table(["台股", "細產業", "1日", "5日", "20日", "與國際同業連動"], rows, left=(0, 1)), unsafe_allow_html=True)
+
+
+def intraday_section():
+    il = B.meta.get("intraday_link") or []
+    if not il:
+        return
+    t = pd.DataFrame(il)
+    rows = [[r["季"], f"{int(r['小時數'])}", f"{r['盤中每小時相關']:.2f}" if ui.ok(r.get("盤中每小時相關")) else "–",
+             f"{r['盤中β']:.2f}" if ui.ok(r.get("盤中β")) else "–",
+             f"{r['開盤到收盤相關']:.2f}" if ui.ok(r.get("開盤到收盤相關")) else "–"] for _, r in t.iterrows()]
+    st.markdown(ui.section("盤中連動：台股 vs 那斯達克期貨（逐季）", "台股交易時段內兩者同一小時報酬的相關係數；β＝期貨漲跌 1% 時加權指數同時段平均漲跌"),
+                unsafe_allow_html=True)
+    st.markdown(ui.table(["季", "小時數", "每小時相關", "盤中β", "開盤到收盤相關"], rows, left=(0,)), unsafe_allow_html=True)
+    h = t["盤中每小時相關"].dropna()
+    if len(h) >= 8:
+        a, b = h.iloc[-4:].mean(), h.iloc[-8:-4].mean()
+        verdict = "連動變緊" if a - b >= 0.1 else ("差不多" if abs(a - b) < 0.1 else "連動變鬆")
+        st.markdown(f"<div class='kq-muted'>最近 4 季平均 {a:.2f}，前 4 季 {b:.2f} → <b>{verdict}</b>（預先宣告：差距 ≥0.1 才算變緊）。</div>",
+                    unsafe_allow_html=True)
+
+
+def linkage_ic_section():
+    li = (RES or {}).get("linkage_ic") or {}
+    ic = li.get("ic") or {}
+    if not ic:
+        return
+    years = sorted({y for v in ic.values() for y in v})[-8:]
+    rows = []
+    for f, v in ic.items():
+        rows.append([f"{ui.esc(FZH.get(f, f))}<span class='kq-muted'> {f}</span>"] +
+                    [f"<span style='color:{ui.color_of(v.get(y))}'>{v.get(y):+.3f}</span>" if v.get(y) is not None else "–" for y in years])
+    st.markdown(ui.section("連動因子能不能用來選股？（逐年 IC，每日自動更新）",
+                           f"中線母池 {li.get('pool', '')}：因子分數與之後 20 日報酬的等級相關；正＝分數高的股票之後表現較好"), unsafe_allow_html=True)
+    st.markdown(ui.table(["因子"] + [str(y) for y in years], rows, left=(0,)), unsafe_allow_html=True)
+    st.markdown("<div class='kq-muted'>v2.1 預先宣告的檢驗（docs/v2.1_linkage_protocol.md）：同族群動能、落後補漲、族群上漲家數，"
+                "放進模型或固定 15% 加入都讓中線開發期超額報酬下降 0.8～5 個百分點，<b>未通過</b>；對費半連動高的股票在 2025–2026 年明顯較強，"
+                "但 2022 年相反——屬於「AI 多頭期」的現象，現在加入等於追逐最近的行情。系統每天更新這張表，若連續轉正會在下一版重新檢驗。</div>",
+                unsafe_allow_html=True)
+
+
 def page_world():
     header(world=False)
     snap = world_snapshot()
     ls = link_stats(BID)
     st.markdown(ui.section("國際盤", "美股收盤、美股期貨、日韓早盤、匯率｜每 60 秒更新"), unsafe_allow_html=True)
     if not snap:
-        st.info("國際市場資料尚未建立：下一次每日更新（21:40）會自動抓取，或目前網路無法連到 Yahoo Finance。")
+        st.info("國際市場資料尚未建立：下一次每日更新會自動抓取，或目前網路無法連到 Yahoo Finance。")
         return
     tiles = []
     for k in WORLD_ORDER:
@@ -1821,6 +2055,9 @@ def page_world():
                          + "、".join(f"{nm} {ui.chg(x['chg'])}" for nm, x in (("日經", n225), ("韓股", ks)) if x)
                          + "；台股與日韓同日報酬相關係數約 0.6–0.7，開盤前可當領先參考。</div>")
             st.markdown(ui.panel("開盤前判讀（依歷史統計）", body), unsafe_allow_html=True)
+    theme_section()
+    intraday_section()
+    linkage_ic_section()
     yl = ls.get("yearly")
     if yl is not None and len(yl):
         st.markdown(ui.section("台股越來越受美股影響嗎？", "台股市值前 300 大等權日報酬 vs 前一夜美股／同日日韓"), unsafe_allow_html=True)
@@ -1842,8 +2079,7 @@ def page_world():
             f"台股對前一夜費半的相關係數由 {int(r0['年'])} 年 {r0.get('相關_費半(前一夜)', np.nan):.2f} 升到 {int(r1['年'])} 年 "
             f"{r1.get('相關_費半(前一夜)', np.nan):.2f}；β 由 {r0.get('β_費半(前一夜)', np.nan):.2f} 升到 {r1.get('β_費半(前一夜)', np.nan):.2f}"
             "（費半漲跌 1%，台股大型股隔日平均跟漲跌的幅度）。",
-            "連動主要反映在<b>開盤跳空</b>：美股的影響幾乎在台股開盤一次反映完，盤中反而小幅回吐，隔一日已無延續 → "
-            "用美股漲跌去「預測」台股接下來幾週哪些股票會贏，實測沒有幫助（見下方研究結論）。",
+            link_oc_text(yl),
             "美股 23 小時交易：Nasdaq 與 NYSE Arca 預計 2026-12-06 起週日至週五 23×5 交易（SEC 已核准 Nasdaq 方案）。"
             "夜盤時段 美東 21:00–04:00 ＝ 台北 10:00–17:00（冬令）／09:00–16:00（夏令），會與台股交易時間重疊。"
             "影響：台積電 ADR、美股科技股將在台股盤中即時交易，「隔夜跳空」可能縮小、改為盤中同步波動；"
@@ -1884,7 +2120,7 @@ def page_guide():
     header()
     st.markdown(ui.section("操作指南", "盤後選股 → 開盤前看國際盤 → 盤中執行 → 定期檢查"), unsafe_allow_html=True)
     steps = [
-        ("盤後｜決定明日標的", "每個交易日 21:40 系統自動更新，約 23:00 完成。", [
+        ("盤後｜決定明日標的", "每個交易日 17:23 出初版（約 18:30 完成），21:40 補融資券出完整版（約 23:00）。", [
             "打開「今日選股」，選擇短／中／長線。",
             "標「新進」＝明天要買；標「續抱」＝已持有就不動。",
             "看「價位計畫」：藍色＝買進區、金色＝可小量、超過追價上限不追。"]),
@@ -1956,7 +2192,7 @@ def auto_panel():
                            f"連續 {au.get('rule', {}).get('streak', 10)} 個交易日第一名才換上"
                            + ("" if au.get("enabled", True) else "（目前設定為只比較、不自動換）")), unsafe_allow_html=True)
     if not au.get("table"):
-        st.markdown("<div class='kq-muted'>下一次每日研究（21:40）後開始記錄。</div>", unsafe_allow_html=True)
+        st.markdown("<div class='kq-muted'>下一次每日研究後開始記錄。</div>", unsafe_allow_html=True)
         return
     rows, mc = [], []
     for h in [x for x in HORIZON_KEYS if x in au["table"]]:
@@ -2000,7 +2236,7 @@ def forward_panel():
 
 def auto_research_tab():
     st.markdown(ui.panel("今日選股用的就是這裡的結果，不需要手動調整", ui.bullets([
-        "每個交易日 21:40，GitHub Actions 自動：①下載最新資料 ②在 30 個母池中<b>自動挑出最佳母池</b> ③<b>自動估計因子權重</b>"
+        "每個交易日 17:23（初版）與 21:40（完整版），GitHub Actions 自動：①下載最新資料 ②在 30 個母池中<b>自動挑出最佳母池</b> ③<b>自動估計因子權重</b>"
         "（每天用全部資料重估）④<b>冠軍／挑戰者比較</b>：把目前模型和鄰近設定（因子數、假說比例、續抱倍數、持股檔數）在五種換股日上比較，"
         "挑戰者連續 10 個交易日明顯勝出就<b>自動換上</b> ⑤產生名單與完整報告。",
         "分數只用開發期（盲測期不參與挑選），並檢查 2019–20 這段沒用過的期間不可明顯退步，避免越調越貼歷史。",

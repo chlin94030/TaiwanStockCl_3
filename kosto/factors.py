@@ -498,6 +498,54 @@ def _f_pe_self(c):
 def _f_dy_rel(c): return _group_rel(c, c.P["dy"].astype(float))
 
 
+# ================================================================== v2.1 同族群連動候選（預先宣告研究 docs/v2.1_linkage_protocol.md）
+def chain_segments(P: Panel) -> pd.Series:
+    """細產業（記憶體、貨櫃航運…）；同細產業不足 5 檔時退回產業鏈族群。"""
+    from .chain import label
+    sec = P.info["sector"] if P.info is not None and "sector" in P.info else pd.Series("NA", index=P.tickers)
+    lab = [label(t, s) for t, s in zip(P.tickers, sec.reindex(P.tickers).fillna("NA"))]
+    seg = pd.Series([x.get("segment") or x["group"] for x in lab], index=P.tickers)
+    grp = pd.Series([x["group"] for x in lab], index=P.tickers)
+    n = seg.map(seg.value_counts())
+    return seg.where(n >= 5, grp)
+
+
+def _seg_loo(c, x: pd.DataFrame, how: str = "mean") -> pd.DataFrame:
+    """同細產業「其他股票」的平均（不含自己；其他 ≥3 檔）。"""
+    g = c.get("chain_segments", lambda: chain_segments(c.P))
+    out = _nan_like(c)
+    ok = x.notna()
+    for _, cols in g.groupby(g).groups.items():
+        if len(cols) < 4:
+            continue
+        sub, k = x[cols], ok[cols]
+        tot, n = sub.sum(axis=1, min_count=1), k.sum(axis=1)
+        other = n.to_numpy()[:, None] - k.to_numpy()
+        with np.errstate(invalid="ignore", divide="ignore"):
+            ex = (tot.to_numpy()[:, None] - sub.fillna(0).to_numpy()) / other
+        ex[other < 3] = np.nan
+        out[cols] = ex
+    return out
+
+
+@factor("g_seg_mom20", "T", 1, ("short", "mid", "long"), "同細產業其他股近20日動能")
+def _g_seg_mom20(c): return _seg_loo(c, c.mom(20).astype(float))
+
+
+@factor("g_seg_lag5", "T", 1, ("short", "mid"), "落後同業補漲(同業5日−自己5日)")
+def _g_seg_lag5(c):
+    m5 = c.mom(5).astype(float)
+    return _seg_loo(c, m5) - m5
+
+
+@factor("g_seg_breadth5", "T", 1, ("short", "mid"), "同細產業近5日上漲家數比例")
+def _g_seg_breadth5(c):
+    up = (c.mom(5) > 0).astype(float).where(c.mom(5).notna())
+    return _seg_loo(c, up)
+
+
+V21_CANDIDATES = ["g_seg_mom20", "g_seg_lag5", "g_seg_breadth5"]
+
 V19_CANDIDATES = ["t_max20", "t_skew60", "t_limitup20", "t_high60", "t_bbw", "f_rev_surprise", "f_rev_rel", "c_trust60",
                   "c_fr_high", "f_pe_self", "f_dy_rel"]
 

@@ -42,6 +42,45 @@ def valuation_frame(B, j: int) -> pd.DataFrame:
     return f
 
 
+def fin_frame(B, j: int) -> pd.DataFrame:
+    """v2.1 每季財報（單季）：營收、毛利、營業利益、淨利（億元）、EPS、毛利率、營益率；index＝'2026Q2'。"""
+    if "FIN_Q" not in B.a or not B.meta.get("fin_q"):
+        return pd.DataFrame()
+    q = B.meta["fin_q"]
+    x = B.a["FIN_Q"][:, j, :].astype(float)
+    cols = B.meta.get("fin_cols") or ["revenue", "gross", "op", "net", "eps"]
+    f = pd.DataFrame(x, columns=cols, index=[f"{v // 10}Q{v % 10}" if v else "" for v in q])
+    f = f[[bool(i) for i in f.index]]
+    f = f[f.notna().any(axis=1)]
+    if f.empty:
+        return f
+    for c in ("revenue", "gross", "op", "net"):
+        if c in f:
+            f[c] = f[c] / 1e8
+    with np.errstate(invalid="ignore", divide="ignore"):
+        f["gm"] = (f["gross"] / f["revenue"]).where(f["revenue"] > 0)
+        f["om"] = (f["op"] / f["revenue"]).where(f["revenue"] > 0)
+    return f
+
+
+def fin_summary(B, j: int) -> dict:
+    """最新一季與去年同季比較、近四季 EPS。"""
+    f = fin_frame(B, j)
+    if f.empty or f["revenue"].isna().all():
+        return {}
+    f = f.dropna(subset=["revenue"])
+    last = f.index[-1]
+    y, q = int(last[:4]), int(last[-1])
+    ly = f"{y - 1}Q{q}"
+    out = {"q": last, "gm": _f(f.loc[last, "gm"]), "om": _f(f.loc[last, "om"]), "eps": _f(f.loc[last, "eps"]),
+           "rev": _f(f.loc[last, "revenue"])}
+    if ly in f.index:
+        out.update({"gm_ly": _f(f.loc[ly, "gm"]), "eps_ly": _f(f.loc[ly, "eps"]), "rev_ly": _f(f.loc[ly, "revenue"])})
+    e4 = f["eps"].dropna().tail(4)
+    out["eps_ttm"] = float(e4.sum()) if len(e4) == 4 else np.nan
+    return out
+
+
 def brief(B, j: int) -> dict:
     """回傳 {'tone': 正向/中性/保守, 'title': 一句總評, 'good': [...], 'bad': [...], 'rev': DataFrame}。"""
     good, bad, score, val = [], [], 0, ""
@@ -116,6 +155,35 @@ def brief(B, j: int) -> dict:
         dy = _f(vf["dy"].dropna().iloc[-1])
         if np.isfinite(dy) and dy >= 4:
             good.append(f"現金殖利率 {dy:.1f}%")
+    fs = fin_summary(B, j)                                                  # v2.1 每季財報
+    if fs:
+        gm, gml = fs.get("gm"), fs.get("gm_ly")
+        if np.isfinite(gm if gm is not None else np.nan):
+            t = f"{fs['q']} 毛利率 {gm:.1%}"
+            if gml is not None and np.isfinite(gml):
+                d = gm - gml
+                t += f"（去年同季 {gml:.1%}，{d * 100:+.1f} 個百分點）"
+                if d >= 0.03:
+                    good.append(t)
+                    score += 1
+                elif d <= -0.03:
+                    bad.append(t)
+                    score -= 1
+                else:
+                    good.append(t)
+            else:
+                good.append(t)
+        e, el = fs.get("eps"), fs.get("eps_ly")
+        if e is not None and np.isfinite(e):
+            t = f"{fs['q']} 單季 EPS {e:.2f} 元"
+            if el is not None and np.isfinite(el) and el > 0:
+                g = e / el - 1
+                t += f"（去年同季 {el:.2f} 元，{g:+.0%}）"
+                (good if g >= 0 else bad).append(t)
+            elif e < 0:
+                bad.append(t + "（虧損）")
+            else:
+                good.append(t)
     tone = "正向" if score >= 2 else ("保守" if score <= -1 else "中性")
     grow = {"正向": "營收／獲利成長強", "中性": "營運平穩", "保守": "營運動能轉弱"}[tone]
     vtxt = {"偏低": "估值偏低", "中間": "估值合理", "偏高": "但估值已偏高、追價要小心"}.get(val, "")
@@ -124,11 +192,17 @@ def brief(B, j: int) -> dict:
     title = f"{grow}，{vtxt}" if vtxt else grow
     if not good and not bad:
         title, tone = "資料不足（新上市或尚無月營收／本益比）", "中性"
-    return {"tone": tone, "title": title, "good": good[:5], "bad": bad[:3], "rev": rv}
+    return {"tone": tone, "title": title, "good": good[:6], "bad": bad[:4], "rev": rv, "fin": fs}
 
 
-def links(ticker: str, board: str = "") -> list[tuple[str, str]]:
+def links(ticker: str, board: str = "", label: dict | None = None) -> list[tuple[str, str]]:
     sfx = "TWO" if board == "TPEX" else "TW"
-    return [("新聞", f"https://tw.stock.yahoo.com/quote/{ticker}.{sfx}/news"),
-            ("營收／財報", f"https://goodinfo.tw/tw/StockDetail.asp?STOCK_ID={ticker}"),
-            ("公開資訊觀測站（法說會／重大訊息）", "https://mops.twse.com.tw/mops/web/index")]
+    out = [("新聞", f"https://tw.stock.yahoo.com/quote/{ticker}.{sfx}/news"),
+           ("營收／財報", f"https://goodinfo.tw/tw/StockDetail.asp?STOCK_ID={ticker}"),
+           ("公開資訊觀測站（法說會／重大訊息）", "https://mops.twse.com.tw/mops/web/index")]
+    text = " ".join(str(v) for v in (label or {}).values() if isinstance(v, str))
+    if any(k in text for k in ("記憶體", "DRAM", "Flash", "NAND")):
+        out.append(("記憶體報價（TrendForce 集邦）", "https://www.trendforce.com.tw/price"))
+    if any(k in text for k in ("航運", "貨櫃", "散裝")):
+        out.append(("運價指數（SCFI／BDI）", "https://en.sse.net.cn/indices/scfinew.jsp"))
+    return out

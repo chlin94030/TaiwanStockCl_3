@@ -71,7 +71,9 @@ research:
   inactive_factors: [g_us_beta, g_us_lead, g_asia_lead, g_fx_flow, t_ind_mom,
                      # v1.9 候選因子（docs/v1.9_protocol.md）：放進精簡模型候選池全部未通過 → 照常計算、不讓模型自己挑
                      t_max20, t_skew60, t_limitup20, t_high60, t_bbw, f_rev_surprise, f_rev_rel, c_trust60,
-                     c_fr_high, f_pe_self, f_dy_rel]
+                     c_fr_high, f_pe_self, f_dy_rel,
+                     # v2.1 同族群連動候選（docs/v2.1_linkage_protocol.md）：研究結果決定是否啟用
+                     g_seg_mom20, g_seg_lag5, g_seg_breadth5]
   overlay:                             # v1.9 研究唯一通過門檻者：以固定 15% 權重加入三個期間的分數（其餘 85% 為原模型）
     f_rev_rel: 0.15                    #   營收年增相對同業：中線 +1.6pp／資訊比率 +0.02、長線 +8.0pp、短線 −0.8pp（容許 1pp 內）
   score_hypotheses:                    # v1.4：ChatGPT V24 預先宣告的價格領先假說（固定權重）

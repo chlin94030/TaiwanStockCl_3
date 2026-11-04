@@ -35,6 +35,7 @@ class Panel:
     etf_px: pd.DataFrame = None                      # v2.0 ETF 日行情（long format；只給 ETF 頁）
     etf_div: pd.DataFrame = None                     # v2.0 ETF 除息
     mkt_off: pd.DataFrame = None                     # v2.0 上市官方合計（三大法人買賣金額、融資金額）index=date
+    fin: pd.DataFrame = None                         # v2.1 每季綜合損益（累計至該季）：ticker yq revenue gross op net eps
     synthetic: bool = False
     quality: dict = field(default_factory=dict)
 
@@ -212,6 +213,14 @@ def build_panel(store: Store, start=None, end=None, min_names_per_day: int = 50)
                 if c in f:
                     f[c] = f[c].astype(object)
             setattr(P, attr, f)
+    try:
+        fi = store.read("fin")
+        if not fi.empty:
+            fi = fi.copy()
+            fi["ticker"] = fi["ticker"].astype(str)
+            P.fin = fi
+    except Exception:  # noqa: BLE001
+        pass
     try:
         mo = store.read("mkt", None, end)
         if not mo.empty:
