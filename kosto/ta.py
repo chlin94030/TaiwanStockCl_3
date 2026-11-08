@@ -94,7 +94,11 @@ def indicators(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ------------------------------------------------------------------ 台股升降單位
-def tick(p: float) -> float:
+def tick(p: float, etf: bool = False) -> float:
+    """證交所升降單位。股票：<10 0.01、10–50 0.05、50–100 0.1、100–500 0.5、500–1000 1、≥1000 5；
+    ETF／ETN／REITs：<50 0.01、≥50 0.05。"""
+    if etf:
+        return 0.01 if p < 50 else 0.05
     if p < 10:
         return 0.01
     if p < 50:
@@ -108,10 +112,10 @@ def tick(p: float) -> float:
     return 5.0
 
 
-def round_tick(p: float, mode: str = "near") -> float:
+def round_tick(p: float, mode: str = "near", etf: bool = False) -> float:
     if p is None or not np.isfinite(p) or p <= 0:
         return np.nan
-    t = tick(p)
+    t = tick(p, etf)
     f = {"near": np.round, "down": np.floor, "up": np.ceil}[mode]
     v = f(p / t + 1e-9 * (1 if mode != "down" else -1)) * t
     return float(round(v, 2))

@@ -57,6 +57,18 @@ def _is_dark() -> bool:
 
 
 DARK = _is_dark()
+
+
+def _is_mobile() -> bool:
+    """v2.2 手機版面：依瀏覽器 User-Agent 判斷（手機縮短圖表、減少預設指標；版面本身另由 CSS 依螢幕寬度調整）。"""
+    try:
+        ua = (st.context.headers or {}).get("User-Agent", "") or ""
+    except Exception:  # noqa: BLE001
+        return False
+    return any(k in ua for k in ("iPhone", "Android", "Mobile", "iPod")) and "iPad" not in ua
+
+
+IS_MOBILE = _is_mobile()
 st.markdown(ui.css(DARK), unsafe_allow_html=True)
 
 HZ = {"short": "短線", "mid": "中線", "long": "長線"}
@@ -476,8 +488,69 @@ def overnight_read(sox_chg: float) -> tuple[str, dict, str]:
     return lab, {"stat": stat, **row}, adv
 
 
+@st.cache_data(ttl=600, show_spinner=False)
+def world_live_state() -> dict:
+    """v2.2.2 最新美股收盤的國際狀態（Yahoo 日線，免金鑰）：週末／盤前打開 App 時，用週五（前一晚）的美股收盤，
+    不必等下一次每日研究。欄位與 linkage.world_state 相同（SOX、SOX_ma100、SOX_vs_ma100、SOX_d20、VIX、KS11_d20、TWD_d20）。"""
+    from concurrent.futures import ThreadPoolExecutor
+
+    import requests
+    from kosto.sources import world as W
+    tzs = {"SOX": "America/New_York", "VIX": "America/Chicago", "KS11": "Asia/Seoul", "TWD": "Europe/London"}
+
+    def get(k):
+        try:
+            r = requests.get(W.YAHOO + requests.utils.quote(W.SYMBOLS[k], safe=""), params={"range": "1y", "interval": "1d"},
+                             headers=W.UA, timeout=6)
+            r.raise_for_status()
+            m = r.json()["chart"]["result"][0]
+            c = pd.Series((m.get("indicators") or {}).get("quote", [{}])[0].get("close") or [],
+                          index=pd.to_datetime(m.get("timestamp") or [], unit="s", utc=True), dtype=float).dropna()
+            return k, c
+        except Exception:  # noqa: BLE001
+            return k, pd.Series(dtype=float)
+    out = {}
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        for k, c in ex.map(get, list(tzs)):
+            if len(c) < 25:
+                continue
+            out[k] = float(c.iloc[-1])
+            out[f"{k}_d1"] = float(c.iloc[-1] / c.iloc[-2] - 1)
+            out[f"{k}_d20"] = float(c.iloc[-1] / c.iloc[-21] - 1)
+            if k == "SOX":
+                out["us_date"] = str(c.index[-1].tz_convert(tzs[k]).date())
+                ma = c.rolling(100, min_periods=80).mean()
+                if np.isfinite(ma.iloc[-1]):
+                    out["SOX_ma100"] = float(ma.iloc[-1])
+                    out["SOX_vs_ma100"] = out["SOX"] / out["SOX_ma100"] - 1
+    return out if "us_date" in out else {}
+
+
+def world_state_now() -> dict:
+    """研究時的國際狀態，若 Yahoo 已有更新的美股收盤（例如週五晚上 → 週一開盤前）就改用最新的；src＝live／research。"""
+    st_ = dict(link_stats(BID).get("state") or {})
+    st_["src"] = "research"
+    lv = world_live_state()
+    if lv and lv.get("us_date", "") >= str(st_.get("date", ""))[:10]:
+        st_.update(lv)
+        st_["src"] = "live"
+        risk = []
+        if ui.ok(st_.get("SOX_vs_ma100")) and st_["SOX_vs_ma100"] < 0:
+            risk.append("費半跌破百日線")
+        if ui.ok(st_.get("VIX")) and st_["VIX"] > 30:
+            risk.append("VIX > 30")
+        st_["risk"] = risk
+    return st_
+
+
+def world_label(stt: dict) -> str:
+    if stt.get("src") == "live":
+        return f"{pd.Timestamp(stt['us_date']):%m/%d}（{'一二三四五六日'[pd.Timestamp(stt['us_date']).weekday()]}）美股收盤"
+    return "研究時資料"
+
+
 def risk_light() -> tuple[str, str, list[str]]:
-    st_ = link_stats(BID).get("state") or {}
+    st_ = world_state_now()
     snap = world_snapshot()
     risk = list(st_.get("risk") or [])
     vix = snap.get("VIX", {}).get("price", st_.get("VIX"))
@@ -604,7 +677,7 @@ def tw_intraday(tickers, interval: str = "2m") -> dict:
         for t in tk:
             if len(q) and t in q.index:
                 out[t] = IDY.merge_live(out[t], q.loc[t].to_dict())
-    return {t: d for t, d in out.items() if d is not None and len(d["v"]) >= 2}
+    return {t: IDY.snap_ticks(d) for t, d in out.items() if d is not None and len(d["v"]) >= 2}
 
 
 def taiex_intraday() -> dict | None:
@@ -646,9 +719,9 @@ def intraday_stats(d, digits: int = 2, unit: str = "") -> str:
             f"<span>{ui.esc(IDY.status(d))}{unit}</span></div>")
 
 
-def intraday_chart(d, key: str, height: int = 300, digits: int = 2, volume: bool = True):
+def intraday_chart(d, key: str, height: int = 300, digits: int = 2, volume: bool = True, snap: bool = False):
     from kosto.charts import intraday_figure
-    st.plotly_chart(intraday_figure(d, height=height, dark=DARK, digits=digits, volume=volume), width="stretch", theme=None,
+    st.plotly_chart(intraday_figure(d, height=height, dark=DARK, digits=digits, volume=volume, snap=snap), width="stretch", theme=None,
                     key=key, config={"displaylogo": False, "displayModeBar": False, "scrollZoom": False})
 
 
@@ -692,9 +765,20 @@ def header(world: bool = True):
     if B.meta.get("synthetic"):
         html.append("<span class='kq-pill' style='background:#7c2d12;color:#fff'>示範資料</span>")
     html.append("</div>")
-    st.markdown("".join(html), unsafe_allow_html=True)
+    st.markdown("".join(html) + quick_nav(), unsafe_allow_html=True)
     if lvl == "red":
         update_now_row()
+
+
+QNAV = [("picks", "📋", "選股"), ("insight", "🎛️", "儀表板"), ("live", "⏱️", "盤中"), ("stock", "🔍", "個股"), ("world", "🌏", "國際"),
+        ("market", "📈", "大盤"), ("etf", "💰", "ETF"), ("alloc", "⚖️", "配置"), ("guide", "📖", "指南")]
+
+
+def quick_nav() -> str:
+    """v2.2.2 手機／平板快速切換頁面（寬度 ≤1100px 才顯示；電腦用上方選單）：可左右滑動，目前頁面反白。"""
+    cur = globals().get("CUR_PAGE", "picks") or "picks"
+    return ("<nav class='kq-qnav'>" + "".join(
+        f"<a class='{'on' if k == cur else ''}' href='./{k}' target='_self'>{ic} {nm}</a>" for k, ic, nm in QNAV) + "</nav>")
 
 
 # ================================================================== stock view (chart + plan + chips)
@@ -884,12 +968,11 @@ def group_compare_html(j) -> tuple[str, str]:
                      ui.pct(fs.get("om"), 1, sign=False)])
         pe_s = f"{pe:.1f}" if ui.ok(pe) else "–"
         eps_s = f"{fs['eps_ttm']:.2f}" if ui.ok(fs.get("eps_ttm")) else "–"
-        mrows.append(ui.mcard(f"<span class='nm'>{nm}</span>", ui.pct(r1, 1, color=True),
-                              f"5日 {ui.pct(r5, 1, color=True)}｜20日 {ui.pct(r20, 1, color=True)}｜本益比 {pe_s}",
-                              f"營收年增 {ui.pct(y3, 0)}｜EPS(四季) {eps_s}｜毛利率 {ui.pct(gm, 1, sign=False)}"))
+        mrows.append([f"{nm}<span class='sub' style='display:block'>本益比 {pe_s}｜EPS {eps_s}｜毛利 {ui.pct(gm, 0, sign=False)}</span>",
+                      ui.pct(r1, 1, color=True), ui.pct(r20, 1, color=True), ui.pct(y3, 0, color=True)])
     q = next((brieflib.fin_summary(B, k).get("q") for k in mem if brieflib.fin_summary(B, k)), None)
     head = ["股票", "1日", "5日", "20日", "本益比", "營收年增", "EPS", "毛利率", "營益率"]
-    html = ui.resp(ui.table(head, rows, left=(0,)), "".join(mrows))
+    html = ui.resp(ui.table(head, rows, left=(0,)), ui.table(["股票", "1日", "20日", "營收年增"], mrows, left=(0,)))   # 手機：精簡 4 欄表
     if "FIN_Q" not in B.a:
         html += "<div class='kq-muted'>每季財報（EPS、毛利率）會在下一次每日更新後提供。</div>"
     else:
@@ -949,7 +1032,8 @@ def stock_today(j, key: str = "sv"):
                         unsafe_allow_html=True)
         else:
             st.markdown(intraday_stats(d, None), unsafe_allow_html=True)
-            intraday_chart(d, key=f"{key}_intra_{t}", height=300, digits=_px_digits(d["prev"]), volume=True)
+            intraday_chart(d, key=f"{key}_intra_{t}", height=260 if IS_MOBILE else 300, digits=_px_digits(d["prev"]), volume=True,
+                           snap=True)
     rows = [(f"{x} {NAMES[TIDX[x]]}", intr.get(x), "") for x in peers if x in TIDX]
     body = mini_rows(rows)
     up = sum(1 for _, x, _ in rows if x is not None and x["last"] > x["prev"])
@@ -969,7 +1053,9 @@ def stock_view(j, h="mid", key="sv"):
     if is_live_time():
         q, _ = quotes_for([t])
         if t in q.index and ui.ok(q.loc[t, "price"]):
-            live_html = (f"<span class='kq-item'>即時<b>{ui.price(q.loc[t, 'price'])}</b> {ui.chg(q.loc[t, 'chg'])}"
+            src = str(q.loc[t, "src"]) if "src" in q.columns else "trade"
+            live_html = (f"<span class='kq-item'>{'即時' if src in ('trade', 'pz') else ('委買' if src == 'bid' else '委賣')}"
+                         f"<b>{ui.price(q.loc[t, 'price'])}</b> {ui.chg(q.loc[t, 'chg'])}"
                          f" <span class='kq-muted'>{q.loc[t, 'time']}</span></span>")
     themes = "".join(ui.tag(x, "g") for x in c.get("themes", []))
     st.markdown(f"<div class='kq-bar'><span style='font-size:20px;font-weight:700;color:var(--strong)'>{ui.esc(NAMES[j])}</span>"
@@ -996,10 +1082,13 @@ def stock_view(j, h="mid", key="sv"):
     from kosto.charts import kline
     ind = ind_frame(BID, j, per)
     bars = max(20, RANGE[rng] // {"D": 1, "W": 5, "M": 21}[per])
-    fig = kline(ind, dark=DARK, mas=tuple(mas), boll="boll" in inds, panels=[x for x in inds if x != "boll"],
-                plan=p if per == "D" else None, bars=bars)
+    pn = [x for x in inds if x != "boll"]
+    fig = kline(ind, dark=DARK, mas=tuple(mas), boll="boll" in inds, panels=pn,
+                plan=p if per == "D" else None, bars=bars, height=(300 + 95 * len(pn)) if IS_MOBILE else None)
+    if IS_MOBILE:                                  # 觸控：單指拖曳用來捲動頁面，不要拖動圖表
+        fig.update_layout(dragmode=False)
     st.plotly_chart(fig, width="stretch", theme=None, key=f"{key}_fig",
-                    config={"displaylogo": False, "scrollZoom": True,
+                    config={"displaylogo": False, "scrollZoom": not IS_MOBILE, "displayModeBar": not IS_MOBILE,
                             "modeBarButtonsToRemove": ["lasso2d", "select2d", "autoScale2d"]})
     st.caption("圖上藍線＝買進區上緣、青點線＝拉回買點、橘虛線＝追價上限、紅虛線＝警戒價。大戶持股為集保每週資料（每週累積）。"
                "券商分點「主力進出」屬付費資料，本系統以「大戶持股＋法人集中度」呈現主力動向。")
@@ -1142,6 +1231,22 @@ def holdings_board(h, lt) -> str:
     return head + ui.resp(desk, "".join(mc))
 
 
+def us_session_label(q: dict) -> str:
+    """美股報價的時間說明：美股盤中（台北約 22:30～05:00）＝「盤中即時」，其餘＝「MM/DD（週X）收盤，下一個台股交易日開盤參考」。"""
+    if not q.get("live"):
+        return "前一個美股交易日收盤"
+    now = pd.Timestamp.now(tz="Asia/Taipei")
+    hm = now.hour * 60 + now.minute
+    us_open = (hm >= 22 * 60 + 30 and now.weekday() < 5) or (hm < 5 * 60 and 0 < now.weekday() <= 5)
+    if us_open:
+        return f"美股盤中 即時 {q.get('time', '')}"
+    bd = q.get("bar_date")
+    if bd is not None and not pd.isna(bd):
+        bd = pd.Timestamp(bd)
+        return f"{bd:%m/%d}（週{'一二三四五六日'[bd.weekday()]}）美股收盤 → 下一個台股交易日開盤參考"
+    return f"即時 {q.get('time', '')}"
+
+
 def preopen_box() -> str:
     snap = world_snapshot()
     if "SOX" not in snap:
@@ -1150,7 +1255,7 @@ def preopen_box() -> str:
     lab, row, adv = overnight_read(sox["chg"])
     if not adv:
         return ""
-    when = f"即時 {sox['time']}" if sox.get("live") else "前一個美股交易日收盤"
+    when = us_session_label(sox)
     nq = snap.get("NQF")
     nq_txt = f"｜那指期 {ui.chg(nq['chg'])}" if nq else ""
     return (f"<div class='kq-verdict'><b>開盤前看美股</b>　費半 {ui.chg(sox['chg'])}（{ui.esc(when)}）{nq_txt}"
@@ -1158,14 +1263,19 @@ def preopen_box() -> str:
 
 
 def correction_banner():
-    """v2.0：大盤修正期（距高點 ≥10%）時提醒先看市場解讀。"""
-    _, _, sto = insight_frame(BID)
-    if not sto or not sto.get("corr"):
+    """v2.0／v2.2：大盤修正（距高點 ≥10%）或觸發急跌條件時，提醒先看盤勢儀表板。"""
+    df, _, sto = insight_frame(BID)
+    if not sto:
         return
-    col = "#f0464b" if sto["score"] <= 2 else "#e9a23b"
-    st.markdown(f"<div class='kq-warn' style='border-color:{col}'>大盤修正中：距近半年高點 {ui.pct(sto['dd'], 1)}、止穩訊號 {sto['score']}/8。"
-                f"{'新資金建議分批、小量' if sto['score'] <= 2 else '可開始分批布局'}；"
-                "<a href='./insight' target='_self'>看市場解讀與反彈候選 →</a></div>", unsafe_allow_html=True)
+    cur = crash_now(df) if not df.empty else {}
+    on = [t for _, t, ok_ in cur.get("flags", []) if ok_]
+    if not on and not sto.get("corr"):
+        return
+    col = "#f0464b" if on or sto["score"] <= 2 else "#e9a23b"
+    head = ("🚨 急跌警報：" + "｜".join(on) + "。") if on else f"大盤修正中：距近半年高點 {ui.pct(sto['dd'], 1)}。"
+    st.markdown(f"<div class='kq-warn' style='border-color:{col}'>{ui.esc(head)}止穩訊號 {sto['score']}/8，"
+                f"{'新資金建議分批、小量，不要在恐慌時殺低' if sto['score'] <= 2 else '可開始分批布局'}；"
+                "<a href='./insight' target='_self'>看盤勢儀表板（急跌應變、分批計畫、反彈候選）→</a></div>", unsafe_allow_html=True)
 
 
 def picks_status_banner():
@@ -1214,6 +1324,11 @@ def page_picks():
                 f"🟦 買進：{ui.esc(fmt(new))}<br>🟥 賣出：{ui.esc(fmt(sold))}<br>"
                 f"🟪 續抱：其餘 {len(its) - len(new)} 檔不動　<span class='kq-muted'>名單日 {lt['date']} 收盤後產生</span></div>",
                 unsafe_allow_html=True)
+    secs = pd.Series([SECTORS[TIDX[t]] for t in now_set if t in TIDX]).value_counts()
+    if len(secs) and secs.iloc[0] >= 3:                    # v2.2 產業集中提醒（研究：同產業 ≤2～3 檔可降低回撤，但報酬也略降）
+        st.markdown(f"<div class='kq-muted' style='margin:-4px 0 8px'>⚠ 名單中有 {secs.iloc[0]} 檔{ui.esc(secs.index[0])}"
+                    f"（占 {secs.iloc[0] / max(len(now_set), 1):.0%}），同族群容易一起漲跌；想降低波動可只買其中 2 檔，"
+                    "其餘名額改用下一名（見「盤勢儀表板 → 特別時期選股」）。</div>", unsafe_allow_html=True)
     hold = holdings_of(BID, h)
     n_sell = sum(1 for x in hold if x["status"] == "exit")
     tabs = st.tabs([f"📋 推薦 {len(its) or KH(h)} 檔", f"🧭 持股追蹤（何時賣）{'・' + str(n_sell) + ' 檔預計賣出' if n_sell else ''}",
@@ -1346,7 +1461,10 @@ def page_live():
                 chances.append(t)
             vol = f"{q.loc[t, 'volume']:,.0f}" if live and ui.ok(q.loc[t, "volume"]) else "–"
             di = intr.get(t)
-            rows.append([stock_cell(t), chain_html(t, themes=False), f"<b>{ui.price(px)}</b>", ui.chg(chg),
+            src = str(q.loc[t, "src"]) if live and "src" in q.columns else "trade"
+            src_tag = {"bid": "<span class='sub' style='display:block'>委買價</span>",
+                       "ask": "<span class='sub' style='display:block'>委賣價</span>"}.get(src, "")
+            rows.append([stock_cell(t), chain_html(t, themes=False), f"<b>{ui.price(px)}</b>{src_tag}", ui.chg(chg),
                          ui.intraday_mini(di, h=34, fluid=False, w=120, labels=False) or "–",
                          (f"{ui.price(q.loc[t, 'open'])}/{ui.price(q.loc[t, 'high'])}/{ui.price(q.loc[t, 'low'])}" if live else "–"),
                          vol, f"{ui.price(pl.buy_low)}～{ui.price(pl.buy_high)}" if pl else "–",
@@ -1665,6 +1783,8 @@ def chart_controls(key: str, ma_default: list, ind_opts: dict, ind_default: list
     a1, a2, a3 = st.columns([1.1, 1, 1.3], vertical_alignment="bottom")
     per = a1.segmented_control("週期", list(PERIOD), format_func=PERIOD.get, default="D", key=f"{key}_per") or "D"
     rng = a2.selectbox("區間", list(RANGE), index=rng_index, key=f"{key}_rng")
+    if IS_MOBILE:                                  # v2.2 手機：預設只開最常用的兩個副圖，圖比較不擁擠
+        ind_default = [x for x in ind_default if x in ("boll", "volume", "inst")][:3]
     with a3.popover("均線・指標設定", width="stretch"):
         mas = st.multiselect("均線", list(MA_OPTS), default=ma_default, format_func=MA_OPTS.get, key=f"{key}_ma")
         inds = st.multiselect("指標", list(ind_opts), default=ind_default, format_func=ind_opts.get, key=f"{key}_ind")
@@ -1709,7 +1829,7 @@ def market_today(compact: bool = False):
                         unsafe_allow_html=True)
         else:
             st.markdown(intraday_stats(d, 2), unsafe_allow_html=True)
-            intraday_chart(d, key=f"tx_intra_{'c' if compact else 'm'}", height=250 if compact else 300, digits=2, volume=False)
+            intraday_chart(d, key=f"tx_intra_{'c' if compact else 'm'}", height=230 if (compact or IS_MOBILE) else 300, digits=2, volume=False)
     if c2 is None:
         return
     rows = []
@@ -1771,9 +1891,13 @@ def page_market():
                                         if c in df]], per))
     bars = max(20, RANGE[rng] // {"D": 1, "W": 5, "M": 21}[per])
     fig = kline(ind, dark=DARK, mas=tuple(mas), boll="boll" in inds, panels=[x for x in inds if x != "boll"], bars=bars,
+                height=(300 + 95 * len([x for x in inds if x != "boll"])) if IS_MOBILE else None,
                 unit="億", vol_label="成交金額(億)")
+    if IS_MOBILE:                                  # 觸控：單指拖曳用來捲動頁面，不要拖動圖表
+        fig.update_layout(dragmode=False)
     st.plotly_chart(fig, width="stretch", theme=None, key="mk_fig",
-                    config={"displaylogo": False, "scrollZoom": True, "modeBarButtonsToRemove": ["lasso2d", "select2d", "autoScale2d"]})
+                    config={"displaylogo": False, "scrollZoom": not IS_MOBILE, "displayModeBar": not IS_MOBILE,
+                            "modeBarButtonsToRemove": ["lasso2d", "select2d", "autoScale2d"]})
     if not has_ohlc:
         st.caption("加權指數的開高低將在下一次每日研究後補齊（目前以前一日收盤近似開盤）。")
     if "up" in df:
@@ -1813,7 +1937,10 @@ def data_strip(keys=("price", "institutional", "margin", "valuation", "revenue",
     if pd.Timestamp(base) < exp:
         warn = (f"<div class='kq-warn'>⚠ 分析依據 {pd.Timestamp(base):%m/%d} 收盤；最新交易日應為 {exp:%m/%d}，"
                 "資料還沒更新（看頁首燈號）。盤中請搭配「盤中監控」的即時報價。</div>")
-    st.markdown(f"<div class='kq-strip'><span class='kq-muted'>分析依據</span>{''.join(chips)}</div>{warn}", unsafe_allow_html=True)
+    lates = [c for c in chips if " late'" in c]
+    mob = (f"<div class='kq-strip'><span class='kq-muted'>分析依據</span><span class='kq-chip'>收盤 {base[5:] if base else '–'}</span>"
+           + ("".join(lates) if lates else "<span class='kq-chip'>各資料同步</span>") + "</div>")
+    st.markdown(ui.resp(f"<div class='kq-strip'><span class='kq-muted'>分析依據</span>{''.join(chips)}</div>", mob) + warn, unsafe_allow_html=True)
 
 
 # ================================================================== v2.0 市場解讀
@@ -1848,71 +1975,243 @@ def group_moves(bid, n=5):
     return out[out["n"] >= 4].sort_values("r5", ascending=False)
 
 
-def page_insight():
-    from kosto import market as mklib
-    header()
-    data_strip()
-    df, c, sto = insight_frame(BID)
-    st.markdown(ui.section("市場解讀", "大盤現在在哪裡、止穩了沒、資金在做什麼、哪些股票修正後反彈較好"), unsafe_allow_html=True)
-    if df.empty or not sto:
-        st.info("市場解讀需要新版每日研究資料（下一次每日更新後提供）。")
-        return
-    last = df.iloc[-1]
-    tone_col = {"red": "#f0464b", "amber": "#e9a23b", "green": "#16a35f"}[sto["tone"]]
-    al = mklib.allocation("穩健型", sto)
-    st.markdown(
-        f"<div class='kq-panel' style='border-left:4px solid {tone_col}'>"
-        f"<div style='font-size:20px;font-weight:700;color:{tone_col};margin-bottom:6px'>{ui.esc(sto['view'])}</div>"
-        f"<div class='kq-muted' style='font-size:13.5px'>{ui.esc(sto['date'])} 收盤 {sto['close']:,.0f}，距近半年高點 {ui.pct(sto['dd'], 1)}"
-        f"（{ui.esc(sto['regime'])}）｜止穩訊號 <b>{sto['score']}/8</b>｜科斯托蘭尼階段 {ui.esc(STAGE_ZH.get(sto['stage'], sto['stage']).split(' ')[0])}"
-        f"｜穩健型配置參考：ETF {al['etf']:.0%}／個股 {al['stock']:.0%}（見「精選 ETF」頁）</div></div>", unsafe_allow_html=True)
-    f5 = df["foreign"].tail(5).sum() if "foreign" in df else np.nan
-    t5 = df["trust"].tail(5).sum() if "trust" in df else np.nan
-    o_f = last.get("o_foreign", np.nan)
-    mchg = (df["mlots"].iloc[-1] / df["mlots"].iloc[-11] - 1) if "mlots" in df and len(df) > 11 else np.nan
-    sox = df["sox"].ffill() if "sox" in df else pd.Series(dtype=float)
-    sox_dd = float(sox.iloc[-1] / sox.tail(250).max() - 1) if len(sox.dropna()) else np.nan
-    items = [("距高點", ui.pct(sto["dd"], 1), f"高點 {sto['high120']:,.0f}｜月線 {sto['ma'][20]:,.0f}"),
-             ("止穩訊號", f"{sto['score']} / 8", "≥3 開始分批、≥5 多數止穩"),
-             ("站上月線家數", ui.pct(last.get("ab20"), 0, sign=False), f"季線 {ui.pct(last.get('ab60'), 0, sign=False)}｜新低 {last.get('lo20', np.nan):,.0f} 家"),
-             ("外資近 5 日", f"{f5:+,.0f} 億" if ui.ok(f5) else "–", (f"今日上市官方 {o_f:+,.0f} 億" if ui.ok(o_f) else f"投信 {t5:+,.0f} 億")),
-             ("融資 10 日", ui.pct(mchg, 1), (f"上市融資 {last.get('o_margin'):,.0f} 億（官方）" if ui.ok(last.get("o_margin")) else "張數變化（個股加總）")),
-             ("費半", ui.pct(sox_dd, 1), f"VIX {last.get('vix', np.nan):.1f}" if ui.ok(last.get("vix")) else "")]
-    st.markdown(ui.cards(items), unsafe_allow_html=True)
+# ================================================================== v2.2 盤勢儀表板（原「市場解讀」＋急跌應變＋特別時期選股＋模型體檢）
+V22_TESTS = [  # docs/v2.2_crash_protocol.md：五種換股日、開發期 2021–2025（資料到 2026-10-22）
+    ("B1 急跌時動能因子權重減半", "+0.6", "+0.02", "+1.2", "+3.2", "−0.2", "未通過（需 ≥ +1.5）"),
+    ("B2 同上、急跌後 40 日內維持", "−0.3", "+0.01", "+1.4", "+0.7", "−3.3", "未通過"),
+    ("C2 同產業最多 2 檔", "−3.8", "−0.05", "+4.7", "−4.2", "−3.5", "未通過（超額降太多）"),
+    ("C3 同產業最多 3 檔", "−1.1", "−0.01", "+2.4", "+0.0", "−0.4", "未通過（差 0.1，列入觀察）"),
+]
 
+
+def crash_now(df) -> dict:
+    """急跌狀態：研究資料（B.meta crash_stats.current）＋盤中即時（加權分時、前一晚費半即時報價）。"""
+    from kosto import market as mklib
+    cs = B.meta.get("crash_stats") or {}
+    cur = dict(cs.get("current") or {})
+    tx = df["close"].astype(float).dropna() if "close" in df else pd.Series(dtype=float)
+    if not cur and len(tx) > 30:
+        r = tx.pct_change().to_numpy()
+        k = 0
+        while k < len(r) - 1 and r[-1 - k] < 0:
+            k += 1
+        hi = float(tx.tail(250).max())
+        cur = {"date": str(tx.index[-1].date()), "close": float(tx.iloc[-1]), "high250": hi, "dd250": float(tx.iloc[-1] / hi - 1),
+               "streak": int(k), "streak_ret": float(tx.iloc[-1] / tx.iloc[-1 - k] - 1) if k else 0.0}
+        if "sox" in df and df["sox"].notna().sum() > 2:
+            sx = df["sox"].ffill()
+            cur["sox_day"] = float(sx.iloc[-1] / sx.iloc[-2] - 1)
+    if not cur:
+        return {}
+    cur["live"] = False
+    d = taiex_intraday()
+    if d is not None and str(d["date"]) > cur.get("date", ""):
+        cur["live"] = True
+        cur["live_status"] = IDY.status(d)
+        hi = max(float(cur.get("high250") or 0), float(d["high"]))
+        cur["dd250"] = d["last"] / hi - 1 if hi else cur.get("dd250")
+        if abs(d["prev"] / cur["close"] - 1) < 0.005:          # 研究資料就是昨天 → 連跌天數可以接上今天
+            if d["last"] < d["prev"]:
+                cur["streak_ret"] = (1 + cur.get("streak_ret", 0.0)) * (d["last"] / d["prev"]) - 1
+                cur["streak"] = cur.get("streak", 0) + 1
+            else:
+                cur["streak"], cur["streak_ret"] = 0, 0.0
+        cur["close_live"] = d["last"]
+    sx = world_snapshot().get("SOX")
+    if sx and sx.get("live") and ui.ok(sx.get("chg")):
+        cur["sox_day"] = float(sx["chg"])
+        cur["sox_live"] = True
+    cur["flags"] = mklib.crash_flags(cur)
+    return cur
+
+
+def crash_summary() -> tuple[dict, str, bool]:
+    from kosto import market as mklib
+    cs = B.meta.get("crash_stats") or {}
+    if cs.get("summary"):
+        return cs["summary"], cs.get("asof", ""), True
+    return mklib.CRASH_FALLBACK["summary"], mklib.CRASH_FALLBACK["asof"], False
+
+
+def crash_banner(cur) -> str:
+    on = [f for f in cur.get("flags", []) if f[2]]
+    if not on:
+        return ""
+    summ, _, _ = crash_summary()
+    k = "E2" if any(f[0] == "E2" for f in on) else on[0][0]
+    sm = summ.get(k) or {}
+    lines = "｜".join(ui.esc(t) for _, t, ok_ in cur["flags"] if ok_)
+    base = (f"歷史上同類事件 {sm.get('n', 0)} 次：當天就是之後 60 日最低點的只有 {sm.get('low_hits', 0)} 次；"
+            f"之後 20 日內平均還會再跌 {abs(sm.get('min20') or 0):.0%}，但 60 日後平均 {sm.get('r60', 0):+.0%}"
+            f"（{sm.get('win60', 0):.0%} 上漲）。" if sm else "")
+    return (f"<div class='kq-alert'><div class='t'>🚨 急跌警報</div><div class='s'>{lines}</div>"
+            f"<div class='s2'>{ui.esc(base)}→ 不要在恐慌時殺低，也不要一次重壓；照下方「急跌應變」分批。</div></div>")
+
+
+def crash_rates_html(summ: dict) -> str:
+    from kosto import market as mklib
+    rows, mrows = [], []
+    for k, nm in mklib.CRASH_TYPES.items():
+        r = summ.get(k)
+        if not r:
+            continue
+        low = f"{r['low_hits']}/{r['low_n']}" if r.get("low_n") else "–"
+        rows.append([f"<b>{k}</b> {ui.esc(nm)}", f"{r['n']}", f"{ui.pct(r['r20'], 1, color=True)}<span class='sub'>（{ui.pct(r['win20'], 0, sign=False)}漲）</span>",
+                     f"{ui.pct(r['r60'], 1, color=True)}<span class='sub'>（{ui.pct(r['win60'], 0, sign=False)}漲）</span>",
+                     ui.pct(r["min20"], 1), f"{ui.pct(r['min60'], 1)}<span class='sub'>（最深 {ui.pct(r['worst60'], 0)}）</span>", low,
+                     f"{ui.pct(r['lump60'], 1)} / {ui.pct(r['staged60'], 1)}"])
+        mrows.append(ui.mcard(f"<span class='nm'>{k} {ui.esc(nm)}</span>", f"{r['n']} 次",
+                              f"之後 20 日 {ui.pct(r['r20'], 1, color=True)}｜60 日 {ui.pct(r['r60'], 1, color=True)}（{ui.pct(r['win60'], 0, sign=False)}漲）",
+                              f"20 日內再跌 {ui.pct(r['min20'], 1)}｜60 日內 {ui.pct(r['min60'], 1)}（最深 {ui.pct(r['worst60'], 0)}）｜當天是低點 {low}"))
+    return ui.resp(ui.table(["事件", "次數", "之後 20 日", "之後 60 日", "20 日內再跌", "60 日內再跌", "當天＝60日低點",
+                             "60 日後：一次買／分三批"], rows, left=(0,)), "".join(mrows))
+
+
+def staged_plan_html(cur, sto, live_checks) -> str:
+    """分批計畫：每一批的觸發條件與目前狀態。"""
+    dd = cur.get("dd250")
+    sc = sto.get("score", 0)
+    ma20 = (sto.get("ma") or {}).get(20)
+    px = cur.get("close_live") or sto.get("close")
+    live_ok = sum(1 for _, _, x in live_checks if x)
+    steps = [
+        ("第 1 批（計畫部位的 1/3）", "回落 ≥ 10% 且盤中出現止跌（右側「盤中止跌觀察」至少 2 項成立）",
+         ui.ok(dd) and dd <= -0.10 and live_ok >= 2, f"回落 {ui.pct(dd, 1)}｜盤中止跌 {live_ok} 項"),
+        ("第 2 批（1/3）", "止穩訊號 ≥ 3／8（特別是「外資賣壓減輕」「融資去槓桿」）", sc >= 3, f"止穩 {sc}/8"),
+        ("第 3 批（1/3）", "加權站回月線（20 日線）且止穩 ≥ 5", bool(ui.ok(px) and ui.ok(ma20) and px > ma20 and sc >= 5),
+         f"{'站上' if ui.ok(px) and ui.ok(ma20) and px > ma20 else '低於'}月線 {ma20:,.0f}" if ui.ok(ma20) else "–"),
+        ("暫停加碼", "跌破前波低點再跌 5%，或費半再創新低 → 等新的止穩訊號", None, "依盤勢判斷"),
+    ]
+    active = ui.ok(dd) and dd <= -0.10                       # 回落未達 10%：不是急跌／修正期，照模型名單操作即可
+    rows, mrows = [], []
+    for nm, cond, ok_, now in steps:
+        if not active:
+            ok_ = None
+        mark = ("<b style='color:#16a35f'>✓ 條件成立</b>" if ok_ else "<span class='kq-muted'>等待</span>") if ok_ is not None else \
+            ("<span class='kq-muted'>—</span>" if active else "<span class='kq-muted'>非急跌期</span>")
+        rows.append([f"<b>{nm}</b>", ui.esc(cond), ui.esc(now), mark])
+        mrows.append(ui.mcard(f"<span class='nm'>{nm}</span>", mark, ui.esc(cond), ui.esc(now)))
+    return ui.resp(ui.table(["分批", "觸發條件", "目前", "狀態"], rows, left=(0, 1, 2)), "".join(mrows))
+
+
+@st.cache_data(show_spinner=False)
+def model_health(bid) -> tuple[pd.DataFrame, dict]:
+    """各期間模型 vs 0050：自高點回落、近 1／6／12 月、今年；以及 0050 核心（0／30／50%）的效果（中線）。"""
+    rows, mix = [], {}
+    for h in HZ:
+        hb = hblock(h)
+        if not hb or "nav" not in hb:
+            continue
+        n = hb["nav"].dropna(subset=["策略"])
+        s, b = n["策略"].astype(float), n["0050"].astype(float)
+
+        def back(x, k):
+            return float(x.iloc[-1] / x.iloc[-1 - k] - 1) if len(x) > k else np.nan
+        y0 = s.index[-1].year
+        ys = s[s.index.year < y0]
+        ytd = float(s.iloc[-1] / ys.iloc[-1] - 1) if len(ys) else np.nan
+        ytd_b = float(b.iloc[-1] / b[b.index.year < y0].iloc[-1] - 1) if len(ys) else np.nan
+        pool = n["母池等權"].astype(float) if "母池等權" in n else None
+        ytd_p = float(pool.iloc[-1] / pool[pool.index.year < y0].iloc[-1] - 1) if pool is not None and len(ys) else np.nan
+        rows.append({"h": h, "dd": float(s.iloc[-1] / s.max() - 1), "peak": str(s.idxmax().date()), "dd_b": float(b.iloc[-1] / b.max() - 1),
+                     "m1": back(s, 21), "m1_b": back(b, 21), "m6": back(s, 126), "m6_b": back(b, 126), "y1": back(s, 250), "y1_b": back(b, 250),
+                     "ytd": ytd, "ytd_b": ytd_b, "ytd_pool": ytd_p, "asof": str(s.index[-1].date())})
+        if h == "mid":
+            r = n[["策略", "0050"]].astype(float).pct_change().fillna(0)
+            for w in (0.0, 0.3, 0.5):
+                val, out, prev = np.array([1 - w, w]), [], None
+                for d, x in r.iterrows():
+                    pm = d.to_period("M")
+                    if prev is not None and pm != prev:
+                        val = val.sum() * np.array([1 - w, w])
+                    val = val * (1 + x.to_numpy())
+                    out.append(val.sum())
+                    prev = pm
+                v = pd.Series(out, index=r.index)
+                yrs = max((v.index[-1] - v.index[0]).days / 365.25, 0.1)
+                mix[w] = {"cagr": float(v.iloc[-1] ** (1 / yrs) - 1), "mdd": float((v / v.cummax() - 1).min()),
+                          "y1": float(v.iloc[-1] / v.iloc[-251] - 1) if len(v) > 251 else np.nan, "dd": float(v.iloc[-1] / v.max() - 1)}
+    return pd.DataFrame(rows), mix
+
+
+def picks_risk() -> tuple[str, list[str]]:
+    """三期間名單合併：在哪些名單、族群、近 5 日、距 20 日高、對費半 β；並檢查重疊與產業集中。"""
+    lists = {h: [p["ticker"] for p in latest(h).get("picks", []) if p["ticker"] in TIDX] for h in HZ}
+    union = list(dict.fromkeys(sum(lists.values(), [])))
+    notes = []
+    s_, m_, l_ = (set(lists.get(k, [])) for k in ("short", "mid", "long"))
+    if lists.get("mid"):
+        notes.append(f"三個期間的名單合計只有 <b>{len(union)}</b> 檔不同股票（短中重疊 {len(s_ & m_)} 檔、中長重疊 {len(m_ & l_)} 檔、三者都有 {len(s_ & m_ & l_)} 檔）"
+                     "→ 同時照三份名單買，實際上是集中押同一批股票；資金請以一個期間為主。")
+    for h, xs in lists.items():
+        cnt = pd.Series([SECTORS[TIDX[t]] for t in xs]).value_counts()
+        if len(cnt) and cnt.iloc[0] >= 3:
+            notes.append(f"{HZ[h]}名單有 <b>{cnt.iloc[0]} 檔{ui.esc(cnt.index[0])}</b>（占 {cnt.iloc[0] / max(len(xs), 1):.0%}）："
+                         "v2.2 研究顯示同產業最多 3 檔、2 檔可讓最大回撤少約 2～5 個百分點，但開發期報酬也少 1～4 個百分點；"
+                         "想降低波動可自行把同產業限制在 2～3 檔。")
+    C = B.a.get("Q_C")
+    beta_k = FIDX.get("g_us_beta")
+    rows, mrows = [], []
+    for t in union:
+        j = TIDX[t]
+        c = C[:, j].astype(float) if C is not None else np.array([])
+        c = c[np.isfinite(c)]
+        r5 = c[-1] / c[-6] - 1 if len(c) > 6 else np.nan
+        d20 = c[-1] / c[-20:].max() - 1 if len(c) >= 20 else np.nan
+        beta = float(B.a["LATEST_RAW"][j][beta_k]) if beta_k is not None and "LATEST_RAW" in B.a else np.nan
+        tags = "".join(ui.tag(HZ[h]) for h in HZ if t in lists.get(h, []))
+        lab = CH.get(t) or {}
+        rows.append([stock_cell(t), tags, ui.esc(lab.get("segment") or lab.get("group") or SECTORS[j]), ui.pct(r5, 1, color=True),
+                     ui.pct(d20, 1), f"{beta:.2f}" if ui.ok(beta) else "–"])
+        mrows.append(ui.mcard(f"<span class='kq-cd'>{t}</span><span class='nm'>{ui.esc(NAMES[j])}</span> {tags}", ui.pct(r5, 1, color=True),
+                              f"距 20 日高 {ui.pct(d20, 1)}｜對費半 β {beta:.2f}" if ui.ok(beta) else f"距 20 日高 {ui.pct(d20, 1)}",
+                              ui.esc(lab.get("segment") or SECTORS[j])))
+    html = ui.resp(ui.table(["股票", "名單", "族群", "近 5 日", "距 20 日高", "對費半 β"], rows, left=(0, 1, 2)), "".join(mrows))
+    return html, notes
+
+
+def insight_checklist(c) -> str:
+    from kosto import market as mklib
     hs = B.meta.get("mkt_stats") or {}
     dev_items = (hs.get("items") or {}).get("dev", {})
-    rows, mrows = [], []
+    rows, chips = [], []
     for k, nm, desc in mklib.CHECKS:
         on = bool(c[k].iloc[-1]) if k in c else False
         it = dev_items.get(k) or {}
         hist = (f"{ui.pct(it.get('on'), 1, color=True)} vs {ui.pct(it.get('off'), 1, color=True)}" if it else "–")
         mark = "<b style='color:#16a35f'>✓ 成立</b>" if on else "<span class='kq-muted'>✗ 未成立</span>"
         rows.append([f"<b>{nm}</b>", ui.esc(desc), mark, hist])
-        mrows.append(ui.mcard(f"<span class='nm'>{nm}</span>", mark, ui.esc(desc), f"歷史（成立 vs 未成立，之後 20 日）{hist}"))
-    st.markdown(ui.section("止穩檢查表", "每項只用當天收盤後已知的資料；歷史欄＝2017–2023 修正期中，該項成立 vs 未成立時加權指數之後 20 日平均報酬"),
-                unsafe_allow_html=True)
-    st.markdown(ui.resp(ui.table(["項目", "定義", "今天", "歷史（成立 vs 未成立）"], rows, left=(0, 1)), "".join(mrows)), unsafe_allow_html=True)
+        chips.append(f"<div class='kq-chk{' on' if on else ''}'><b>{'✓' if on else '✗'} {nm}</b><span>{ui.esc(desc)}</span></div>")
+    return ui.resp(ui.table(["項目", "定義", "今天", "歷史（成立 vs 未成立）"], rows, left=(0, 1)),
+                   "<div class='kq-chkgrid'>" + "".join(chips) + "</div>")
 
+
+def insight_buckets() -> str:
+    hs = B.meta.get("mkt_stats") or {}
     bk = hs.get("buckets") or {}
-    if bk:
-        brow = []
-        for nm, lab in (("dev", "2017–2023"), ("val", "2024–2026")):
-            for r in bk.get(nm, []):
-                brow.append([lab, f"<b>{r['bucket']}</b>", f"{r['n']}", ui.pct(r["f20"], 1, color=True), ui.pct(r["win20"], 0, sign=False),
-                             ui.pct(r["low20"], 1), ui.pct(r["f60"], 1, color=True)])
-        st.markdown(ui.section("歷史上修正 10% 以上時：止穩分數 vs 之後走勢", "加權指數；之後 20 日內再跌＝這 20 日中最低點相對當天的幅度"), unsafe_allow_html=True)
-        st.markdown(ui.table(["期間", "止穩分數", "天數", "之後 20 日", "上漲機率", "20 日內再跌", "之後 60 日"], brow, left=(0, 1)), unsafe_allow_html=True)
-        eps = hs.get("episodes") or []
-        if eps:
-            st.markdown("<div class='kq-muted' style='margin:4px 0 2px'>2017 年以來回落 ≥10% 的修正：" + "；".join(
-                f"{e['start'][:7]} 最深 {e['max_dd']:.0%}（低點 {e['low_date'][5:]}" + (f"，之後 60 日 {e['after_low_60d']:+.0%}" if e.get("after_low_60d") is not None else "")
-                + "）" for e in eps) + "</div>", unsafe_allow_html=True)
-        st.markdown("<div class='kq-muted'>怎麼用：分數高時之後再跌的幅度明顯較小（兩段期間都成立）；但 2024 年後的修正都是 V 型反彈，"
-                    "分數低時進場報酬反而不差 → 檢查表適合用來<b>控制分批的速度</b>，不是預測漲跌。</div>", unsafe_allow_html=True)
+    if not bk:
+        return ""
+    brow, mrow = [], []
+    for nm, lab in (("dev", "2017–2023"), ("val", "2024–2026")):
+        for r in bk.get(nm, []):
+            brow.append([lab, f"<b>{r['bucket']}</b>", f"{r['n']}", ui.pct(r["f20"], 1, color=True), ui.pct(r["win20"], 0, sign=False),
+                         ui.pct(r["low20"], 1), ui.pct(r["f60"], 1, color=True)])
+            mrow.append(ui.mcard(f"<span class='nm'>{lab}｜分數 {r['bucket']}</span>", f"{r['n']} 天",
+                                 f"之後 20 日 {ui.pct(r['f20'], 1, color=True)}（{ui.pct(r['win20'], 0, sign=False)}漲）｜60 日 {ui.pct(r['f60'], 1, color=True)}",
+                                 f"20 日內再跌 {ui.pct(r['low20'], 1)}"))
+    html = ui.resp(ui.table(["期間", "止穩分數", "天數", "之後 20 日", "上漲機率", "20 日內再跌", "之後 60 日"], brow, left=(0, 1)), "".join(mrow))
+    eps = hs.get("episodes") or []
+    if eps:
+        html += ("<div class='kq-muted' style='margin:4px 0 2px'>2017 年以來回落 ≥10% 的修正：" + "；".join(
+            f"{e['start'][:7]} 最深 {e['max_dd']:.0%}（低點 {e['low_date'][5:]}" + (f"，之後 60 日 {e['after_low_60d']:+.0%}" if e.get("after_low_60d") is not None else "")
+            + "）" for e in eps) + "</div>")
+    html += ("<div class='kq-muted'>怎麼用：分數高時之後再跌的幅度明顯較小（兩段期間都成立）；但 2024 年後的修正都是 V 型反彈，"
+             "分數低時進場報酬反而不差 → 檢查表適合用來<b>控制分批的速度</b>，不是預測漲跌。</div>")
+    return html
 
-    st.markdown(ui.section("觀察重點", "趨勢、廣度、資金、國際、估值、類股"), unsafe_allow_html=True)
-    tx = df["close"]
+
+def insight_focus(df, sto, f5, t5, mchg, sox_dd) -> str:
+    last = df.iloc[-1]
     ma = sto["ma"]
     trend = ("均線多頭排列" if ma[5] > ma[20] > ma[60] else "均線空頭排列" if ma[5] < ma[20] < ma[60] else "均線糾結")
     amt20 = df["volume"].tail(20).mean() if "volume" in df else np.nan
@@ -1939,44 +2238,244 @@ def page_insight():
                                        if sto["corr"] and sto["score"] <= 2 else
                                        "止穩訊號增加中，可依計畫分批布局；跌破前波低點則暫停加碼。" if sto["corr"] else
                                        "非修正期：照模型名單操作即可。"))
-    st.markdown(ui.panel("今天的重點", ui.bullets(lines)), unsafe_allow_html=True)
+    return ui.panel("今天的重點", ui.bullets(lines))
 
+
+def insight_rebound() -> str:
     rb = B.meta.get("rebound") or []
-    st.markdown(ui.section("修正期反彈候選（與主模型分開）",
-                           f"依 {B.meta.get('rebound_asof', '')} 收盤；成交金額前 500 名中「近 20 日跌多、距 60 日高點跌深、營收年增優於同業、投信沒有追高」等權排名"),
-                unsafe_allow_html=True)
+    head = ui.section("修正期反彈候選（與主模型分開）",
+                      f"依 {B.meta.get('rebound_asof', '')} 收盤；成交金額前 500 名中「近 20 日跌多、距 60 日高點跌深、營收年增優於同業、投信沒有追高」等權排名")
     if not rb:
-        st.markdown("<div class='kq-muted'>下一次每日研究後提供。</div>", unsafe_allow_html=True)
-    else:
-        inpick = {}
-        for h in HORIZON_KEYS:
-            for p in latest(h).get("picks", []):
-                inpick.setdefault(p["ticker"], []).append(HZ[h])
-        rows, mrows = [], []
-        for k, x in enumerate(rb[:20], 1):
-            lab = CH.get(x["ticker"]) or chainlib.label(x["ticker"], x.get("sector", ""))
-            g = lab.get("segment") or lab.get("group") or ""
-            also = "、".join(inpick.get(x["ticker"], []))
-            name = f"<b>{x['ticker']} {ui.esc(x['name'])}</b>" + (f" <span class='kq-tag'>也在{also}名單</span>" if also else "")
-            rows.append([f"{k}", name, ui.esc(g), ui.num(x["close"]), ui.pct(x["ret20"], 1, color=True), ui.pct(x["dd60"], 1),
-                         f"{x['rev_rel'] * 100:+.0f}pp" if ui.ok(x.get("rev_rel")) else "–", ui.pct(x["trust20"], 2), f"{x['score']:.2f}"])
-            mrows.append(ui.mcard(f"<span class='nm'>{k}. {x['ticker']} {ui.esc(x['name'])}</span>", ui.num(x["close"]),
-                                  f"近20日 {ui.pct(x['ret20'], 1, color=True)}｜距60日高 {ui.pct(x['dd60'], 1)}｜{ui.esc(g)}",
-                                  (f"營收年增比同業 {x['rev_rel'] * 100:+.0f}pp｜" if ui.ok(x.get("rev_rel")) else "") + f"分數 {x['score']:.2f}"
-                                  + (f"｜也在{also}名單" if also else "")))
-        st.markdown(ui.resp(ui.table(["#", "股票", "族群", "收盤", "近20日", "距60日高", "近3月營收年增 vs 同業", "投信20日/股本", "反彈分數"], rows, left=(1, 2)),
-                            "".join(mrows)), unsafe_allow_html=True)
-        st.markdown("<div class='kq-muted'>研究（docs/v2.0_rebound_protocol.md）：2017–2026 共 6 次修正中，這個分數的前 20 名之後 20 日平均 +6%、"
-                    "勝過同期大型股平均約 3 個百分點（2024–2026 驗證期 +6.3% vs 平均 +3.3%、0050 +5.2%）；但 2024 年 8 月那次輸給 0050。"
-                    "跌深股波動也大，請小量、分批，並設停損。主模型名單在 2024 年後的修正中表現與它相當，所以兩份名單重疊的股票最值得優先看。</div>",
+        return head + "<div class='kq-muted'>下一次每日研究後提供。</div>"
+    inpick = {}
+    for h in HORIZON_KEYS:
+        for p in latest(h).get("picks", []):
+            inpick.setdefault(p["ticker"], []).append(HZ[h])
+    rows, mrows = [], []
+    for k, x in enumerate(rb[:20], 1):
+        lab = CH.get(x["ticker"]) or chainlib.label(x["ticker"], x.get("sector", ""))
+        g = lab.get("segment") or lab.get("group") or ""
+        also = "、".join(inpick.get(x["ticker"], []))
+        name = f"<b>{x['ticker']} {ui.esc(x['name'])}</b>" + (f" <span class='kq-tag'>也在{also}名單</span>" if also else "")
+        rows.append([f"{k}", name, ui.esc(g), ui.num(x["close"]), ui.pct(x["ret20"], 1, color=True), ui.pct(x["dd60"], 1),
+                     f"{x['rev_rel'] * 100:+.0f}pp" if ui.ok(x.get("rev_rel")) else "–", ui.pct(x["trust20"], 2), f"{x['score']:.2f}"])
+        mrows.append(ui.mcard(f"<span class='nm'>{k}. {x['ticker']} {ui.esc(x['name'])}</span>", ui.num(x["close"]),
+                              f"近20日 {ui.pct(x['ret20'], 1, color=True)}｜距60日高 {ui.pct(x['dd60'], 1)}｜{ui.esc(g)}",
+                              (f"營收年增比同業 {x['rev_rel'] * 100:+.0f}pp｜" if ui.ok(x.get("rev_rel")) else "") + f"分數 {x['score']:.2f}"
+                              + (f"｜也在{also}名單" if also else "")))
+    return (head + ui.resp(ui.table(["#", "股票", "族群", "收盤", "近20日", "距60日高", "近3月營收年增 vs 同業", "投信20日/股本", "反彈分數"],
+                                    rows, left=(1, 2)), "".join(mrows))
+            + "<div class='kq-muted'>研究（docs/v2.0_rebound_protocol.md）：2017–2026 共 6 次修正中，這個分數的前 20 名之後 20 日平均 +6%、"
+              "勝過同期大型股平均約 3 個百分點（2024–2026 驗證期 +6.3% vs 平均 +3.3%、0050 +5.2%）；但 2024 年 8 月那次輸給 0050。"
+              "跌深股波動也大，請小量、分批，並設停損。兩份名單重疊的股票最值得優先看。</div>")
+
+
+def dash_today(cur):
+    """今日盤中：加權分時大圖＋盤中止跌觀察（加權、那指期、台積電）＋權值股小圖。"""
+    from kosto import market as mklib
+    d = taiex_intraday()
+    wd = world_intraday(["NQF", "SOX"])
+    tw = tw_intraday(["2330"] + [t for t in MARKET_REF_TW if t != "2330"])
+    checks = mklib.intraday_checks(d, wd.get("NQF"), tw.get("2330")) if d is not None else []
+    c1, c2 = st.columns([1.75, 1])
+    with c1:
+        st.markdown("<div class='kq-h' style='margin:8px 0 4px'><span class='t'>加權指數｜今日走勢</span>"
+                    "<span class='s'>分時｜虛線＝平盤（昨收），線在上方紅、下方綠</span></div>", unsafe_allow_html=True)
+        if d is None:
+            st.markdown("<div class='kq-muted'>分時資料暫時無法取得（Yahoo Finance），請稍後重新整理。</div>", unsafe_allow_html=True)
+        else:
+            st.markdown(intraday_stats(d, 2), unsafe_allow_html=True)
+            intraday_chart(d, key="dash_tx", height=230 if IS_MOBILE else 300, digits=2, volume=False)
+    body = ""
+    if checks:
+        body += "".join(f"<div class='kq-kv'><span>{'✅' if ok_ else ('⬜' if ok_ is not None else '·')} {ui.esc(nm)}</span>"
+                        f"<span class='kq-mono'>{ui.esc(v)}</span></div>" for nm, v, ok_ in checks)
+        body += (f"<div class='kq-muted' style='margin:6px 0 8px'>成立 {sum(1 for *_, x in checks if x)}/{len(checks)} 項。"
+                 "只看當天，用來決定「今天要不要先買第一批」；收盤前仍可能翻轉。</div>")
+    rows = [("那指期", wd.get("NQF"), ""), ("費半(前一晚)", wd.get("SOX"), "")]
+    rows += [(f"{t} {NAMES[TIDX[t]]}", tw.get(t), "") for t in MARKET_REF_TW if t in TIDX]
+    body += mini_rows(rows)
+    c2.markdown(ui.panel("盤中止跌觀察", body or "<div class='kq-muted'>盤中資料暫時無法取得。</div>"), unsafe_allow_html=True)
+    return checks
+
+
+def page_insight():
+    from kosto import market as mklib
+    header()
+    data_strip()
+    df, c, sto = insight_frame(BID)
+    st.markdown(ui.section("盤勢儀表板", "現在在哪裡、今天盤中、止穩了沒、急跌怎麼應對、特別時期怎麼選股、模型體檢"), unsafe_allow_html=True)
+    if df.empty or not sto:
+        st.info("盤勢儀表板需要新版每日研究資料（下一次每日更新後提供）。")
+        return
+    last = df.iloc[-1]
+    cur = crash_now(df)
+    st.markdown(crash_banner(cur), unsafe_allow_html=True)
+    tone_col = {"red": "#f0464b", "amber": "#e9a23b", "green": "#16a35f"}[sto["tone"]]
+    al = mklib.allocation("穩健型", sto)
+    st.markdown(
+        f"<div class='kq-panel' style='border-left:4px solid {tone_col}'>"
+        f"<div style='font-size:19px;font-weight:700;color:{tone_col};margin-bottom:6px'>{ui.esc(sto['view'])}</div>"
+        f"<div class='kq-muted' style='font-size:13px'>{ui.esc(sto['date'])} 收盤 {sto['close']:,.0f}，距近半年高點 {ui.pct(sto['dd'], 1)}"
+        f"（{ui.esc(sto['regime'])}）｜止穩訊號 <b>{sto['score']}/8</b>｜科斯托蘭尼階段 {ui.esc(STAGE_ZH.get(sto['stage'], sto['stage']).split(' ')[0])}"
+        f"｜穩健型配置參考：ETF {al['etf']:.0%}／個股 {al['stock']:.0%}</div>"
+        + ("<div class='kq-muted' style='margin-top:4px;color:#f0464b'>↑ 這是依前一個收盤日的判斷；今天觸發急跌條件，請以上方急跌警報與「急跌應變」為準。</div>"
+           if any(f[2] for f in cur.get("flags", [])) and sto["tone"] != "red" else "") + "</div>", unsafe_allow_html=True)
+    f5 = df["foreign"].tail(5).sum() if "foreign" in df else np.nan
+    t5 = df["trust"].tail(5).sum() if "trust" in df else np.nan
+    o_f = last.get("o_foreign", np.nan)
+    mchg = (df["mlots"].iloc[-1] / df["mlots"].iloc[-11] - 1) if "mlots" in df and len(df) > 11 else np.nan
+    sox = df["sox"].ffill() if "sox" in df else pd.Series(dtype=float)
+    sox_dd = float(sox.iloc[-1] / sox.tail(250).max() - 1) if len(sox.dropna()) else np.nan
+    wsn = world_state_now()
+    vix_now = float(wsn.get("VIX", np.nan) if wsn.get("src") == "live" else last.get("vix", np.nan))
+    if wsn.get("src") == "live" and len(sox.dropna()):             # 最新美股收盤比研究資料新 → 距高點用最新收盤
+        sox_dd = float(wsn["SOX"] / max(float(sox.tail(250).max()), wsn["SOX"]) - 1)
+    fs = df["foreign"].dropna() if "foreign" in df else pd.Series(dtype=float)
+    nsell = 0
+    while nsell < len(fs) and fs.iloc[-1 - nsell] < 0:
+        nsell += 1
+
+    def dot(level):
+        return f"<i class='kq-dot {level}'></i>"
+    dd_now = cur.get("dd250", sto["dd"])
+    items = [(dot("red" if dd_now <= -0.15 else "amber" if dd_now <= -0.05 else "green") + "距一年高點", ui.pct(dd_now, 1),
+              (f"{cur.get('live_status', '')}｜" if cur.get("live") else "") + f"高點 {cur.get('high250', sto['high120']):,.0f}"),
+             (dot("green" if sto["score"] >= 5 else "amber" if sto["score"] >= 3 else "red") + "止穩訊號", f"{sto['score']} / 8", "≥3 開始分批、≥5 多數止穩"),
+             (dot("red" if cur.get("streak", 0) >= 5 else "amber" if cur.get("streak", 0) >= 3 else "green") + "連跌", f"{cur.get('streak', 0)} 天",
+              f"累計 {ui.pct(cur.get('streak_ret'), 1)}"),
+             (dot("red" if nsell >= 5 else "amber" if nsell >= 3 else "green") + "外資", f"連賣 {nsell} 天" if nsell else "買超",
+              f"近 5 日 {f5:+,.0f} 億" + (f"｜今日官方 {o_f:+,.0f}" if ui.ok(o_f) else "")),
+             (dot("green" if ui.ok(mchg) and mchg <= -0.03 else "amber") + "融資 10 日", ui.pct(mchg, 1), "≤ −3% 代表去槓桿"),
+             (dot("red" if (cur.get("sox_day") or 0) <= -0.05 else "amber" if ui.ok(sox_dd) and sox_dd <= -0.10 else "green") + "費半",
+              ui.pct(cur.get("sox_day"), 1) if cur.get("sox_day") is not None else ui.pct(sox_dd, 1),
+              ("前一晚（即時）" if cur.get("sox_live") else "最近一日") + f"｜距高點 {ui.pct(sox_dd, 0)}｜VIX {vix_now:.1f}")]
+    st.markdown(ui.cards(items, raw=True), unsafe_allow_html=True)
+    live_checks = dash_today(cur)
+
+    in_crash = any(f[2] for f in cur.get("flags", [])) or sto["corr"]
+    names = ["🚨 急跌應變", "✅ 止穩檢查", "🎯 特別時期選股", "🩺 模型體檢", "🧭 觀察重點"]
+    order = names if in_crash else [names[4], names[1], names[0], names[2], names[3]]
+    tabs = dict(zip(order, st.tabs(order)))
+
+    with tabs["🚨 急跌應變"]:
+        summ, asof, fresh = crash_summary()
+        flags = cur.get("flags", [])
+        st.markdown("<div class='kq-flags'>" + "".join(
+            f"<span class='kq-chip{' late' if ok_ else ''}'>{'⚠' if ok_ else '·'} {k} {ui.esc(t)}</span>" for k, t, ok_ in flags) + "</div>",
+            unsafe_allow_html=True)
+        st.markdown(ui.section("今天會是低點嗎？歷史上急跌之後怎麼走",
+                               f"加權指數 2017 年以來（資料到 {asof}{'' if fresh else '，研究時的結果；下一次每日更新後自動重算'}）；樣本少，只當量級參考"),
                     unsafe_allow_html=True)
-    with st.expander("模型裡原本就有的「跌深／止跌」設計"):
-        st.markdown(ui.bullets([
-            "短期反轉因子「近 5 日跌多」（t_rev5）：在短線候選池中，由每日研究決定是否使用。",
-            "科斯托蘭尼雞蛋階段：B3（下跌末段）要有「止跌確認」（W 底支撐或站回 5 日線且 5 日上漲）才會買。",
-            "市場階段持股水位：v1.1 測過「依階段降低持股」，真實資料兩段期間都拖累績效，所以預設不降水位。",
-            "v2.0 研究結論：修正期間「近期跌深、營收仍優於同業、不是投信擁擠股」反彈最好；修正前的強勢股（相對強度高、接近新高）"
-            "之後 20 日反彈較弱，這和主模型偏好的動能因子相反——所以修正期另外提供反彈候選，而不是改主模型。"]), unsafe_allow_html=True)
+        st.markdown(crash_rates_html(summ), unsafe_allow_html=True)
+        e2 = summ.get("E2") or {}
+        st.markdown(ui.panel("怎麼解讀", ui.bullets([
+            f"<b>急跌當天通常不是最低點</b>：費半大跌後的 {e2.get('n', 0)} 次中，台股那天收盤就是之後 60 日最低點的只有 {e2.get('low_hits', 0)} 次；"
+            f"之後 20 日內平均還會再跌 {abs(e2.get('min20') or 0):.0%}、最深 {abs(e2.get('worst60') or 0):.0%}。",
+            f"<b>但 1～3 個月後多半比較高</b>：之後 60 日平均 {e2.get('r60', 0):+.0%}、{e2.get('win60', 0):.0%} 的次數上漲 → 恐慌時殺低通常不划算。",
+            f"<b>分三批（第 0、5、10 天）和一次買進的 60 日報酬幾乎一樣</b>（{ui.pct(e2.get('staged60'), 1)} vs {ui.pct(e2.get('lump60'), 1)}），"
+            "但分批可以大幅降低「買在半山腰」的風險 → 用分批，依止穩訊號決定速度。",
+            "<b>利空是否出盡沒有人能確定</b>：能做的是用下面的條件分批，並保留「暫停加碼」的紀律。"])), unsafe_allow_html=True)
+        st.markdown(ui.section("分批計畫", "每一批的觸發條件與目前狀態（第 1 批看盤中，第 2、3 批看收盤後的止穩訊號）"), unsafe_allow_html=True)
+        st.markdown(staged_plan_html(cur, sto, live_checks), unsafe_allow_html=True)
+        stage = latest("long").get("market_stage", "")
+        exp_l = latest("long").get("exposure", 1.0)
+        st.markdown(ui.panel("模型怎麼因應", ui.bullets([
+            f"<b>長線</b>：科斯托蘭尼階段 {ui.esc(STAGE_ZH.get(stage, stage).split(' ')[0])}，模型持股水位 {exp_l:.0%}（B1／B2 自動降到 50%／40%，其餘放現金）。",
+            "<b>短線、中線</b>：維持 100% 持股——v1.1、v1.7 實測「依階段或費半跌破百日線降水位」兩段期間都拖累報酬，所以不自動降。",
+            "<b>v2.2 新測試</b>（見「模型體檢」）：急跌時把動能因子權重減半、同產業檔數上限，都沒有通過預先宣告的門檻 → 主模型不改。",
+            "<b>你可以做的</b>：提高 0050 等大盤 ETF 的比例（「資金配置」頁可一鍵套用修正期 +20 個百分點）、名單中同產業不超過 2～3 檔、"
+            "新資金照分批計畫進場，並優先看「反彈候選」與模型名單重疊的股票。"])), unsafe_allow_html=True)
+        cs_ev = (B.meta.get("crash_stats") or {}).get("events") or []
+        if cs_ev:
+            with st.expander("過去的急跌事件明細"):
+                rows = [[e["date"], e["type"], f"{e['close']:,.0f}", ui.pct(e.get("dd250"), 1), ui.pct(e.get("r20"), 1, color=True),
+                         ui.pct(e.get("r60"), 1, color=True), ui.pct(e.get("min60"), 1), "✓" if e.get("is_low60") else ""] for e in cs_ev[::-1]]
+                st.markdown(ui.table(["日期", "事件", "收盤", "距一年高點", "之後 20 日", "之後 60 日", "60 日內再跌", "當天＝低點"], rows,
+                                     left=(0, 1)), unsafe_allow_html=True)
+
+    with tabs["✅ 止穩檢查"]:
+        st.markdown(ui.section("止穩檢查表", "每項只用當天收盤後已知的資料；歷史欄＝2017–2023 修正期中，該項成立 vs 未成立時加權指數之後 20 日平均報酬"),
+                    unsafe_allow_html=True)
+        st.markdown(insight_checklist(c), unsafe_allow_html=True)
+        bh = insight_buckets()
+        if bh:
+            st.markdown(ui.section("歷史上修正 10% 以上時：止穩分數 vs 之後走勢", "加權指數；之後 20 日內再跌＝這 20 日中最低點相對當天的幅度"),
+                        unsafe_allow_html=True)
+            st.markdown(bh, unsafe_allow_html=True)
+
+    with tabs["🎯 特別時期選股"]:
+        st.markdown(ui.section("模型名單在急跌時的風險", "三個期間合併；β＝費半漲跌 1% 時此股隔天平均漲跌（越高越容易跟著美股科技股大跌）"),
+                    unsafe_allow_html=True)
+        html, notes = picks_risk()
+        if notes:
+            st.markdown(ui.panel("提醒", ui.bullets(notes)), unsafe_allow_html=True)
+        st.markdown(html, unsafe_allow_html=True)
+        gm = group_moves(BID)
+        if len(gm):
+            g2 = gm.sort_values("r20", ascending=False)
+            strong = "、".join(f"{ui.esc(g)} {r.r20:+.0%}" for g, r in g2.head(6).iterrows())
+            weak = "、".join(f"{ui.esc(g)} {r.r20:+.0%}" for g, r in g2.tail(6).iloc[::-1].iterrows())
+            st.markdown(ui.panel("族群：近 20 日抗跌 vs 重災（成交金額前 500 名、中位數）",
+                                 f"<div style='margin-bottom:4px'><b style='color:{ui.UP}'>抗跌</b>　{strong}</div>"
+                                 f"<div><b style='color:{ui.DOWN}'>重災</b>　{weak}</div>"
+                                 "<div class='kq-muted' style='margin-top:6px'>v2.0 研究：修正期間「近期跌深、營收仍優於同業、不是投信擁擠股」反彈最好；"
+                                 "修正前的強勢股之後 20 日反彈較弱。</div>"), unsafe_allow_html=True)
+        st.markdown(insight_rebound(), unsafe_allow_html=True)
+
+    with tabs["🩺 模型體檢"]:
+        mh, mix = model_health(BID)
+        if len(mh):
+            rows, mrows = [], []
+            for r in mh.to_dict("records"):
+                rows.append([f"<b>{HZ[r['h']]}</b>", f"{ui.pct(r['dd'], 1)}<span class='sub'>（高點 {r['peak'][2:]}）</span>", ui.pct(r["dd_b"], 1),
+                             f"{ui.pct(r['m1'], 1, color=True)} / {ui.pct(r['m1_b'], 1, color=True)}",
+                             f"{ui.pct(r['m6'], 1, color=True)} / {ui.pct(r['m6_b'], 1, color=True)}",
+                             f"{ui.pct(r['y1'], 1, color=True)} / {ui.pct(r['y1_b'], 1, color=True)}",
+                             f"{ui.pct(r['ytd'], 1, color=True)} / {ui.pct(r['ytd_b'], 1, color=True)} / {ui.pct(r['ytd_pool'], 1, color=True)}"])
+                mrows.append(ui.mcard(f"<span class='nm'>{HZ[r['h']]}</span>", f"自高點 {ui.pct(r['dd'], 1)}",
+                                      f"近1月 {ui.pct(r['m1'], 1, color=True)}（0050 {ui.pct(r['m1_b'], 1)}）｜近6月 {ui.pct(r['m6'], 1, color=True)}（{ui.pct(r['m6_b'], 1)}）",
+                                      f"近12月 {ui.pct(r['y1'], 1, color=True)}（0050 {ui.pct(r['y1_b'], 1)}）｜今年 {ui.pct(r['ytd'], 1, color=True)}（0050 {ui.pct(r['ytd_b'], 1)}、母池 {ui.pct(r['ytd_pool'], 1)}）"))
+            st.markdown(ui.section("模型 vs 0050", f"回測淨值到 {mh['asof'].iloc[0]}；欄位為「模型 / 0050」，今年多一欄同母池等權（中小型股平均）"),
+                        unsafe_allow_html=True)
+            st.markdown(ui.resp(ui.table(["期間", "模型自高點", "0050 自高點", "近 1 月", "近 6 月", "近 12 月", "今年（模型/0050/母池）"], rows, left=(0,)),
+                                "".join(mrows)), unsafe_allow_html=True)
+            r = mh.set_index("h").loc["mid"] if "mid" in set(mh["h"]) else None
+            lines = []
+            if r is not None:
+                gap = r["y1"] - r["y1_b"]
+                lines.append(f"<b>中線</b>：自 {r['peak']} 高點回落 {ui.pct(r['dd'], 1)}（0050 {ui.pct(r['dd_b'], 1)}）；"
+                             f"近 12 月 {ui.pct(r['y1'], 1)} vs 0050 {ui.pct(r['y1_b'], 1)}（{'落後' if gap < 0 else '領先'} {abs(gap) * 100:.0f} 個百分點）。")
+                if ui.ok(r["ytd_pool"]) and r["ytd_b"] - r["ytd_pool"] > 0.05:
+                    lines.append(f"<b>今年的落差主要來自「選股範圍」</b>：0050 由台積電等權值股帶動（今年 {ui.pct(r['ytd_b'], 0)}），"
+                                 f"中小型股平均（母池等權）只有 {ui.pct(r['ytd_pool'], 0)}；模型今年 {ui.pct(r['ytd'], 0)}"
+                                 + ("，和母池平均差不多 → 選股本身沒有失效，但追不上權值股集中的行情。" if abs(r["ytd"] - r["ytd_pool"]) < 0.08 else
+                                    "，勝過母池平均 → 選股仍有效，只是權值股漲更多。" if r["ytd"] > r["ytd_pool"] else "，也落後母池平均。"))
+                if r["dd"] < r["dd_b"] - 0.05:
+                    lines.append("<b>回落比大盤深</b>：模型偏好「相對強勢、接近新高、營收動能」的股票，這類股票在急跌與反轉時跌得比大盤多（動能反轉）。"
+                                 "v2.2 測試「急跌時動能權重減半」在 2021–2025 只多 0.6 個百分點，未達門檻，所以不改模型；想降低波動請提高 0050 比例（下表）。")
+            lines.append("<b>三個期間的名單高度重疊</b>（短線與中線用同一套模型），同時買三份名單等於加碼同一批股票。")
+            st.markdown(ui.panel("體檢結論", ui.bullets(lines)), unsafe_allow_html=True)
+        if mix:
+            rows = [[f"<b>{w:.0%}</b>", ui.pct(m["cagr"], 1), ui.pct(m["mdd"], 1), ui.pct(m["y1"], 1, color=True), ui.pct(m["dd"], 1)]
+                    for w, m in mix.items()]
+            st.markdown(ui.section("搭配 0050 當核心（中線，每月再平衡）", "0050 比例越高：長期報酬較低，但回撤較小、在權值股行情中不容易落後"),
+                        unsafe_allow_html=True)
+            st.markdown(ui.table(["0050 比例", "年化（2021 起）", "最大回撤", "近 12 月", "目前自高點"], rows, left=(0,)), unsafe_allow_html=True)
+        st.markdown(ui.section("v2.2 預先宣告測試（docs/v2.2_crash_protocol.md）",
+                               "五種換股日、2021–2025 開發期；單位：百分點（資訊比率為差值）；與 v1.9 相同的採用門檻"), unsafe_allow_html=True)
+        st.markdown(ui.table(["候選", "中線超額", "中線 IR", "中線回撤改善", "短線超額", "長線超額", "判定"],
+                             [[f"<b>{a}</b>", b, c_, d, e, f, g] for a, b, c_, d, e, f, g in V22_TESTS], left=(0, 6)), unsafe_allow_html=True)
+
+    with tabs["🧭 觀察重點"]:
+        st.markdown(insight_focus(df, sto, f5, t5, mchg, sox_dd), unsafe_allow_html=True)
+        with st.expander("模型裡原本就有的「跌深／止跌」設計"):
+            st.markdown(ui.bullets([
+                "短期反轉因子「近 5 日跌多」（t_rev5）：在短線候選池中，由每日研究決定是否使用。",
+                "科斯托蘭尼雞蛋階段：B3（下跌末段）要有「止跌確認」（W 底支撐或站回 5 日線且 5 日上漲）才會買。",
+                "長線持股水位：B1／B2 階段自動降到 50%／40%；短線、中線不降（實測降水位拖累績效）。",
+                "v2.0 研究：修正期間「近期跌深、營收仍優於同業、不是投信擁擠股」反彈最好，所以修正期另外提供反彈候選，而不是改主模型。"]),
+                unsafe_allow_html=True)
 
 
 # ================================================================== v2.0 精選 ETF
@@ -2244,7 +2743,7 @@ def page_world():
                 "線在上方紅、下方綠；美股收盤後顯示前一晚的完整走勢（台北時間）。取不到分時時改顯示近 1 月收盤（虛線＝期初）。</div>",
                 unsafe_allow_html=True)
     lvl, txt, risk = risk_light()
-    stt = ls.get("state") or {}
+    stt = world_state_now()
     c1, c2 = st.columns([1, 1.25])
     with c1:
         rows = [("費半 vs 百日線", ui.pct(stt.get("SOX_vs_ma100"), 1, color=True)),
@@ -2256,14 +2755,14 @@ def page_world():
                 + "<div class='kq-muted' style='margin-top:8px'>燈號只供參考，不會改變模型名單。實測：費半跌破百日線時把個股降到一半，"
                   "最大回撤可少約 6 個百分點，但年化報酬少約 2.3 個百分點、近一年少 13 個百分點 → 未達採用門檻；"
                   "保守者可自行在紅燈時降低持股。</div>")
-        st.markdown(ui.panel("美股風險燈號（研究時資料）", body), unsafe_allow_html=True)
+        st.markdown(ui.panel(f"美股風險燈號（{world_label(stt)}）", body), unsafe_allow_html=True)
     with c2:
         sox = snap.get("SOX", {})
         lab, row, adv = overnight_read(sox.get("chg", np.nan))
         if adv:
             nq = snap.get("NQF")
             extra = f"；那斯達克期貨目前 {ui.chg(nq['chg'])}" if nq else ""
-            body = (f"<div style='margin-bottom:6px'>最近一個美股交易日 費半 <b>{ui.chg(sox['chg'])}</b>{extra}　"
+            body = (f"<div style='margin-bottom:6px'>費半 <b>{ui.chg(sox['chg'])}</b>（{ui.esc(us_session_label(sox))}）{extra}　"
                     f"<span class='kq-tag'>{ui.esc(lab)}</span></div><div class='kq-muted'>{row.get('stat', '')}</div>"
                     f"<div style='margin-top:8px'>{ui.esc(adv)}</div>")
             n225, ks = snap.get("N225"), snap.get("KS11")
@@ -2349,7 +2848,7 @@ def page_guide():
             "現價在建議買進區 → 可進場（分 2–3 筆）。",
             "高於追價上限 → 不追，等拉回；漲停鎖住 → 放棄。",
             "回到拉回買點 → 適合加碼承接。"]),
-        ("持有｜何時賣出", "模型不設固定停利停損，讓獲利奔跑；大盤急跌時先看「市場解讀」。", [
+        ("持有｜何時賣出", "模型不設固定停利停損，讓獲利奔跑；大盤急跌時先看「盤勢儀表板」的急跌應變。", [
             "短線每週、中線每週一份、長線每 4 週一份做檢查。",
             f"排名仍在續抱門檻內（短 {BUF('short')}／中 {BUF('mid')}／長 {BUF('long')} 名）→ 續抱；跌出 → 隔天開盤換成新名單（「今日選股」的持股追蹤會直接列出）。",
             "跌破警戒價 → 重新檢視籌碼與基本面，不一定要賣。"]),
@@ -2363,10 +2862,16 @@ def page_guide():
     st.markdown(ui.panel("資金怎麼分", ui.bullets([
         "到「資金配置」輸入金額，系統算出每檔張數；每個期間持有 8 檔。",
         "保守：0050 50%＋中線 20%＋長線 30%｜穩健：0050 20%＋中線 40%＋長線 40%｜積極：短線 60%＋長線 40%。",
-        "0050 不是必要：關閉「包含 0050」即為全股票配置（報酬較高、波動較大）。短線與中線名單重疊約 8 成，兩者擇一。",
-        "v2.0：大盤修正 ≥10% 且「市場解讀」的止穩訊號 ≤2 項時，0050（或其他大盤型 ETF）暫時多 20 個百分點；止穩後恢復。",
+        "0050 不是必要：關閉「包含 0050」即為全股票配置（報酬較高、波動較大）。短線與中線名單重疊約 7～10 成，兩者擇一。",
+        "名單中同一產業有 3 檔以上時（例如航運），想降低波動可只買其中 2 檔、其餘名額用下一名。"
+        "v2.0：大盤修正 ≥10% 且「盤勢儀表板」的止穩訊號 ≤2 項時，0050（或其他大盤型 ETF）暫時多 20 個百分點；止穩後恢復。",
         "ETF 當核心長期持有、不用擇時；配息與不配息看含息「年化報酬」比較即可（見「精選ETF」）。"])),
         unsafe_allow_html=True)
+    st.markdown(ui.panel("大盤急跌時（v2.2）", ui.bullets([
+        "先看「盤勢儀表板」：上方急跌警報、燈號與今日分時；「急跌應變」分頁有歷史統計與分批計畫。",
+        "歷史上急跌當天很少是最低點（費半大跌後只有 2/14 次），之後 20 日內平均還會再跌約 6%；但 60 日後多數較高 → 不殺低、不重壓、分三批。",
+        "第 1 批：回落 ≥10% 且盤中止跌（加權從低點反彈、那指期翻紅等）；第 2 批：止穩訊號 ≥3；第 3 批：站回月線且止穩 ≥5；跌破前低再跌 5% 暫停。",
+        "已持有的股票照續抱門檻與警戒價處理；長線模型在 B1／B2 階段會自動降低持股水位。"])), unsafe_allow_html=True)
     st.markdown(ui.section("價位怎麼算"), unsafe_allow_html=True)
     st.markdown(ui.table(["項目", "計算方式", "用途"], [
         ["建議買進區", "上緣＝收盤價＋0.3×ATR（最多 +1.5%）；下緣＝5日線或收盤－1×ATR（不低於 −5%）", "開盤前掛單、盤中分批"],
@@ -2694,7 +3199,7 @@ def page_lab():
 # ================================================================== navigation
 pages = [st.Page(page_picks, title="今日選股", icon="📋", url_path="picks", default=True),
          st.Page(page_live, title="盤中監控", icon="⏱️", url_path="live"),
-         st.Page(page_insight, title="市場解讀", icon="🧭", url_path="insight"),
+         st.Page(page_insight, title="盤勢儀表板", icon="🎛️", url_path="insight"),
          st.Page(page_market, title="大盤", icon="📈", url_path="market"),
          st.Page(page_etf, title="精選ETF", icon="💰", url_path="etf"),
          st.Page(page_world, title="國際盤", icon="🌏", url_path="world"),
@@ -2702,4 +3207,6 @@ pages = [st.Page(page_picks, title="今日選股", icon="📋", url_path="picks"
          st.Page(page_alloc, title="資金配置", icon="⚖️", url_path="alloc"),
          st.Page(page_guide, title="操作指南", icon="📖", url_path="guide"),
          st.Page(page_lab, title="研究室", icon="🧪", url_path="lab")]
-st.navigation(pages, position="top").run()
+_nav = st.navigation(pages, position="top")
+CUR_PAGE = getattr(_nav, "url_path", "") or "picks"
+_nav.run()

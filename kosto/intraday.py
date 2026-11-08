@@ -158,6 +158,7 @@ def merge_live(d: dict | None, q: dict | None, now: pd.Timestamp | None = None) 
     q：quotes.parse_mis 的一列（price、prev、open、high、low、date=YYYYMMDD、time=HH:MM:SS）。"""
     if not q or not np.isfinite(_f(q.get("price"))):
         return d
+    trade = str(q.get("src", "trade") or "trade") in ("trade", "pz")    # 委買／委賣價不是成交價 → 不接在走勢上
     now = now if now is not None else pd.Timestamp.now(tz=TZ).tz_localize(None)
     try:
         day = pd.Timestamp(str(q.get("date") or now.date())).date()
@@ -178,19 +179,35 @@ def merge_live(d: dict | None, q: dict | None, now: pd.Timestamp | None = None) 
              "time": qt, "tz": TZ, "live_point": True, "sparse": True}
     elif d["date"] == day:
         d = dict(d)
-        if qt > d["t"][-1]:
-            d["t"] = d["t"].append(pd.DatetimeIndex([qt]))
-            d["v"] = np.append(d["v"], px)
-            d["vol"] = np.append(d["vol"], np.nan)
-            d["live_point"] = True
-        d["last"], d["time"] = px, max(qt, d["time"])
+        if trade:
+            if qt > d["t"][-1]:
+                d["t"] = d["t"].append(pd.DatetimeIndex([qt]))
+                d["v"] = np.append(d["v"], px)
+                d["vol"] = np.append(d["vol"], np.nan)
+                d["live_point"] = True
+            d["last"], d["time"] = px, max(qt, d["time"])
     else:
         return d
     if np.isfinite(prev) and prev > 0:
         d["prev"] = prev
     for k, f in (("high", max), ("low", min)):
         x = _f(q.get(k))
-        d[k] = f(d[k], x, px) if np.isfinite(x) else f(d[k], px)
+        if np.isfinite(x):
+            d[k] = f(d[k], x)
+        elif trade:
+            d[k] = f(d[k], px)
+    return d
+
+
+def snap_ticks(d: dict | None, etf: bool = False) -> dict | None:
+    """台股個股：平盤、最新、開高低對齊到有效升降單位（Yahoo 回推的昨收會有 112.9999 這類浮點誤差）。"""
+    if d is None:
+        return None
+    from .ta import round_tick
+    d = dict(d)
+    for k in ("prev", "last", "high", "low", "open"):
+        if np.isfinite(_f(d.get(k))) and d[k] > 0:
+            d[k] = round_tick(float(d[k]), "near", etf)
     return d
 
 

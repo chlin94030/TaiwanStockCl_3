@@ -263,3 +263,134 @@ def rebound_candidates(P, rev_rel: np.ndarray | None, n_univ: int = 500, top: in
                     "close": _f(close[j]), "score": _f(score[o]), "ret20": _f(ret20[j]), "dd60": _f(dd60[j]),
                     "rev_rel": _f(comp["rev_rel"][j]), "trust20": _f(tr20[j])})
     return out
+
+
+# ------------------------------------------------------------------ v2.2 急跌後的歷史基準（docs/v2.2_crash_protocol.md 的 D）
+CRASH_TYPES = {"E1": "加權指數距一年高點回落達 15%", "E2": "前一晚費半跌 ≥7%（台股休市期間累計）", "E3": "加權指數連 5 跌以上、累計 ≥8%"}
+
+# 研究時（資料到 2026-10-22）的結果；每日研究跑過後會用最新資料重算（B.meta["crash_stats"]）
+CRASH_FALLBACK = {
+    "asof": "2026-10-22",
+    "summary": {
+        "E1": {"n": 6, "r20": 0.056, "win20": 0.83, "r60": 0.082, "win60": 0.80, "min20": -0.043, "min60": -0.078, "worst60": -0.160,
+               "low_hits": 1, "low_n": 5, "lump60": 0.082, "staged60": 0.085},
+        "E2": {"n": 14, "r20": 0.040, "win20": 0.79, "r60": 0.114, "win60": 1.0, "min20": -0.062, "min60": -0.072, "worst60": -0.211,
+               "low_hits": 2, "low_n": 14, "lump60": 0.114, "staged60": 0.113, "day0": -0.031},
+        "E3": {"n": 3, "r20": 0.101, "win20": 1.0, "r60": 0.092, "win60": 0.5, "min20": -0.006, "min60": -0.056, "worst60": -0.080,
+               "low_hits": 0, "low_n": 2, "lump60": 0.092, "staged60": 0.082},
+    },
+    "events": [],
+}
+
+
+def crash_stats(tx: pd.Series, sox: pd.Series | None = None) -> dict:
+    """急跌事件（E1 回落 15%、E2 費半單日 ≤−7%、E3 連 5 跌 ≥8%）之後的加權指數走勢。
+    tx：加權指數收盤（台股交易日）；sox：已對齊到台股日期的費半收盤（T 日＝前一晚美股）。"""
+    tx = tx.astype(float).dropna()
+    n = len(tx)
+    if n < 300:
+        return {}
+
+    def fwd(i, k):
+        return float(tx.iloc[i + k] / tx.iloc[i] - 1) if i + k < n else None
+
+    def mind(i, k):
+        seg = tx.iloc[i + 1: i + k + 1]
+        return float(seg.min() / tx.iloc[i] - 1) if len(seg) == k else None
+
+    def staged(i):
+        if i + 60 >= n:
+            return None, None
+        cost = float(np.mean([tx.iloc[i], tx.iloc[i + 5], tx.iloc[i + 10]]))
+        return float(tx.iloc[i + 60] / tx.iloc[i] - 1), float(tx.iloc[i + 60] / cost - 1)
+
+    def row(i, typ, **kw):
+        seg = tx.iloc[i + 1: i + 61]
+        is_low = bool(seg.min() >= tx.iloc[i]) if len(seg) == 60 else None
+        lump, stg = staged(i)
+        hi = float(tx.iloc[max(0, i - 250): i + 1].max())
+        return {"type": typ, "date": str(tx.index[i].date()), "close": float(tx.iloc[i]), "dd250": float(tx.iloc[i] / hi - 1),
+                "r5": fwd(i, 5), "r20": fwd(i, 20), "r60": fwd(i, 60), "min20": mind(i, 20), "min60": mind(i, 60),
+                "is_low60": is_low, "lump60": lump, "staged60": stg, **kw}
+    ev = []
+    dd = tx / tx.rolling(250, min_periods=60).max() - 1
+    armed = True
+    for i in range(n):
+        if armed and dd.iloc[i] <= -0.15:
+            ev.append(row(i, "E1"))
+            armed = False
+        if not armed and dd.iloc[i] > -0.05:
+            armed = True
+    if sox is not None and len(sox.dropna()) > 300:
+        s = sox.reindex(tx.index).ffill()
+        sr = s.pct_change()
+        for i in np.where((sr <= -0.07).to_numpy())[0]:
+            ev.append(row(int(i), "E2", sox=float(sr.iloc[i]), day0=float(tx.iloc[i] / tx.iloc[i - 1] - 1)))
+    rt = tx.pct_change().to_numpy()
+    streak, start, fired = 0, None, False
+    for i in range(1, n):
+        if rt[i] < 0:
+            if streak == 0:
+                start = i - 1
+            streak += 1
+            if streak >= 5 and not fired and tx.iloc[i] / tx.iloc[start] - 1 <= -0.08:
+                ev.append(row(i, "E3", streak=streak))
+                fired = True
+        else:
+            streak, fired = 0, False
+    t = pd.DataFrame(ev)
+    summ = {}
+    for typ in CRASH_TYPES:
+        g = t[t["type"] == typ] if len(t) else pd.DataFrame()
+        if not len(g):
+            continue
+        low = g["is_low60"].dropna()
+        both = g.dropna(subset=["lump60", "staged60"])
+        summ[typ] = {"n": int(len(g)), "r20": _f(g["r20"].mean()), "win20": _f((g["r20"].dropna() > 0).mean()),
+                     "r60": _f(g["r60"].mean()), "win60": _f((g["r60"].dropna() > 0).mean()), "min20": _f(g["min20"].mean()),
+                     "min60": _f(g["min60"].mean()), "worst60": _f(g["min60"].min()), "low_hits": int(low.sum()), "low_n": int(len(low)),
+                     "lump60": _f(both["lump60"].mean()), "staged60": _f(both["staged60"].mean())}
+        if typ == "E2" and "day0" in g:
+            summ[typ]["day0"] = _f(g["day0"].mean())
+    # 目前狀態
+    i = n - 1
+    k = 0
+    while k < i and rt[i - k] < 0:
+        k += 1
+    cur = {"date": str(tx.index[-1].date()), "close": float(tx.iloc[-1]), "dd250": float(dd.iloc[-1]),
+           "high250": float(tx.tail(250).max()), "streak": int(k), "streak_ret": float(tx.iloc[-1] / tx.iloc[-1 - k] - 1) if k else 0.0}
+    if sox is not None and len(sox.dropna()) > 2:
+        s = sox.reindex(tx.index).ffill()
+        cur["sox_day"] = _f(s.iloc[-1] / s.iloc[-2] - 1)
+        cur["sox_dd"] = _f(s.iloc[-1] / s.tail(250).max() - 1)
+    events = [{k_: (round(v, 4) if isinstance(v, float) else v) for k_, v in r.items()} for r in ev]
+    return {"asof": str(tx.index[-1].date()), "summary": summ, "events": sorted(events, key=lambda r: r["date"])[-40:], "current": cur}
+
+
+def crash_flags(cur: dict) -> list[tuple[str, str, bool]]:
+    """目前觸發了哪些急跌條件：[(代號, 說明, 是否觸發)]。"""
+    if not cur:
+        return []
+    return [("E1", f"距一年高點 {cur.get('dd250', 0):+.1%}（門檻 −15%）", (cur.get("dd250") or 0) <= -0.15),
+            ("E2", f"前一晚費半 {cur['sox_day']:+.1%}（門檻 −7%）" if cur.get("sox_day") is not None else "費半資料不足",
+             (cur.get("sox_day") or 0) <= -0.07),
+            ("E3", f"連 {cur.get('streak', 0)} 跌、累計 {cur.get('streak_ret', 0):+.1%}（門檻 連5跌 −8%）",
+             cur.get("streak", 0) >= 5 and (cur.get("streak_ret") or 0) <= -0.08)]
+
+
+def intraday_checks(tx: dict | None, nq: dict | None = None, tsmc: dict | None = None) -> list[tuple[str, str, bool | None]]:
+    """盤中止跌觀察（只用當天分時）：加權從低點反彈 ≥1%、加權高於開盤、那指期翻紅、台積電從低點反彈 ≥1.5%。
+    tx／nq／tsmc：kosto.intraday 的資料（last、low、open、prev）。"""
+    out = []
+    if tx:
+        rb = tx["last"] / tx["low"] - 1 if tx.get("low") else np.nan
+        out.append(("加權從今日低點反彈", f"{rb:+.2%}（≥ +1% 成立）" if np.isfinite(rb) else "–", bool(rb >= 0.01) if np.isfinite(rb) else None))
+        oc = tx["last"] / tx["open"] - 1 if tx.get("open") else np.nan
+        out.append(("加權高於今日開盤", f"{oc:+.2%}" if np.isfinite(oc) else "–", bool(oc > 0) if np.isfinite(oc) else None))
+    if nq:
+        r = nq["last"] / nq["prev"] - 1
+        out.append(("那斯達克期貨翻紅", f"{r:+.2%}", bool(r > 0)))
+    if tsmc:
+        rb = tsmc["last"] / tsmc["low"] - 1 if tsmc.get("low") else np.nan
+        out.append(("台積電從低點反彈", f"{rb:+.2%}（≥ +1.5% 成立）" if np.isfinite(rb) else "–", bool(rb >= 0.015) if np.isfinite(rb) else None))
+    return out

@@ -347,6 +347,7 @@ def build_bundle(P: Panel, cfg: dict, log=print) -> Bundle:
     a["Q_MKT"], meta["q_mkt_cols"] = market_pack(P, qdays, ms)             # v1.9 大盤 K 線＋市場籌碼（億元）
     try:
         meta["mkt_stats"] = mklib.history_stats(ms)
+        meta["crash_stats"] = mklib.crash_stats(ms["close"], ms.get("sox"))          # v2.2 急跌後的歷史基準
         rr = vals.get("f_rev_rel")
         meta["rebound"] = mklib.rebound_candidates(P, rr[-1] if rr is not None else None)
         meta["rebound_asof"] = str(P.dates[-1].date())

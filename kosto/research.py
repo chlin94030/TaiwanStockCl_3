@@ -92,6 +92,13 @@ def smooth_pool_scores(t: pd.DataFrame) -> pd.Series:
     return out
 
 
+def _tick_down(p: float):
+    """警戒價對齊到有效升降單位（往下取，v2.2.1）。"""
+    from .ta import round_tick
+    v = round_tick(float(p), "down")
+    return float(v) if np.isfinite(v) else None
+
+
 class Research:
     def __init__(self, B: Bundle, cfg: dict, log=print):
         self.B, self.cfg, self.log = B, cfg, log
@@ -151,7 +158,7 @@ class Research:
         hz = v.label_h or h
         key = (rule, size, h, hz, v.mode, round(v.lam, 4), tuple(sorted(self.cfg["horizons"][hz]["family_prior"].items())),
                r0["n0_shrink"], r0["max_factor_weight"], self._excl(v), v.k, v.tmin, v.kK, v.lamK, v.anchor, v.growth_blend,
-               v.hyp_blend, v.hypothesis)
+               v.hyp_blend, v.hypothesis, repr(sorted((r0.get("momentum_guard") or {}).items())))
         if key in self._sched:
             return self._sched[key]
         if len(self._sched) > 64:
@@ -167,12 +174,43 @@ class Research:
                                             r["n0_shrink"], r["max_factor_weight"], r["signal_step"], self.H(hz), view,
                                             self.B.a["FWD"][HKEY[hz]], exclude=self._excl(v), **self._sp(v)), v)
             for i in range(a, b):
-                W[i] = fit.weights
+                W[i] = self._guard(fit.weights, i)
             hist.append({"from": str(self.B.sig_dates[a].date()), "n_train": fit.n_rows, "alpha": round(fit.alpha, 3),
                          **{f"fam_{k}": round(val, 4) for k, val in fit.family.items()},
                          "weights": {f: float(w) for f, w in zip(self.B.factors, fit.weights) if abs(w) > 1e-6}})
         self._sched[key] = (W, hist)
         return W, hist
+
+    # ------------------------------------------------------------------ v2.2 急跌狀態的動能保護（預設關閉；docs/v2.2_crash_protocol.md）
+    def panic_days(self, guard: dict | None = None) -> np.ndarray:
+        """每個交易日是否為「急跌狀態」：0050 近 20 日報酬 ≤ r20，或距近 120 日最高點回落 ≥ dd120（只用當天以前的資料）。"""
+        g = guard or (self.cfg["research"].get("momentum_guard") or {})
+        b = pd.Series(np.cumprod(1 + np.nan_to_num(np.asarray(self.B.a["BENCH"], float))))   # BENCH＝0050 日報酬 → 淨值
+        r20 = b / b.shift(20) - 1
+        dd = b / b.rolling(120, min_periods=60).max() - 1
+        return ((r20 <= float(g.get("r20", -0.08))) | (dd <= -float(g.get("dd120", 0.12)))).fillna(False).to_numpy()
+
+    def panic_signals(self, guard: dict | None = None) -> np.ndarray:
+        g = guard or (self.cfg["research"].get("momentum_guard") or {})
+        key = ("panic", repr(sorted(g.items())))
+        if key not in self._sched:
+            pdays = self.panic_days(g)
+            hold = int(g.get("hold", 0))
+            pos = np.asarray(self.B.sig_pos, int)
+            self._sched[key] = np.array([bool(pdays[max(0, p - hold): p + 1].any()) for p in pos])
+        return self._sched[key]
+
+    def _guard(self, w, i: int):
+        g = self.cfg["research"].get("momentum_guard") or {}
+        if not g.get("enabled") or w is None or not self.panic_signals(g)[i]:
+            return w
+        facs = [f for f in (g.get("factors") or ["t_rs120", "t_mom120x20", "t_high252"]) if f in self.B.factors]
+        idx = [self.B.factors.index(f) for f in facs]
+        w2 = np.array(w, dtype=np.float32, copy=True)
+        tot = float(np.abs(w2).sum())
+        w2[idx] *= float(g.get("scale", 0.5))
+        t2 = float(np.abs(w2).sum())
+        return (w2 * (tot / t2)).astype(np.float32) if t2 > 0 else w
 
     def final_fit(self, rule, size, h, v: Variant):
         r = self.cfg["research"]
@@ -441,7 +479,7 @@ class Research:
                     "kept": j in prev, "w_support": bool(B.a["WSUP"][i, j]),
                     "reasons": [f"{factor_phrase(B, f, Z[k][f])}(+{contrib[f]:.3f})" for f in top if contrib[f] > 0],
                     "risk": [f"{factor_phrase(B, f, Z[k][f])}({contrib[f]:.3f})" for f in neg if contrib[f] < 0],
-                    "stop_price": round(close * (1 - stop), 2) if stop else None}
+                    "stop_price": _tick_down(close * (1 - stop)) if stop else None}
 
         blocked = []
         top_all = idx[np.argsort(-(Z @ fit.weights))][:30] if len(idx) else []

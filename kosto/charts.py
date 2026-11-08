@@ -171,13 +171,17 @@ def _nice_step(amp_pct: float) -> float:
 
 
 def intraday_figure(d: dict, height: int = 300, dark: bool = True, digits: int = 2, volume: bool = True,
-                    vol_div: float = 1000.0, vol_label: str = "量(張)") -> go.Figure:
+                    vol_div: float = 1000.0, vol_label: str = "量(張)", snap: bool = False, etf: bool = False) -> go.Figure:
     """分時走勢：平盤虛線置中（上下對稱），右側價格、左側漲跌幅；線在平盤上方為紅、下方為綠；
     標出最高、最低與最新價；有成交量時下方畫量（紅＝比前一筆漲、綠＝跌）。"""
     BG, GRID, TXT, MUTED = THEME[bool(dark)]
     t = pd.DatetimeIndex(d["t"])
     y = np.asarray(d["v"], float)
     base = float(d["prev"])
+
+    def fmt(v):                                # 個股依升降單位級距決定小數位（同一張圖跨 50／500 元時各自正確）
+        dg = (2 if etf or v < 50 else (1 if v < 500 else 0)) if snap else digits
+        return f"{v:,.{dg}f}"
     vol = np.asarray(d.get("vol", np.full(len(y), np.nan)), float) / vol_div
     has_vol = volume and np.nansum(np.nan_to_num(vol)) > 0 and len(y) > 5
     fig = make_subplots(rows=2 if has_vol else 1, cols=1, shared_xaxes=True, vertical_spacing=0.03,
@@ -197,30 +201,37 @@ def intraday_figure(d: dict, height: int = 300, dark: bool = True, digits: int =
                                  hoverinfo="skip", showlegend=False), row=1, col=1)
     pct = (y / base - 1) * 100
     fig.add_trace(go.Scatter(x=t, y=y, mode="lines", line=dict(width=0, color="rgba(0,0,0,0)"), showlegend=False,
-                             customdata=np.c_[pct], name="",
-                             hovertemplate=f"%{{x|%H:%M}}　%{{y:,.{digits}f}}　(%{{customdata[0]:+.2f}}%)<extra></extra>"),
+                             customdata=[[float(a), fmt(b)] for a, b in zip(pct, y)], name="",
+                             hovertemplate="%{x|%H:%M}　%{customdata[1]}　(%{customdata[0]:+.2f}%)<extra></extra>"),
                   row=1, col=1)
     hi, lo = float(d["high"]), float(d["low"])
     amp = max(abs(hi - base), abs(lo - base), abs(y - base).max(), base * 0.003) * 1.3
     step = _nice_step(amp / base * 100)
     k = int(np.floor(amp / base * 100 / step + 1e-9))
     tv = [base * (1 + i * step / 100) for i in range(-k, k + 1)]
+    if snap:                                   # 個股：刻度用有效升降單位的價格（左側漲跌幅依實際價格換算，兩側對齊）
+        from .ta import round_tick
+        tv = sorted({round_tick(v, "near", etf) for v in tv})
+    pv = [(v / base - 1) * 100 for v in tv]
+    sg = [int(np.sign(round(v - base, 6))) for v in tv]          # 顏色：高於平盤紅、低於綠
+    pdig = 1 if step < 1 or snap else 0
+
 
     def pcol(i):
         return UP if i > 0 else (DOWN if i < 0 else MUTED)
     fig.update_yaxes(range=[base - amp, base + amp], tickvals=tv, side="right", gridcolor=GRID, zeroline=False,
-                     ticktext=[f"<span style='color:{pcol(i)}'>{v:,.{digits}f}</span>" for i, v in zip(range(-k, k + 1), tv)],
+                     ticktext=[f"<span style='color:{pcol(i)}'>{fmt(v)}</span>" for i, v in zip(sg, tv)],
                      tickfont=dict(size=10, color=MUTED), row=1, col=1)
     # 左側漲跌幅（同一組刻度）
     fig.add_trace(go.Scatter(x=[t[0], t[0]], y=[base - amp, base + amp], yaxis="y3", mode="markers",
                              marker=dict(opacity=0), hoverinfo="skip", showlegend=False))
     fig.update_layout(yaxis3=dict(overlaying="y", side="left", range=[-amp / base * 100, amp / base * 100],
-                                  tickvals=[i * step for i in range(-k, k + 1)], showgrid=False, zeroline=False,
-                                  ticktext=[f"<span style='color:{pcol(i)}'>{i * step:+.{1 if step < 1 else 0}f}%</span>"
-                                            if i else "0%" for i in range(-k, k + 1)],
+                                  tickvals=pv, showgrid=False, zeroline=False,
+                                  ticktext=[f"<span style='color:{pcol(i)}'>{x:+.{pdig}f}%</span>"
+                                            if i else "0%" for i, x in zip(sg, pv)],
                                   tickfont=dict(size=10, color=MUTED)))
     fig.add_hline(y=base, line=dict(color=MUTED, dash="dash", width=1.2), row=1, col=1)
-    fig.add_annotation(x=d["end"], y=base, xref="x", yref="y", text=f"平盤 {base:,.{digits}f}", showarrow=False,
+    fig.add_annotation(x=d["end"], y=base, xref="x", yref="y", text=f"平盤 {fmt(base)}", showarrow=False,
                        xanchor="right", yanchor="bottom", font=dict(size=10.5, color=MUTED), bgcolor=BG, borderpad=1)
     span_s = max((d["end"] - d["start"]).total_seconds(), 1.0)
     # 最高、最低（放在線的最高、最低點；數值用當日官方高低）
@@ -228,7 +239,7 @@ def intraday_figure(d: dict, height: int = 300, dark: bool = True, digits: int =
                                    (lo, int(np.argmin(y)), "最低", "top", UP if lo > base else DOWN)):
         yy_ = val if abs(val / y[idx] - 1) < 0.01 else y[idx]
         fx = (t[idx] - d["start"]).total_seconds() / span_s
-        fig.add_annotation(x=t[idx], y=yy_, text=f"{sym} {val:,.{digits}f}（{(val / base - 1) * 100:+.2f}%）",
+        fig.add_annotation(x=t[idx], y=yy_, text=f"{sym} {fmt(val)}（{(val / base - 1) * 100:+.2f}%）",
                            showarrow=True, arrowhead=0, arrowwidth=1, arrowcolor=col, ax=0, ay=-10 if ya == "bottom" else 10,
                            xanchor="left" if fx < 0.15 else ("right" if fx > 0.85 else "center"),
                            font=dict(size=10.5, color=col), bgcolor=BG, borderpad=1, row=1, col=1)

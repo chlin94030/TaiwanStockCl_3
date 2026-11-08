@@ -150,7 +150,8 @@ MIS = {"msgArray": [
 def test_parse_mis_and_channels():
     q = parse_mis(MIS).set_index("ticker")
     assert q.loc["2330", "price"] == 2385 and q.loc["2330", "chg"] == pytest.approx(2385 / 2420 - 1)
-    assert q.loc["6488", "price"] == pytest.approx(825.5)            # 未成交：買賣中價
+    assert q.loc["6488", "price"] == pytest.approx(825.0)            # v2.2.1 未成交：改用最佳委買價（有效升降單位），不用中價 825.5
+    assert q.loc["6488", "src"] == "bid" and q.loc["2330", "src"] == "trade"
     assert channel("6488", "TPEX") == "otc_6488.tw" and channel("2330", "TWSE") == "tse_2330.tw"
     assert market_phase(pd.Timestamp("2026-10-24 10:00", tz="Asia/Taipei")) == "休市"
     assert market_phase(pd.Timestamp("2026-10-26 10:00", tz="Asia/Taipei")) == "盤中"
@@ -184,6 +185,8 @@ def test_bundle_chart_pack(small):
         h = ta.stock_frame(B, j)["big400"]
         assert h.iloc[-1] == pytest.approx(55.0)                    # 週資料往後補值
     assert np.isfinite(B.a["Q_TAIEX"]).any()
+    cs = B.meta.get("crash_stats")                                     # v2.2 急跌後的歷史基準
+    assert cs is not None and "current" in cs and "summary" in cs
 
 
 def test_rank_table_consistent_with_latest(small):

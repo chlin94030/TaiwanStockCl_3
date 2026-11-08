@@ -150,6 +150,18 @@ table.kq td .sub, .kq-sub { color:var(--muted); font-size:11.5px; font-family:'N
 .kq-pcard .px small { display:block; font-size:12px; margin-top:2px; }
 .kq-pcard .grp { line-height:1.5; min-height:22px; }
 .kq-pcard .sp svg { display:block; }
+.kq-alert { border:1px solid #f0464b; border-left-width:5px; border-radius:12px; padding:10px 14px; margin:0 0 10px;
+  background:linear-gradient(90deg, rgba(240,70,75,.14), rgba(240,70,75,.03)); }
+.kq-alert .t { font-weight:700; color:#f0464b; font-size:16px; margin-bottom:2px; }
+.kq-alert .s { color:var(--text); font-size:13.5px; } .kq-alert .s2 { color:var(--muted); font-size:12.5px; margin-top:4px; }
+.kq-dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; vertical-align:middle; background:#94a3b8; }
+.kq-dot.red { background:#f0464b; box-shadow:0 0 0 3px rgba(240,70,75,.18); } .kq-dot.amber { background:#e9a23b; box-shadow:0 0 0 3px rgba(233,162,59,.18); }
+.kq-dot.green { background:#16a35f; box-shadow:0 0 0 3px rgba(22,163,95,.16); }
+.kq-flags { display:flex; flex-wrap:wrap; gap:6px; margin:6px 0 2px; }
+.kq-chkgrid { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:6px; }
+.kq-chk { border:1px solid var(--line); border-radius:10px; padding:7px 9px; background:var(--panel); font-size:12px; color:var(--muted); line-height:1.35; }
+.kq-chk b { display:block; color:var(--muted); font-size:13px; margin-bottom:1px; } .kq-chk.on { border-color:rgba(22,163,95,.55); }
+.kq-chk.on b { color:#16a35f; }
 .kq-ch { position:relative; }
 .kq-ch svg { position:absolute; left:0; top:0; display:block; margin:0 !important; opacity:1 !important; overflow:visible; }
 .kq-ch .dt { position:absolute; width:7px; height:7px; border-radius:50%; transform:translate(-50%,-50%);
@@ -200,7 +212,68 @@ div[data-testid="stMetricValue"] { font-family:'Inter', 'Noto Sans TC', sans-ser
   .kq-h .t { font-size:16px; }
   table.kq { font-size:12.5px; }
   .kq-verdict { font-size:14px; padding:11px 13px; }
+  /* v2.2 手機：頁首一行、說明字最多兩行、面板與表格更緊湊 */
+  .kq-top { font-size:12px; gap:3px 10px; padding:7px 10px; }
+  .kq-top .kq-brand small, .kq-top .kq-sub { display:none; }
+  .kq-top .kq-pill { margin-left:0 !important; padding:1px 7px; font-size:11px; }
+  .kq-strip { gap:4px; margin:-4px 0 8px; font-size:11px; } .kq-strip .kq-chip { padding:1px 6px; }
+  .kq-h { margin:14px 0 6px; } .kq-h .s { font-size:11.5px; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+  .kq-panel { padding:11px 12px; border-radius:12px; } .kq-panel li { font-size:13px; line-height:1.55; }
+  .kq-warn, .kq-alert { font-size:12.5px; padding:8px 11px; } .kq-alert .t { font-size:15px; }
+  .kq-istat { gap:2px 10px; font-size:12px; } .kq-istat .big { font-size:19px; }
+  .kq-imini .n { flex-basis:78px; font-size:12px; } .kq-imini .c { flex-basis:54px; font-size:12px; }
+  .kq-mcard { padding:10px 11px; margin-bottom:8px; }
+  [data-testid="stTabs"] button p { font-size:13px; }
+  [data-testid="stExpander"] summary p { font-size:13px; }
 }
+/* ---------- v2.2.2 不同裝置：電腦（≥1101px）／平板（761–1100px）／手機（≤760px）＋觸控 */
+.kq-qnav { display:none; }
+@media (max-width: 1100px) {
+  /* 快速切換頁面：可左右滑動，固定在上方 */
+  .kq-qnav { display:flex; gap:6px; overflow-x:auto; -webkit-overflow-scrolling:touch; scrollbar-width:none; margin:-2px 0 10px;
+    padding:4px 0 6px; position:sticky; top:2.85rem; z-index:20; background:linear-gradient(var(--bg) 70%, transparent); }
+  .kq-qnav::-webkit-scrollbar { display:none; }
+  .kq-qnav a { flex:0 0 auto; text-decoration:none; color:var(--muted); font-size:13px; padding:6px 12px; border-radius:999px;
+    border:1px solid var(--line); background:var(--panel); white-space:nowrap; }
+  .kq-qnav a.on { color:var(--strong); border-color:var(--accent); background:var(--tagbg); font-weight:600; }
+}
+@media (min-width: 761px) and (max-width: 1100px) {
+  /* 平板：欄位太窄時自動換行（例：三欄面板 → 兩欄＋一欄；圖＋側欄 → 上下排） */
+  div[data-testid="stHorizontalBlock"] { flex-wrap:wrap; row-gap:.75rem; }
+  div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"] { min-width:300px; }
+  .block-container { padding-left:1.1rem; padding-right:1.1rem; }
+  .kq-cards { grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); }
+  .kq-grid { grid-template-columns:repeat(2, minmax(0, 1fr)); }
+  table.kq { font-size:12.5px; } table.kq th, table.kq td { padding:7px 8px; }
+  .kq-bar { gap:4px 14px; }
+}
+@media (max-width: 900px) {
+  /* 直式平板與手機：寬表格改用卡片 */
+  .kq-desk { display:none !important; }
+  .kq-mob { display:block; }
+}
+@media (min-width: 600px) and (max-width: 900px) {
+  .kq-mob:has(> .kq-mcard) { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:8px; align-items:start; }
+  .kq-mob > .kq-mcard { margin-bottom:0; }
+  .kq-chkgrid { grid-template-columns:repeat(4, minmax(0, 1fr)); }
+}
+@media (pointer: coarse) {
+  /* 觸控：按鈕、分頁加大，方便手指點選 */
+  [data-testid="stTabs"] button { min-height:42px; }
+  [data-testid="stSegmentedControl"] button, [data-testid="stButtonGroup"] button { min-height:40px; }
+  [data-testid="stExpander"] summary { min-height:44px; }
+  .kq-qnav a { padding:8px 14px; }
+}
+@media (max-height: 500px) and (orientation: landscape) {
+  /* 手機橫放：減少上方留白，讓圖表多一點空間 */
+  .block-container { padding-top:2.6rem; }
+  .kq-qnav { position:static; }
+}
+@media (min-width: 1600px) {
+  .block-container { max-width:1520px; }
+  .kq-grid { grid-template-columns:repeat(4, minmax(0, 1fr)); }
+}
+
 </style>
 """
 
@@ -216,11 +289,16 @@ def ok(x) -> bool:
         return False
 
 
-def price(x) -> str:
+def price(x, etf: bool = False) -> str:
+    """股價顯示：先對齊到最接近的有效升降單位（避免出現 31.83、103.8 這類不能下單的價格），再依級距決定小數位。
+    股票：<50 兩位（0.01／0.05）、50–500 一位（0.1／0.5）、≥500 整數（1／5）；ETF 一律兩位（0.01／0.05）。"""
     if not ok(x):
         return "–"
+    from .ta import round_tick
     x = float(x)
-    d = 2 if x < 50 else (1 if x < 500 else 0)          # 依台股升降單位顯示小數位
+    if x > 0:
+        x = round_tick(x, "near", etf)
+    d = 2 if etf or x < 50 else (1 if x < 500 else 0)
     return f"{x:,.{d}f}"
 
 
@@ -271,11 +349,11 @@ def tone_badge(tone: str) -> str:
     return badge(tone, col)
 
 
-def cards(items) -> str:
-    """items: [(label, value_html, sub_html), ...]"""
+def cards(items, raw: bool = False) -> str:
+    """items: [(label, value_html, sub_html), ...]；raw=True 時 label 可含 HTML（儀表板燈號）。"""
     out = ["<div class='kq-cards'>"]
     for lab, val, sub in items:
-        out.append(f"<div class='kq-card'><div class='l'>{esc(lab)}</div><div class='v'>{val}</div>"
+        out.append(f"<div class='kq-card'><div class='l'>{lab if raw else esc(lab)}</div><div class='v'>{val}</div>"
                    f"<div class='s'>{sub or ''}</div></div>")
     out.append("</div>")
     return "".join(out)

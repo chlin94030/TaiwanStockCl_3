@@ -29,10 +29,18 @@ def parse_mis(payload: dict) -> pd.DataFrame:
     for m in payload.get("msgArray", []) or []:
         last = _num(m.get("z"))
         bid, ask = _num(m.get("b")), _num(m.get("a"))
-        if not np.isfinite(last):                       # 這一筆沒有成交：用最佳買賣價中間值，再退回試撮／昨收
-            last = np.nanmean([bid, ask]) if np.isfinite(bid) or np.isfinite(ask) else _num(m.get("pz"))
+        src = "trade"
+        # v2.2.1 這一瞬間沒有成交（z 為 "-"）：不再用買賣價「中間值」（會出現 31.83、103.8 這種不能下單的價格），
+        # 依序改用 pz（最近成交／試撮價）→ 最佳委買價 → 最佳委賣價；都是有效升降單位的價格，並標記來源
+        if not np.isfinite(last):
+            for nm, v in (("pz", _num(m.get("pz"))), ("bid", bid), ("ask", ask)):
+                if np.isfinite(v):
+                    last, src = v, nm
+                    break
+            else:
+                src = ""
         prev = _num(m.get("y"))
-        rows.append({"ticker": m.get("c", ""), "name": m.get("n", ""), "price": last, "prev": prev,
+        rows.append({"ticker": m.get("c", ""), "name": m.get("n", ""), "price": last, "src": src, "prev": prev,
                      "open": _num(m.get("o")), "high": _num(m.get("h")), "low": _num(m.get("l")),
                      "volume": _num(m.get("v")), "bid": bid, "ask": ask, "limit_up": _num(m.get("u")),
                      "limit_down": _num(m.get("w")), "time": m.get("t") or m.get("%", ""), "date": m.get("d", ""),

@@ -76,6 +76,13 @@ research:
                      g_seg_mom20, g_seg_lag5, g_seg_breadth5]
   overlay:                             # v1.9 研究唯一通過門檻者：以固定 15% 權重加入三個期間的分數（其餘 85% 為原模型）
     f_rev_rel: 0.15                    #   營收年增相對同業：中線 +1.6pp／資訊比率 +0.02、長線 +8.0pp、短線 −0.8pp（容許 1pp 內）
+  momentum_guard:                      # v2.2 研究候選（docs/v2.2_crash_protocol.md）：急跌時動能因子權重減半；未通過門檻 → 關閉
+    enabled: false
+    factors: [t_rs120, t_mom120x20, t_high252]
+    scale: 0.5
+    r20: -0.08                         #   0050 近 20 日 ≤ −8%，或距 120 日高點 ≥ 12% → 急跌狀態
+    dd120: 0.12
+    hold: 0
   score_hypotheses:                    # v1.4：ChatGPT V24 預先宣告的價格領先假說（固定權重）
     PRICE_ALPHA_8_BALANCED: {t_rs120: 0.40, t_mom120x20: 0.25, t_high252: 0.20, t_lowidio: 0.15}
     PRICE_ALPHA_5_LEADERS: {t_rs120: 0.60, t_mom120x20: 0.25, t_high252: 0.15}
