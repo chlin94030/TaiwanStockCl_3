@@ -2067,6 +2067,130 @@ def crash_rates_html(summ: dict) -> str:
                              "60 日後：一次買／分三批"], rows, left=(0,)), "".join(mrows))
 
 
+def ban_html() -> str:
+    """v2.3 限空令：歷次措施之後的大盤與個股（docs/v2.3_protocol.md A）。"""
+    from kosto import review as rv
+    rows, mrows = [], []
+    for e in rv.BAN_HISTORY:
+        src = "研究資料" if e["src"] == "data" else "新聞"
+        r250 = ui.pct(e.get("r250"), 0, color=True) if e.get("r250") is not None else "–"
+        low = f"{ui.pct(e['min60'], 1)}<span class='sub'>（第 {e['low']} 天）</span>" if e.get("min60") is not None else "–"
+        rows.append([f"<b>{ui.esc(e['date'])}</b><div class='sub'>{ui.esc(e['what'])}</div>", ui.pct(e.get("dd"), 0) if e.get("dd") is not None else "–",
+                     ui.pct(e.get("day0"), 1, color=True) if e.get("day0") is not None else "–",
+                     ui.pct(e["r20"], 1, color=True), ui.pct(e["r60"], 1, color=True), r250, low, src])
+        mrows.append(ui.mcard(f"<span class='nm'>{ui.esc(e['date'])}</span>", f"1 季 {ui.pct(e['r60'], 1, color=True)}",
+                              ui.esc(e["what"]),
+                              (f"生效當天 {ui.pct(e['day0'], 1, color=True)}｜" if e.get("day0") is not None else "")
+                              + f"1 個月 {ui.pct(e['r20'], 1, color=True)}" + (f"｜之後再跌 {ui.pct(e['min60'], 1)}" if e.get("min60") is not None else "")))
+    ref = rv.CRASH_E1_REF
+    rows.append(["<span class='kq-muted'>對照：一般急跌（回落 15%、沒有限空，6 次）</span>", "", "", ui.pct(ref["r20"], 1, color=True),
+                 ui.pct(ref["r60"], 1, color=True), "", ui.pct(ref["min60"], 1), "研究資料"])
+    return ui.resp(ui.table(["生效日／措施", "生效前距高點", "生效當天", "之後 1 個月", "之後 1 季", "之後 1 年", "1 季內再跌（最低在第幾天）", "來源"],
+                            rows, left=(0,)), "".join(mrows))
+
+
+def ban_xs_html() -> str:
+    from kosto import review as rv
+    rows, mrows = [], []
+    for nm, *evs in rv.BAN_XS:
+        cells = []
+        for a, b_, c_, t in evs:
+            tt = f"<span class='sub'>（t {t:+.1f}）</span>" if t is not None else ""
+            cells.append(f"{a * 100:+.0f}／{b_ * 100:+.0f}／<b>{c_ * 100:+.0f}</b>{tt}")
+        rows.append([f"<b>{ui.esc(nm)}</b>"] + cells)
+        mrows.append(ui.mcard(f"<span class='nm'>{ui.esc(nm)}</span>", "", "　".join(
+            f"{e}：{x[2] * 100:+.0f}" for e, x in zip(rv.BAN_XS_EVENTS, evs)), "之後 60 日超額（百分點）"))
+    return ui.resp(ui.table(["最高 20% 減最低 20%（百分點）", "2020-03　5／20／60 日", "2022-10", "2025-04（與這次相同）"], rows, left=(0,)),
+                   "".join(mrows))
+
+
+def balance_html() -> str:
+    from kosto import review as rv
+    rows, mrows = [], []
+    fams, facs = B.meta.get("families") or [], B.factors
+    for h in HZ:
+        w = ((RES or {}).get("horizons", {}).get(h, {}).get("latest") or {}).get("weights") or latest(h).get("weights") or {}
+        fs = rv.family_shares(w, facs, fams)
+        if not fs:
+            continue
+        hist = rv.FAMILY_HIST.get(h, {})
+
+        def rng(k):
+            v = hist.get(k)
+            if v is None:
+                return ""
+            lo, hi = (v, v) if not isinstance(v, tuple) else v
+            return f"<span class='sub'>（{lo:.0%}～{hi:.0%}）</span>" if abs(hi - lo) > 0.005 else f"<span class='sub'>（{lo:.0%}）</span>"
+        rows.append([f"<b>{HZ[h]}</b>", f"{fs['T']:.0%}{rng('T')}", f"{fs['F']:.0%}{rng('F')}", f"{fs['C']:.0%}", f"{fs['K']:.0%}",
+                     f"{fs['mom']:.0%}{rng('mom')}", f"{ui.esc(FZH.get(fs['top'], fs['top']))} {fs['top_w']:.0%}"])
+        mrows.append(ui.mcard(f"<span class='nm'>{HZ[h]}</span>", f"技術 {fs['T']:.0%}／基本 {fs['F']:.0%}",
+                              f"籌碼 {fs['C']:.0%}｜科斯托蘭尼 {fs['K']:.0%}｜其中動能 {fs['mom']:.0%}",
+                              f"最大單一因子：{ui.esc(FZH.get(fs['top'], fs['top']))} {fs['top_w']:.0%}"))
+    if not rows:
+        return "<div class='kq-muted'>（下一次每日研究後提供）</div>"
+    return ui.resp(ui.table(["期間", "技術面", "基本面", "籌碼", "科斯托蘭尼", "其中動能", "最大單一因子"], rows, left=(0,)), "".join(mrows))
+
+
+@st.cache_data(show_spinner=False)
+def short_crowded_df(bid) -> pd.DataFrame:
+    from kosto import review as rv
+    return rv.short_crowded(B)
+
+
+def lead_html() -> str:
+    """v2.3 美股前一晚 → 台股（市值前 300 等權）。"""
+    from kosto import review as rv
+    rows = [[f"<b>{ui.esc(b)}</b>", f"{n}", ui.pct(g, 1, color=True), ui.pct(oc, 1, color=True), ui.pct(n5, 1, color=True),
+             f"{ui.pct(n20, 1, color=True)}<span class='sub'>（{u:.0%} 漲）</span>"] for b, n, g, oc, n5, n20, u in rv.LEAD_BUCKETS]
+    mrows = [ui.mcard(f"<span class='nm'>費半 {ui.esc(b)}</span>", f"開盤 {ui.pct(g, 1, color=True)}",
+                      f"開盤→收盤 {ui.pct(oc, 1, color=True)}｜之後 5 日 {ui.pct(n5, 1, color=True)}", f"之後 20 日 {ui.pct(n20, 1, color=True)}（{u:.0%} 漲）｜{n} 天")
+             for b, n, g, oc, n5, n20, u in rv.LEAD_BUCKETS]
+    return ui.resp(ui.table(["費半前一晚", "天數", "台股開盤跳空", "開盤→收盤", "之後 5 日", "之後 20 日"], rows, left=(0,)), "".join(mrows))
+
+
+def lead_section(compact: bool = False) -> None:
+    """v2.3 美股、期貨、ADR 的領先意義（儀表板「觀察重點」與國際盤共用）。"""
+    from kosto import review as rv
+    st.markdown(ui.section("美股、期貨、台積電 ADR：開盤前看什麼", "v2.3 研究：2019-02～2026-10，1,870 個交易日；台股＝市值前 300 等權"),
+                unsafe_allow_html=True)
+    if not compact:
+        st.markdown(lead_html(), unsafe_allow_html=True)
+    ap = adr_premium(BID)
+    adr_txt = ""
+    if ap:
+        dev = ap["last"] - ap["mean60"]
+        adr_txt = (f"目前（{ap['date'][5:].replace('-', '/')} 研究資料）ADR 溢價 {ui.pct(ap['last'], 1, sign=False)}、60 日平均 {ui.pct(ap['mean60'], 1, sign=False)}"
+                   f"（{'偏高' if dev > 0.01 else '偏低' if dev < -0.01 else '接近平均'} {ui.pct(dev, 1)}）。")
+    c = rv.LEAD_CORR[0]
+    st.markdown(ui.panel("結論", ui.bullets([
+        f"<b>前一晚美股幾乎在開盤一次反映</b>：費半與台股開盤跳空的相關 {c[1]:.2f}，開盤後反而小幅回吐（{c[2]:+.2f}），對之後 5～20 日幾乎沒有預測力（{c[3]:+.2f}／{c[4]:+.2f}）。"
+        "→ 模型在隔日開盤成交，美股資訊已在開盤價裡，所以不放進選股；大跌後不必追殺開盤。",
+        "<b>費半大跌（≤ −5%）的隔天</b>：大型股平均開低 2.2%、盤中反而 +0.6%、之後 20 日 +2.0%（59% 上漲，一般日子 67%）→ 開盤殺低後盤中平均小幅回升，但之後一個月比一般日子弱。",
+        "<b>那斯達克期貨</b>：台股盤中與那指期的每小時相關 2026 年升到 0.55～0.62（β 約 1.4，v2.1），盤中可看那指期判斷權值股方向（本頁「盤中止跌觀察」已納入）；"
+        "但這是同步，不是領先。",
+        "<b>台指期夜盤</b>：15:00～隔日 05:00 交易，收在美股收盤之後，幾乎包含前一晚美股全部資訊 → 隔天開盤跳空≈夜盤漲跌，"
+        "是「開盤會怎麼開」最直接的參考；研究資料沒有夜盤歷史，無法另外驗證對選股的價值。",
+        f"<b>台積電 ADR 溢價</b>（平均約 {rv.ADR_PREM['mean']:.0%}）：相對 60 日平均偏高時，台積電隔天開盤平均 {ui.pct(rv.ADR_PREM['hi_gap'], 1)}、之後 20 日 "
+        f"{ui.pct(rv.ADR_PREM['hi_n20'], 1)}（偏低時 {ui.pct(rv.ADR_PREM['lo_gap'], 1)}／{ui.pct(rv.ADR_PREM['lo_n20'], 1)}）；關係弱、只適用台積電。" + adr_txt])),
+        unsafe_allow_html=True)
+
+
+@st.cache_data(show_spinner=False)
+def adr_premium(bid) -> dict:
+    """台積電 ADR 溢價（研究資料）：最新值與 60 日平均（v2.3：溢價相對平均偏高 → 台積電之後偏強，關係弱）。"""
+    keys = B.meta.get("world_keys") or []
+    if "WORLD" not in B.a or "TSM" not in keys or "TWD" not in keys or not HAS_Q or "2330" not in TIDX:
+        return {}
+    W = pd.DataFrame(B.a["WORLD"].astype(float), index=B.days, columns=keys)
+    qd = pd.DatetimeIndex(B.meta["q_days"])
+    c = pd.Series(B.a["Q_C"][:, TIDX["2330"]].astype(float), index=qd).ffill()
+    w = W.reindex(qd)
+    prem = (w["TSM"] * w["TWD"] / 5 / c.shift(1) - 1).where(lambda x: x.abs() < 0.8).dropna()
+    if len(prem) < 40:
+        return {}
+    return {"last": float(prem.iloc[-1]), "mean60": float(prem.tail(60).mean()), "date": str(prem.index[-1].date())}
+
+
 def staged_plan_html(cur, sto, live_checks) -> str:
     """分批計畫：每一批的觸發條件與目前狀態。"""
     dd = cur.get("dd250")
@@ -2151,9 +2275,13 @@ def picks_risk() -> tuple[str, list[str]]:
                          "想降低波動可自行把同產業限制在 2～3 檔。")
     C = B.a.get("Q_C")
     beta_k = FIDX.get("g_us_beta")
+    from kosto import review as rv
+    shs = rv.short_snapshot(B, [TIDX[t] for t in union])
     rows, mrows = [], []
     for t in union:
         j = TIDX[t]
+        sh = shs.get(j) or {}
+        s_ratio, s_inc = sh.get("ratio", np.nan), sh.get("inc10", np.nan)
         c = C[:, j].astype(float) if C is not None else np.array([])
         c = c[np.isfinite(c)]
         r5 = c[-1] / c[-6] - 1 if len(c) > 6 else np.nan
@@ -2162,11 +2290,14 @@ def picks_risk() -> tuple[str, list[str]]:
         tags = "".join(ui.tag(HZ[h]) for h in HZ if t in lists.get(h, []))
         lab = CH.get(t) or {}
         rows.append([stock_cell(t), tags, ui.esc(lab.get("segment") or lab.get("group") or SECTORS[j]), ui.pct(r5, 1, color=True),
-                     ui.pct(d20, 1), f"{beta:.2f}" if ui.ok(beta) else "–"])
+                     ui.pct(d20, 1), f"{beta:.2f}" if ui.ok(beta) else "–", ui.pct(s_ratio, 1, sign=False),
+                     ui.pct(s_inc, 1) if ui.ok(s_inc) else "–"])
         mrows.append(ui.mcard(f"<span class='kq-cd'>{t}</span><span class='nm'>{ui.esc(NAMES[j])}</span> {tags}", ui.pct(r5, 1, color=True),
-                              f"距 20 日高 {ui.pct(d20, 1)}｜對費半 β {beta:.2f}" if ui.ok(beta) else f"距 20 日高 {ui.pct(d20, 1)}",
+                              (f"距 20 日高 {ui.pct(d20, 1)}｜對費半 β {beta:.2f}" if ui.ok(beta) else f"距 20 日高 {ui.pct(d20, 1)}")
+                              + (f"｜券資比 {ui.pct(s_ratio, 1, sign=False)}" if ui.ok(s_ratio) else ""),
                               ui.esc(lab.get("segment") or SECTORS[j])))
-    html = ui.resp(ui.table(["股票", "名單", "族群", "近 5 日", "距 20 日高", "對費半 β"], rows, left=(0, 1, 2)), "".join(mrows))
+    html = ui.resp(ui.table(["股票", "名單", "族群", "近 5 日", "距 20 日高", "對費半 β", "券資比", "融券 10 日增減／均量"], rows, left=(0, 1, 2)),
+                   "".join(mrows))
     return html, notes
 
 
@@ -2383,9 +2514,37 @@ def page_insight():
         st.markdown(ui.panel("模型怎麼因應", ui.bullets([
             f"<b>長線</b>：科斯托蘭尼階段 {ui.esc(STAGE_ZH.get(stage, stage).split(' ')[0])}，模型持股水位 {exp_l:.0%}（B1／B2 自動降到 50%／40%，其餘放現金）。",
             "<b>短線、中線</b>：維持 100% 持股——v1.1、v1.7 實測「依階段或費半跌破百日線降水位」兩段期間都拖累報酬，所以不自動降。",
-            "<b>v2.2 新測試</b>（見「模型體檢」）：急跌時把動能因子權重減半、同產業檔數上限，都沒有通過預先宣告的門檻 → 主模型不改。",
+            "<b>v2.2、v2.3 測試</b>（見「模型體檢」）：急跌時動能權重減半、同產業檔數上限、技術面上限、加入籌碼或券資比，"
+            "都沒有通過預先宣告的門檻 → 主模型不改。",
             "<b>你可以做的</b>：提高 0050 等大盤 ETF 的比例（「資金配置」頁可一鍵套用修正期 +20 個百分點）、名單中同產業不超過 2～3 檔、"
             "新資金照分批計畫進場，並優先看「反彈候選」與模型名單重疊的股票。"])), unsafe_allow_html=True)
+        from kosto import review as rv
+        bn = rv.BAN_2026
+        st.markdown(ui.section("限空令（禁空令）：歷史上有用嗎？",
+                               f"金管會 {bn['announce'][5:].replace('-', '/')} 宣布、{bn['effective'][5:].replace('-', '/')} 起實施（與 2025-04-07 相同）；"
+                               "大盤報酬從生效日收盤起算（與新聞相同基準）"), unsafe_allow_html=True)
+        st.markdown(ui.panel("這次的措施", ui.bullets([ui.esc(m) for m in bn["measures"]])
+                             + f"<div class='kq-muted' style='margin-top:4px'>結束日：{ui.esc(bn['end'])}</div>"), unsafe_allow_html=True)
+        st.markdown(ban_html(), unsafe_allow_html=True)
+        st.markdown(ui.panel("怎麼解讀限空", ui.bullets([
+            "<b>2017 年後 3 次限空，之後 1 季都上漲（+16%～+25%）</b>，比一般急跌（+8%）好；但每次同時有更大的事件"
+            "（2020 聯準會無限 QE、2022 美國通膨見頂、2025 關稅暫緩＋國安基金），而且都在回落 20～30% 的恐慌高點才出手 →"
+            "<b>限空本身不是原因，政府通常在最恐慌時出手，而那常接近低點</b>。",
+            "<b>限空不保證隔天止跌</b>：2025 年同樣的措施生效當天仍跌 9.7%，兩天後才見低點（再跌 9.6%）；2008 年全面禁空後一個月仍跌 20%"
+            "（金融海嘯，基本面持續惡化時擋不住）。",
+            "→ 把限空當成「賣壓會減輕」的加分項，而不是買進訊號；仍照上方分批計畫與止穩檢查進場。"])), unsafe_allow_html=True)
+        st.markdown(ui.section("被空單集中的個股，限空後比較會止穩嗎？",
+                               "成交金額前 500 名，依生效前的融券狀況分五組，比較之後的超額報酬（減 500 檔平均）；t＝控制前 20 日漲跌與市值"),
+                    unsafe_allow_html=True)
+        st.markdown(ban_xs_html(), unsafe_allow_html=True)
+        st.markdown(ui.panel("結論", ui.bullets([
+            "<b>融券餘額大（券資比高）的股票</b>：2020、2022 兩次限空後 1 季多漲約 10 個百分點；<b>但 2025 年（措施與這次相同）幾乎沒有差別</b>。"
+            "2025、2026 的措施主要限制「借券賣出」（法人的主要放空管道），研究資料只有融券（散戶為主），借券的效果無法驗證。",
+            "<b>最近 10 天才被大量放空（被空單狙擊）的股票</b>：沒有比較容易止穩，2020 年反而落後 22 個百分點——空方通常是放空基本面轉弱的股票。",
+            "<b>跌最深的股票</b>：2020、2022 之後反彈最多；2025 年前 1 個月仍是抗跌股較強，3 個月後才換跌深股反彈。",
+            f"<b>平時</b>：券資比高低之後 20 日只差 {rv.SHORT_RATIO_NORMAL['q5q1_20'] * 100:+.1f} 個百分點（勝率 {rv.SHORT_RATIO_NORMAL['win']:.0%}），"
+            "逐年方向正負交替 → 不放進選股模型（v2.3 測試 S1、S2 都未通過）。名單的券資比列在「特別時期選股」供參考。"])),
+            unsafe_allow_html=True)
         cs_ev = (B.meta.get("crash_stats") or {}).get("events") or []
         if cs_ev:
             with st.expander("過去的急跌事件明細"):
@@ -2411,6 +2570,18 @@ def page_insight():
         if notes:
             st.markdown(ui.panel("提醒", ui.bullets(notes)), unsafe_allow_html=True)
         st.markdown(html, unsafe_allow_html=True)
+        st.markdown("<div class='kq-muted' style='margin:2px 2px 10px'>券資比＝融券餘額÷融資餘額；融券 10 日增減以 20 日平均成交量為分母"
+                    "（+20% 代表 10 天內新增的融券相當於兩成的日均量）。v2.3 研究：限空後融券集中股只有 2/3 次較強，近期融券大增的股票沒有比較好。</div>",
+                    unsafe_allow_html=True)
+        sc_df = short_crowded_df(BID)
+        if len(sc_df):
+            with st.expander(f"融券集中股（成交金額前 500 名、融券 ≥500 張，券資比最高 {len(sc_df)} 檔）— 只供參考，不是推薦"):
+                rows = [[stock_cell(B.tickers[r.j]), ui.pct(r.ratio, 1, sign=False), f"{r.sbal:,.0f}", ui.pct(r.inc10, 1) if ui.ok(r.inc10) else "–",
+                         ui.pct(r.r20, 1, color=True), ui.pct(r.d60, 1)] for r in sc_df.itertuples()]
+                st.markdown(ui.table(["股票", "券資比", "融券（張）", "融券 10 日增減／均量", "近 20 日", "距 60 日高"], rows, left=(0,)),
+                            unsafe_allow_html=True)
+                st.caption(f"融資券資料 {(B.meta.get('data_dates') or {}).get('margin') or '–'}。歷史上限空後這類股票 2020、2022 年較強、2025 年沒有差別；"
+                           "資料不含借券賣出餘額。")
         gm = group_moves(BID)
         if len(gm):
             g2 = gm.sort_values("r20", ascending=False)
@@ -2462,13 +2633,40 @@ def page_insight():
             st.markdown(ui.section("搭配 0050 當核心（中線，每月再平衡）", "0050 比例越高：長期報酬較低，但回撤較小、在權值股行情中不容易落後"),
                         unsafe_allow_html=True)
             st.markdown(ui.table(["0050 比例", "年化（2021 起）", "最大回撤", "近 12 月", "目前自高點"], rows, left=(0,)), unsafe_allow_html=True)
-        st.markdown(ui.section("v2.2 預先宣告測試（docs/v2.2_crash_protocol.md）",
+        from kosto import review as rv
+        st.markdown(ui.section("因子權重平衡", "目前權重（每日研究）中各家族的占比；括號為 2021 年以來每 6 個月重估一次的範圍"),
+                    unsafe_allow_html=True)
+        st.markdown(balance_html(), unsafe_allow_html=True)
+        st.markdown(ui.panel("平衡檢查結論", ui.bullets([
+            "<b>沒有隨時間往某一邊偏移</b>：2021 年以來 12 次重估，短中線都是技術面約 48%、基本面約 52%；長線技術面 55～61%。"
+            "每次重估都用到當時為止的全部歷史（2019 年起）並向先驗收縮，所以不會追著最近一兩季的行情跑。",
+            "<b>最大的集中是「動能」</b>（相對強度、120 日動能、一年新高，中線約 41%、長線約 60%）——這是 7 月與 11 月初回落比大盤深的原因。"
+            "v2.2「急跌時動能減半」與 v2.3「技術面上限 45%」都只多不到 1 個百分點、回撤改善不到 2 個百分點 → 歷史資料不支持調低。",
+            "<b>籌碼面權重為 0</b>：外資、投信、融資券在中線的 IC 多半是反向且不穩定；v2.3 加入籌碼 15% 中線變好、但長線少 8 個百分點 → 未通過。",
+            "<b>想要更平衡，比改因子更有效的是配置</b>：中線搭配 0050 30%，最大回撤由 −37% 降到 −33%（上表）。"])), unsafe_allow_html=True)
+        st.markdown(ui.section("急跌時哪些因子還有效？", "中線因子的平均 IC：一般時期 vs 急跌狀態（0050 近 20 日 ≤ −8% 或距 120 日高 ≥ 12%，2019 年後 48 個換股日）"),
+                    unsafe_allow_html=True)
+        rows = [[ui.esc(nm), rv.FAMILY_ZH[f], f"{a:+.3f}", f"<b style='color:{ui.UP if b_ > 0 else ui.DOWN}'>{b_:+.3f}</b>"] for nm, f, a, b_ in rv.PANIC_IC]
+        st.markdown(ui.table(["因子", "家族", "一般時期", "急跌時"], rows, left=(0, 1)), unsafe_allow_html=True)
+        st.caption("急跌時「接近新高、低波動、高殖利率」失效，「營收動能」更有效。這正是 B1（急跌時動能減半）想利用的現象，但開發期只多 0.6 個百分點、未達門檻。")
+        st.markdown(ui.section("預先宣告測試（docs/v2.2_crash_protocol.md、docs/v2.3_protocol.md）",
                                "五種換股日、2021–2025 開發期；單位：百分點（資訊比率為差值）；與 v1.9 相同的採用門檻"), unsafe_allow_html=True)
         st.markdown(ui.table(["候選", "中線超額", "中線 IR", "中線回撤改善", "短線超額", "長線超額", "判定"],
-                             [[f"<b>{a}</b>", b, c_, d, e, f, g] for a, b, c_, d, e, f, g in V22_TESTS], left=(0, 6)), unsafe_allow_html=True)
+                             [[f"<b>{a}</b>", b, c_, d, e, f, g] for a, b, c_, d, e, f, g in V22_TESTS + rv.V23_TESTS], left=(0, 6)),
+                    unsafe_allow_html=True)
+        with st.expander("歷次想法總檢視（v1.1～v2.3）：每個想法對模型的影響"):
+            rows = [[ui.esc(v), ui.esc(i), ui.esc(src), ui.esc(tp), ui.esc(res), ("<b>" if st_.startswith("✅") else "") + ui.esc(st_)
+                     + ("</b>" if st_.startswith("✅") else ""), ui.esc(imp)] for v, i, src, tp, res, st_, imp in rv.IDEAS]
+            st.markdown(ui.table(["版本", "想法", "來源", "類型", "驗證結果", "狀態", "對模型的影響"], rows, left=(1, 2, 3, 4, 5, 6)),
+                        unsafe_allow_html=True)
+            n_user = sum(1 for x in rv.IDEAS if x[2] == "使用者提問")
+            n_user_ok = sum(1 for x in rv.IDEAS if x[2] == "使用者提問" and x[5].startswith("✅"))
+            st.caption(f"使用者提問引發的 {n_user} 組想法中，{n_user_ok} 組改變了主模型；其餘都轉為儀表板、燈號、提醒等資訊顯示。"
+                       "主模型最後一次調整是 v1.9（營收優於同業 15%）；完整說明見 docs/v2.3_model_review.md。")
 
     with tabs["🧭 觀察重點"]:
         st.markdown(insight_focus(df, sto, f5, t5, mchg, sox_dd), unsafe_allow_html=True)
+        lead_section()
         with st.expander("模型裡原本就有的「跌深／止跌」設計"):
             st.markdown(ui.bullets([
                 "短期反轉因子「近 5 日跌多」（t_rev5）：在短線候選池中，由每日研究決定是否使用。",
@@ -2800,6 +2998,7 @@ def page_world():
             "夜盤時段 美東 21:00–04:00 ＝ 台北 10:00–17:00（冬令）／09:00–16:00（夏令），會與台股交易時間重疊。"
             "影響：台積電 ADR、美股科技股將在台股盤中即時交易，「隔夜跳空」可能縮小、改為盤中同步波動；"
             "本系統每日收盤後選股、隔日開盤執行的設計不受影響，盤中可多參考本頁的期貨／ADR 報價。"]), unsafe_allow_html=True)
+    lead_section(compact=True)
     ov = ls.get("overnight")
     if ov is not None and len(ov):
         with st.expander("明細：前一夜費半漲跌 → 台股隔日平均表現", expanded=False):
