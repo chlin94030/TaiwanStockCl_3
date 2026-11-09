@@ -24,28 +24,53 @@ def _num(x):
     return v if v > 0 else np.nan
 
 
+def _levels(x) -> list[float]:
+    """五檔價格 '0.0000_132.5000_132.0000_' → [0.0, 132.5, 132.0]；0＝市價委託（漲跌停鎖住時常排在最前面）。"""
+    out = []
+    for s_ in str(x or "").split("_"):
+        try:
+            v = float(s_)
+        except ValueError:
+            continue
+        if np.isfinite(v) and v >= 0:
+            out.append(v)
+    return out
+
+
 def parse_mis(payload: dict) -> pd.DataFrame:
     rows = []
     for m in payload.get("msgArray", []) or []:
         last = _num(m.get("z"))
-        bid, ask = _num(m.get("b")), _num(m.get("a"))
+        bl, al = _levels(m.get("b")), _levels(m.get("a"))
+        bid = next((v for v in bl if v > 0), np.nan)
+        ask = next((v for v in al if v > 0), np.nan)
+        up, dn = _num(m.get("u")), _num(m.get("w"))
         src = "trade"
-        # v2.2.1 這一瞬間沒有成交（z 為 "-"）：不再用買賣價「中間值」（會出現 31.83、103.8 這種不能下單的價格），
-        # 依序改用 pz（最近成交／試撮價）→ 最佳委買價 → 最佳委賣價；都是有效升降單位的價格，並標記來源
+        # v2.2.1 這一瞬間沒有成交（z 為 "-"）：不用買賣「中間值」（31.83、103.8 這種不能下單的價格），
+        # 依序改用 pz（最近成交／試撮價）→ 漲跌停鎖住 → 最佳委買價 → 最佳委賣價。
+        # v2.3.1 漲跌停鎖住時委買（委賣）第一檔常是「市價」（0），舊版因此取不到價格、整檔改顯示前一日收盤 → 現在跳過 0、
+        # 並在「買方在漲停價（或市價）、沒有賣方」時直接以漲停價為現價（跌停反之）。
         if not np.isfinite(last):
-            for nm, v in (("pz", _num(m.get("pz"))), ("bid", bid), ("ask", ask)):
+            lock_up = np.isfinite(up) and not np.isfinite(ask) and (bool(bl) and bl[0] == 0 or (np.isfinite(bid) and bid >= up - 1e-9))
+            lock_dn = np.isfinite(dn) and not np.isfinite(bid) and (bool(al) and al[0] == 0 or (np.isfinite(ask) and ask <= dn + 1e-9))
+            tz = _num((m.get("trade") or {}).get("z")) if isinstance(m.get("trade"), dict) else np.nan   # 最近一筆成交（2026 新欄位）
+            for nm, v in (("pz", _num(m.get("pz"))), ("trade", tz), ("limit_up", up if lock_up else np.nan), ("limit_down", dn if lock_dn else np.nan),
+                          ("bid", bid), ("ask", ask)):
                 if np.isfinite(v):
                     last, src = v, nm
                     break
             else:
                 src = ""
         prev = _num(m.get("y"))
+        lock = ("up" if np.isfinite(up) and np.isfinite(last) and last >= up - 1e-9 else
+                "down" if np.isfinite(dn) and np.isfinite(last) and last <= dn + 1e-9 else "")
         rows.append({"ticker": m.get("c", ""), "name": m.get("n", ""), "price": last, "src": src, "prev": prev,
                      "open": _num(m.get("o")), "high": _num(m.get("h")), "low": _num(m.get("l")),
-                     "volume": _num(m.get("v")), "bid": bid, "ask": ask, "limit_up": _num(m.get("u")),
-                     "limit_down": _num(m.get("w")), "time": m.get("t") or m.get("%", ""), "date": m.get("d", ""),
+                     "volume": _num(m.get("v")), "bid": bid, "ask": ask, "limit_up": up, "limit_down": dn, "lock": lock,
+                     "time": m.get("t") or m.get("%", ""), "date": m.get("d", ""),
                      "chg": (last / prev - 1) if np.isfinite(last) and np.isfinite(prev) and prev > 0 else np.nan})
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    return df.drop_duplicates("ticker", keep="last") if len(df) else df
 
 
 def channel(ticker: str, board: str) -> str:

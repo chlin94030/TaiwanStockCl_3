@@ -39,6 +39,7 @@ class Plan:
     rsi: float
     bias20: float
     hot: bool               # 短線過熱（RSI>80 或 月線乖離>15%）
+    base_from: float = np.nan   # v2.3.2 依今日參考價換算時，原本計畫的收盤價（未換算＝NaN）
 
     def as_dict(self):
         return self.__dict__.copy()
@@ -76,6 +77,19 @@ def trade_plan(ind: pd.DataFrame, horizon: str) -> Plan | None:
     hot = bool((np.isfinite(rs) and rs > 80) or (np.isfinite(bias) and bias > 0.15))
     return Plan(c, round_tick(buy_low, "down"), round_tick(buy_high, "down"), round_tick(chase, "down"),
                 round_tick(alert, "down"), round_tick(support, "down"), round_tick(resist, "up"), ap, rs, bias, hot)
+
+
+def rebase(p: Plan | None, ref: float) -> Plan | None:
+    """v2.3.2 盤前／盤中以「今天的參考價」為基準：
+    計畫是用研究資料最後一天的收盤算的；若今天證交所的參考價（昨收；除權息日為除權息參考價）與它不同
+    （除權息、或研究資料不是前一個交易日），所有價位依比例換算並重新對齊升降單位。相同時原樣回傳。"""
+    r = _f(ref)
+    if p is None or not np.isfinite(r) or r <= 0 or not np.isfinite(p.close) or p.close <= 0 or abs(r / p.close - 1) < 5e-4:
+        return p
+    k = r / p.close
+    return Plan(r, round_tick(p.buy_low * k, "down"), round_tick(p.buy_high * k, "down"), round_tick(p.chase * k, "down"),
+                round_tick(p.alert * k, "down"), round_tick(p.support * k, "down"), round_tick(p.resist * k, "up"),
+                p.atr_pct, p.rsi, p.bias20, p.hot, base_from=p.close)
 
 
 # ------------------------------------------------------------------ 盤中狀態

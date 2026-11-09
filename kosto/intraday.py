@@ -158,7 +158,8 @@ def merge_live(d: dict | None, q: dict | None, now: pd.Timestamp | None = None) 
     q：quotes.parse_mis 的一列（price、prev、open、high、low、date=YYYYMMDD、time=HH:MM:SS）。"""
     if not q or not np.isfinite(_f(q.get("price"))):
         return d
-    trade = str(q.get("src", "trade") or "trade") in ("trade", "pz")    # 委買／委賣價不是成交價 → 不接在走勢上
+    # 委買／委賣價不是成交價 → 不接在走勢上；漲跌停鎖住時成交都在漲跌停價 → 視同成交價
+    trade = str(q.get("src", "trade") or "trade") in ("trade", "pz", "limit_up", "limit_down")
     now = now if now is not None else pd.Timestamp.now(tz=TZ).tz_localize(None)
     try:
         day = pd.Timestamp(str(q.get("date") or now.date())).date()
@@ -170,6 +171,8 @@ def merge_live(d: dict | None, q: dict | None, now: pd.Timestamp | None = None) 
     qt = min(max(qt, s0), s1)
     px, prev = float(q["price"]), _f(q.get("prev"))
     if d is None or d["date"] < day:                 # Yahoo 還沒有今天的分時 → 只用開盤與最新價兩點
+        if not trade:                                # 只有委買／委賣（還沒有成交）→ 不能畫成今天的走勢
+            return d
         o = _f(q.get("open"))
         pts = [(s0, o)] if np.isfinite(o) and qt > s0 else []
         pts.append((qt, px))
@@ -234,3 +237,50 @@ def status(d: dict, now: pd.Timestamp | None = None) -> str:
     if d["start"] <= now <= d["end"] + pd.Timedelta(minutes=5):
         return f"盤中 {d['time']:%H:%M}"
     return f"{pd.Timestamp(d['date']):%m/%d} 收盤"
+
+
+def best_quote(q: dict | None, d: dict | None, close: float, chg: float, research_day, etf: bool = False, today=None) -> dict:
+    """v2.3.1 顯示用的現價（所有頁面同一套規則，避免「走勢圖是今天、價格卻是前一個交易日」）：
+      1. 證交所即時（成交價／試撮價／漲跌停鎖住價／委買／委賣，src 標明來源）
+      2. 今天的分時（Yahoo，可能延遲數分鐘）——證交所這一刻沒有給價格時
+      3. 研究資料的收盤（標明日期，例如「11/06 收盤」）
+    回傳 px、chg、prev（今天的參考價＝證交所昨收，除權息日為除權息參考價）、src、live（是否為比研究資料新的價格）、
+    lock（up／down／""）、label、date、open／high／low、volume（張）。"""
+    from .ta import limit_prices
+    out = _best_quote(q, d, close, chg, research_day, etf, limit_prices)
+    td = pd.Timestamp(today).date() if today is not None else pd.Timestamp.now(tz=TZ).date()
+    if out["live"] and out.get("date") is not None and out["date"] < td and out["src"] not in ("bid", "ask"):
+        out["label"] = f"{pd.Timestamp(out['date']):%m/%d} 收盤"          # 例：隔天開盤前看到的是前一日的收盤，不是今天的報價
+    return out
+
+
+def _best_quote(q, d, close, chg, research_day, etf, limit_prices) -> dict:
+    rd = pd.Timestamp(research_day).date() if research_day is not None else None
+    qd = None
+    if q:
+        try:
+            qd = pd.Timestamp(str(q.get("date") or "")).date() if q.get("date") else None
+        except (ValueError, TypeError):
+            qd = None
+    # 證交所報價的日期不比研究資料新（例如晚上研究已更新、或隔天開盤前證交所還是前一日的資料）→ 不是「今天的新價格」
+    if q and np.isfinite(_f(q.get("price"))) and not (qd is not None and rd is not None and qd <= rd):
+        px = float(q["price"])
+        prev = _f(q.get("prev"))
+        if not np.isfinite(prev) and d is not None:
+            prev = _f(d.get("prev"))
+        src = str(q.get("src") or "trade")
+        return {"px": px, "prev": prev, "chg": px / prev - 1 if np.isfinite(prev) and prev > 0 else np.nan, "src": src, "live": True,
+                "date": qd,
+                "lock": str(q.get("lock") or ""), "label": {"bid": "委買價", "ask": "委賣價"}.get(src, ""),
+                "open": _f(q.get("open")), "high": _f(q.get("high")), "low": _f(q.get("low")), "volume": _f(q.get("volume"))}
+    if d is not None and (rd is None or d["date"] > rd) and np.isfinite(_f(d.get("last"))) and _f(d.get("prev")) > 0:
+        px, prev = float(d["last"]), float(d["prev"])
+        up, dn = limit_prices(prev, etf)
+        lock = "up" if np.isfinite(up) and px >= up - 1e-9 else ("down" if np.isfinite(dn) and px <= dn + 1e-9 else "")
+        vol = np.nansum(np.asarray(d.get("vol"), float)) / 1000 if d.get("vol") is not None and np.isfinite(d["vol"]).any() else np.nan
+        return {"px": px, "prev": prev, "chg": px / prev - 1, "src": "yahoo", "live": True, "lock": lock, "date": d["date"],
+                "label": "分時・可能延遲", "open": _f(d.get("open")), "high": _f(d.get("high")), "low": _f(d.get("low")),
+                "volume": vol if vol and vol > 0 else np.nan}
+    lab = f"{pd.Timestamp(rd):%m/%d} 收盤" if rd is not None else "收盤"
+    return {"px": _f(close), "prev": np.nan, "chg": _f(chg), "src": "close", "live": False, "lock": "", "label": lab, "date": rd,
+            "open": np.nan, "high": np.nan, "low": np.nan, "volume": np.nan}

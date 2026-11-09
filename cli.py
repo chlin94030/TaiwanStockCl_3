@@ -96,7 +96,7 @@ def cmd_research(a, cfg):
         log("使用自動晉級後的模型：" + "；".join(f"{h} {T.describe(p)}" for h, p in prev["champions"].items()))
     R = Research(B, cfg_eff, log=log)
     hz = a.horizons.split(",") if a.horizons else list(HORIZON_KEYS)
-    res = R.run_all(hz, quick=a.quick, progress=log)
+    res = R.run_all(hz, quick=a.quick, progress=log, prev_pools=prev.get("pools"))
     auto = dict(prev)
     if (not a.quick and cfg["research"].get("phase_check", True) and not B.meta.get("synthetic")
             and (Path(cfg["data"]["dir"]) / "raw" / "price").is_dir()):
@@ -118,6 +118,7 @@ def cmd_research(a, cfg):
                 if x["date"] == res["protocol"]["last_date"]:
                     log(f"★ {x['h']} 自動換上新模型（明天起生效）：{x['text']}")
     res["auto"] = T.log_picks(auto, res)
+    res["auto"]["pools"] = T.pool_state(prev.get("pools"), res)        # v2.4 母池沿用狀態（隔天讀回）
     res["data_status"] = data_status(B, res)
     try:
         res["linkage_ic"] = linkage_ic(R, res)                       # v2.1 連動因子逐年有效性（監控用，不進模型）

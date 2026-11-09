@@ -99,6 +99,35 @@ def _tick_down(p: float):
     return float(v) if np.isfinite(v) else None
 
 
+def choose_pool(pt: pd.DataFrame, inc: dict | None, margin: float) -> tuple[str, int, dict]:
+    """v2.4 母池選擇：今天綜合分數第一名；但前一天的母池（inc）與第一名相差不到 margin 時沿用前一天的。"""
+    best = pt.iloc[0]
+    rule, size = str(best["rule"]), int(best["size"])
+    note = {"best": f"{rule}{size}", "best_score": float(best["score"]), "kept": False, "margin": float(margin)}
+    if margin > 0 and inc and inc.get("rule") is not None:
+        m = pt[(pt["rule"] == inc["rule"]) & (pt["size"].astype(int) == int(inc.get("size", -1)))]
+        if len(m) and (rule, size) != (inc["rule"], int(inc["size"])) and float(best["score"]) - float(m.iloc[0]["score"]) < margin:
+            rule, size = str(inc["rule"]), int(inc["size"])
+            note.update(kept=True, kept_score=float(m.iloc[0]["score"]))
+    note["chosen"] = f"{rule}{size}"
+    return rule, size, note
+
+
+def _plan_alert(B, j: int, h: str, i: int):
+    """v2.3.2 推薦表的警戒價改用交易計畫（plan.trade_plan：短線 −2×ATR 最多 −7%、中線 −3×ATR 最多 −10%、長線 −4×ATR 最多 −15%），
+    與 App 卡片、盤中監控、操作指南一致；看盤資料包沒有這一天時退回固定比例（設定檔 alert_loss）。只用於顯示，不影響選股。"""
+    try:
+        from . import ta
+        from .plan import trade_plan
+        df = ta.stock_frame(B, j)
+        if df.empty or df.index[-1] != pd.Timestamp(B.sig_dates[i]):
+            return None
+        pl = trade_plan(ta.indicators(df), h)
+        return float(pl.alert) if pl is not None and np.isfinite(pl.alert) else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 class Research:
     def __init__(self, B: Bundle, cfg: dict, log=print):
         self.B, self.cfg, self.log = B, cfg, log
@@ -233,7 +262,13 @@ class Research:
         for f, s_ in ov.items():
             d = REGISTRY[f].direction if f in REGISTRY else 1
             w[self.B.factors.index(f)] += s_ * (d or 1)
-        return replace(fit, weights=w.astype(np.asarray(fit.weights).dtype))
+        # v2.4 族群占比改用「疊加後」的實際權重（舊版沿用疊加前，報告寫技術面 57%，實際用來選股的是 48%）
+        fams = list(self.B.meta.get("families") or [])
+        a = np.abs(w)
+        fam = {k: float(a[[i for i, f_ in enumerate(fams) if f_ == k]].sum() / max(a.sum(), 1e-12))
+               for k in ("T", "C", "F", "K") if k in fams} if len(fams) == len(w) else fit.family
+        fam = {k: v_ for k, v_ in fam.items() if v_ > 1e-9} if isinstance(fam, dict) else fam
+        return replace(fit, weights=w.astype(np.asarray(fit.weights).dtype), family=fam)
 
     def _sp(self, v: Variant) -> dict:
         return {"k": v.k, "tmin": v.tmin, "kK": v.kK, "lamK": v.lamK, "anchor": v.anchor,
@@ -474,12 +509,13 @@ class Research:
             st = int(B.a["STAGE"][i, j])
             close = float(B.a["CLOSE"][i, j])
             stop = spec.stop_loss or self.cfg["horizons"][h].get("alert_loss")
+            alert = _plan_alert(B, j, h, i)            # v2.3.2 與 App 卡片、操作指南同一套警戒價（ATR）
             return {"ticker": B.tickers[j], "name": B.meta["names"][j], "sector": B.meta["sectors"][j],
                     "close": close, "score": float(smap.get(j, np.nan)), "stage": STAGE_NAMES[st],
                     "kept": j in prev, "w_support": bool(B.a["WSUP"][i, j]),
                     "reasons": [f"{factor_phrase(B, f, Z[k][f])}(+{contrib[f]:.3f})" for f in top if contrib[f] > 0],
                     "risk": [f"{factor_phrase(B, f, Z[k][f])}({contrib[f]:.3f})" for f in neg if contrib[f] < 0],
-                    "stop_price": _tick_down(close * (1 - stop)) if stop else None}
+                    "stop_price": alert if alert is not None else (_tick_down(close * (1 - stop)) if stop else None)}
 
         blocked = []
         top_all = idx[np.argsort(-(Z @ fit.weights))][:30] if len(idx) else []
@@ -708,7 +744,7 @@ class Research:
         return g.reset_index()
 
     # ------------------------------------------------------------------ full pipeline
-    def run_all(self, horizons=HORIZON_KEYS, quick=False, progress=print) -> dict:
+    def run_all(self, horizons=HORIZON_KEYS, quick=False, progress=print, prev_pools: dict | None = None) -> dict:
         t0 = time.time()
         out = {"meta": {k: self.B.meta[k] for k in ("version", "built", "synthetic", "data_quality")},
                "protocol": {"first_oos": str(self.B.sig_dates[min(self.first_oos, self.S - 1)].date()),
@@ -727,7 +763,12 @@ class Research:
             pt = self.pool_study(h, rules, sizes, progress)
             best = pt.iloc[0]
             rule, size = best["rule"], int(best["size"])
-            progress(f"{h} 選定母池 {rule}{size}")
+            # v2.4 母池沿用：前一天選定的母池，只要綜合分數與今天第一名相差不到 pool_keep_margin 就繼續用
+            # （舊版每天直接取第一名，前幾名分數常只差 0.01～0.05，短中線母池在 ADV500／BLEND500／MCAP500 之間來回切換）
+            margin = float(self.cfg["research"].get("pool_keep_margin", 0.0) or 0.0)
+            rule, size, pool_note = choose_pool(pt, None if quick else (prev_pools or {}).get(h), margin)
+            progress(f"{h} 選定母池 {rule}{size}" + (f"（沿用；今日第一名 {pool_note['best']} 只多 "
+                                                   f"{pool_note['best_score'] - pool_note['kept_score']:.3f} 分）" if pool_note["kept"] else ""))
             vt = self.variant_study(h, rule, size, progress)
             kv = vt[~vt["is_baseline"]].sort_values("score", ascending=False)
             if self.cfg["research"].get("lock_model", False):
@@ -736,6 +777,7 @@ class Research:
             else:
                 v = next(x for x in self.variants(h) if x.name == kv.iloc[0]["variant"])
             out["horizons"][h] = self.horizon_block(h, rule, size, v, pt, vt)
+            out["horizons"][h]["pool_note"] = pool_note
             ev = out["horizons"][h]["eval"]
             progress(f"{h} 完成：開發期CAGR {ev.get('dev_cagr', np.nan):.1%}，盲測CAGR {ev.get('hold_cagr', np.nan):.1%} "
                      f"({time.time()-t0:.0f}s)")

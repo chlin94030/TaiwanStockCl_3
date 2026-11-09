@@ -348,8 +348,26 @@ def plan_of(j, h):
     return planlib.trade_plan(ind_frame(BID, j, "D"), h) if HAS_Q else None
 
 
+def exec_day() -> str:
+    """名單的執行日：研究資料日之後的平日＝今天（例：11/06 名單、11/09 盤中看 → 今天開盤）；否則下一個交易日。"""
+    now = pd.Timestamp.now(tz="Asia/Taipei").tz_localize(None)
+    return f"今天 {now:%m/%d}" if now.normalize() > RDAY.normalize() and now.weekday() < 5 else "下個交易日"
+
+
+def plan_today(j, h, bq=None):
+    """v2.3.2 交易計畫以「前一個交易日收盤」為基準：研究資料就是前一個交易日時原樣使用；
+    今天有新報價、且證交所參考價與計畫收盤不同（除權息、或研究資料落後）→ 依參考價等比例換算（plan.rebase）。"""
+    pl = plan_of(j, h)
+    if pl is not None and bq and bq.get("live") and ui.ok(bq.get("prev")):
+        pl = planlib.rebase(pl, bq["prev"])
+    return pl
+
+
 def last_close(j):
+    """研究資料最後一天的收盤與漲跌幅。v2.3.2：有參考價（Q_RF）時用「收盤÷參考價」，除權息日不會顯示成假跌幅。"""
     df = raw_frame(BID, j)
+    if len(df) >= 1 and "ref" in df and ui.ok(df["ref"].iloc[-1]) and df["ref"].iloc[-1] > 0:
+        return float(df["close"].iloc[-1]), float(df["close"].iloc[-1] / df["ref"].iloc[-1] - 1)
     if len(df) >= 2:
         return float(df["close"].iloc[-1]), float(df["close"].iloc[-1] / df["close"].iloc[-2] - 1)
     if len(df) == 1:
@@ -399,6 +417,35 @@ def quotes_for(tickers) -> tuple[pd.DataFrame, str]:
 
 def is_live_time():
     return market_phase() in ("盤中", "盤前試撮")
+
+
+RDAY = pd.Timestamp(B.meta["q_days"][-1]) if HAS_Q else pd.Timestamp(B.sig_dates[-1])     # 研究資料（收盤價）的日期
+
+
+def now_quote(t, d=None, q=None) -> dict:
+    """v2.3.1 所有頁面共用的現價：證交所即時 → 今天的分時 → 研究資料收盤（標日期）。見 intraday.best_quote。"""
+    j = TIDX[t]
+    close, ch = last_close(j)
+    df = raw_frame(BID, j)
+    rd = df.index[-1] if len(df) else RDAY                     # 這檔最後有收盤的日期（暫停交易的股票可能比研究資料日舊）
+    row = q.loc[t].to_dict() if q is not None and len(q) and t in q.index else None
+    bq = IDY.best_quote(row, d, close, ch, rd, etf=False)
+    if bq["live"] and market_phase() == "盤前試撮":            # 8:30–9:00 是試撮，不是成交
+        bq["label"] = "盤前試撮"
+    return bq
+
+
+def quote_tags(bq) -> str:
+    """現價旁的小標籤：漲停／跌停、委買價／委賣價、分時（可能延遲）、MM/DD 收盤。"""
+    out = ""
+    if bq.get("lock") == "up":
+        out += f"<span class='kq-lock up'>漲停</span>"
+    elif bq.get("lock") == "down":
+        out += f"<span class='kq-lock dn'>跌停</span>"
+    if bq.get("label"):
+        out += (f"<span class='kq-sub' style='display:block;font-size:10.5px;font-weight:400;line-height:1.3'>"
+                f"{ui.esc(bq['label'])}</span>")
+    return out
 
 
 K = int(CFG0["horizons"]["mid"].get("top_k") or CFG0["research"]["top_k"])
@@ -641,6 +688,11 @@ def taiex_now() -> dict:
         if len(q) and ui.ok(q["price"].iloc[0]):
             out = {"px": float(q["price"].iloc[0]), "chg": float(q["chg"].iloc[0]), "live": True,
                    "date": pd.Timestamp.now(tz="Asia/Taipei").normalize().tz_localize(None), "time": q["time"].iloc[0]}
+        else:                                                   # v2.3.1 證交所取不到 → 用今天的加權分時（Yahoo），不顯示前一日的漲跌
+            d = taiex_intraday()
+            if d is not None and (not out or pd.Timestamp(d["date"]) > out["date"]) and d["prev"] > 0:
+                out = {"px": float(d["last"]), "chg": float(d["last"] / d["prev"] - 1), "live": True,
+                       "date": pd.Timestamp(d["date"]), "time": f"{d['time']:%H:%M}"}
     return out
 
 
@@ -861,6 +913,9 @@ def plan_html(p, h) -> str:
             ("RSI／月線乖離", f"{p.rsi:.0f} ／ {ui.pct(p.bias20, 1)}" if ui.ok(p.rsi) else "–", "var(--text)")]
     out = "".join(f"<div style='display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px dashed var(--line)'>"
                   f"<span class='kq-muted'>{a}</span><span class='kq-mono' style='color:{c}'>{b}</span></div>" for a, b, c in rows)
+    if ui.ok(getattr(p, "base_from", np.nan)):
+        out += (f"<div style='margin-top:6px;color:#fbbf24;font-size:12.5px'>已依今日參考價 {ui.price(p.close)} 換算"
+                f"（研究資料收盤 {ui.price(p.base_from)}；除權息或研究資料不是前一個交易日）</div>")
     if p.hot:
         out += "<div style='margin-top:6px;color:#fbbf24;font-size:12.5px'>⚠ 短線過熱：只用小部位分批，避免一次追滿</div>"
     out += (f"<div class='kq-muted' style='margin-top:6px'>出場：{HZ[h]}依模型{planlib.CHECK_EVERY[h]}檢查；"
@@ -1050,24 +1105,27 @@ def stock_view(j, h="mid", key="sv"):
     c = CH.get(t, {})
     close, ch = last_close(j)
     live_html = ""
-    if is_live_time():
+    bq = None
+    if market_phase() in ("盤前試撮", "盤中", "盤後"):                 # 收盤後到晚上研究更新前也顯示今天的收盤
         q, _ = quotes_for([t])
-        if t in q.index and ui.ok(q.loc[t, "price"]):
-            src = str(q.loc[t, "src"]) if "src" in q.columns else "trade"
-            live_html = (f"<span class='kq-item'>{'即時' if src in ('trade', 'pz') else ('委買' if src == 'bid' else '委賣')}"
-                         f"<b>{ui.price(q.loc[t, 'price'])}</b> {ui.chg(q.loc[t, 'chg'])}"
-                         f" <span class='kq-muted'>{q.loc[t, 'time']}</span></span>")
+        bq = now_quote(t, tw_intraday([t]).get(t), q)
+        if bq["live"]:
+            nm = {"bid": "委買", "ask": "委賣", "yahoo": "分時"}.get(bq["src"], "即時" if is_live_time() else "今日收盤")
+            tm = q.loc[t, "time"] if bq["src"] not in ("yahoo",) and t in q.index else "可能延遲"
+            lock = {"up": " <span class='kq-lock up'>漲停</span>", "down": " <span class='kq-lock dn'>跌停</span>"}.get(bq["lock"], "")
+            live_html = (f"<span class='kq-item'>{nm}<b>{ui.price(bq['px'])}</b> {ui.chg(bq['chg'])}{lock}"
+                         f" <span class='kq-muted'>{ui.esc(tm)}</span></span>")
     themes = "".join(ui.tag(x, "g") for x in c.get("themes", []))
     st.markdown(f"<div class='kq-bar'><span style='font-size:20px;font-weight:700;color:var(--strong)'>{ui.esc(NAMES[j])}</span>"
                 f"<span class='kq-mono' style='color:var(--accent);font-size:18px'>{t}</span>"
                 f"<span class='kq-item'>{BOARD_ZH.get(BOARDS[j], '')}</span>"
-                f"<span class='kq-item'>收盤<b>{ui.price(close)}</b> {ui.chg(ch)}</span>{live_html}"
+                f"<span class='kq-item'>{RDAY:%m/%d} 收盤<b>{ui.price(close)}</b> {ui.chg(ch)}</span>{live_html}"
                 f"<span>{ui.tag(c.get('group', SECTORS[j]), 'gold')}<span class='kq-muted'> {ui.esc(c.get('segment', ''))}</span> {themes}</span>"
                 "</div>", unsafe_allow_html=True)
     if not HAS_Q:
         st.info("看盤資料包（K 線、籌碼）會在更新到 v1.6 後的第一次每日研究產生，約 1 小時後重新整理即可。")
         return
-    p = plan_of(j, h)
+    p = plan_today(j, h, bq)
     c1, c2, c3 = st.columns([1.05, 1.25, 1])
     c1.markdown(ui.panel(f"交易計畫（{HZ[h]}）", plan_html(p, h)), unsafe_allow_html=True)
     c2.markdown(ui.panel("籌碼動向｜三大法人・融資券・大戶", chips_html(chips(BID, j))), unsafe_allow_html=True)
@@ -1141,15 +1199,22 @@ def card_chart(j, mode: str, d=None) -> str:
     return ui.trend_mini(df["close"].tail(n + 1).tolist(), period=lab) if len(df) > 5 else ""
 
 
-def pick_card(it, mode: str = "m3", d=None) -> str:
+def pick_card(it, mode: str = "m3", d=None, q=None) -> str:
     t, j, pl = it["t"], it["j"], it["pl"]
     c = CH.get(t, {})
-    status = ui.badge("續抱", "#5b21b6") if it["kept"] else ui.badge("新進・明日買", "#1d4ed8")
+    status = ui.badge("續抱", "#5b21b6") if it["kept"] else ui.badge("新進・" + ("今天買" if exec_day().startswith("今天") else "下個交易日買"), "#1d4ed8")
     tone = ui.tone_badge(it["cs"].get("tone", "中性")) if it["cs"] else ""
-    px, ch, tag = it["close"], it["ch"], ""
-    if d is not None and d["date"] > B.sig_dates[-1].date():          # 今天的價格比研究資料新 → 顯示今天的（盤中＝即時）
-        px, ch = d["last"], d["last"] / d["prev"] - 1
-        tag = "<span class='kq-sub' style='display:block;font-size:10.5px;font-weight:400'>" + ui.esc(IDY.status(d)) + "</span>"
+    # v2.3.1 現價：證交所即時 → 今天的分時 → 研究資料收盤（標日期）；漲跌停另外標示
+    bq = IDY.best_quote(q.loc[t].to_dict() if q is not None and len(q) and t in q.index else None, d, it["close"], it["ch"], RDAY)
+    px, ch = bq["px"], bq["chg"]
+    if pl is not None and bq["live"] and ui.ok(bq.get("prev")):
+        pl = planlib.rebase(pl, bq["prev"])
+    when = (IDY.status(d) if d is not None and bq["src"] != "close" and d["date"] > RDAY.date() else
+            ("盤中" if bq["live"] else "")) or bq["label"]
+    if bq["src"] in ("bid", "ask"):
+        when += "・" + bq["label"]
+    lock = {"up": "<span class='kq-lock up'>漲停</span>", "down": "<span class='kq-lock dn'>跌停</span>"}.get(bq["lock"], "")
+    tag = (lock + "<span class='kq-sub' style='display:block;font-size:10.5px;font-weight:400'>" + ui.esc(when) + "</span>") if (when or lock) else ""
     lad = ui.ladder(px, pl.buy_low, pl.buy_high, pl.chase, pl.alert, compact=True) if pl else ""
     themes = "".join(ui.tag(x, "g") for x in c.get("themes", [])[:2])
     return (f"<div class='kq-pcard'><div class='hd'><div><span class='rk'>{it['n']}</span><span class='kq-cd'>{t}</span>"
@@ -1161,8 +1226,12 @@ def pick_card(it, mode: str = "m3", d=None) -> str:
 
 
 def render_picks(items, mode: str = "m3") -> str:
-    intr = tw_intraday([it["t"] for it in items]) if mode == "today" else {}
-    return "<div class='kq-grid'>" + "".join(pick_card(it, mode, intr.get(it["t"])) for it in items) + "</div>"
+    tks = [it["t"] for it in items]
+    ph = market_phase()
+    # 交易日盤中／盤後（研究資料還沒更新前）：不論圖表選哪一種，價格都用今天的，避免顯示前一個交易日的漲跌
+    intr = tw_intraday(tks) if mode == "today" or ph in ("盤前試撮", "盤中", "盤後") else {}
+    q = quotes_for(tks)[0] if _tw_live() else None
+    return "<div class='kq-grid'>" + "".join(pick_card(it, mode, intr.get(it["t"]), q) for it in items) + "</div>"
 
 
 @st.cache_data(show_spinner=False, max_entries=8)
@@ -1193,7 +1262,7 @@ def holdings_board(h, lt) -> str:
     buf = BUF(h)
     now_set = [p["ticker"] for p in lt["picks"]]
     sold = [t for t in prev_picks(h) if t not in now_set and t in TIDX]
-    style = {"exit": ("預計賣出", "#dc2626"), "watch": ("觀察", "#d97706"), "keep": ("續抱", "#16a34a"), "sold": ("明日開盤賣出", "#991b1b")}
+    style = {"exit": ("預計賣出", "#dc2626"), "watch": ("觀察", "#d97706"), "keep": ("續抱", "#16a34a"), "sold": (f"{exec_day().split(' ')[0]}開盤賣出", "#991b1b")}
     hold = holdings_of(BID, h)
     held = {x["ticker"] for x in hold}
     for t in sold:
@@ -1205,7 +1274,7 @@ def holdings_board(h, lt) -> str:
             continue
         n[x["status"]] += 1
         if x["ticker"] in sold:
-            x = dict(x, why=f"本期這份資金已換出（明日開盤賣出）；其餘 {x['slots']} 份待各自檢查日。{x['why']}")
+            x = dict(x, why=f"本期這份資金已換出（{exec_day().split(' ')[0]}開盤賣出）；其餘 {x['slots']} 份待各自檢查日。{x['why']}")
         entry = f"{x['entry_day'] or x['entry_signal'] or '–'}" + (f"<br><span class='kq-sub'>@{ui.price(x['entry_price'])}</span>"
                                                                     if ui.ok(x.get("entry_price")) else "")
         share = f"<br><span class='kq-sub'>持有 {x['slots']}/{x['nt']} 份資金</span>" if x["nt"] > 1 else ""
@@ -1224,7 +1293,7 @@ def holdings_board(h, lt) -> str:
     head = (f"<div class='kq-muted' style='margin:2px 0 8px'>{ui.badge('預計賣出 %d' % n_exit, '#dc2626')} "
             f"{ui.badge('觀察 %d' % n_watch, '#d97706')} {ui.badge('續抱 %d' % n_keep, '#16a34a')}　"
             f"規則：每份資金到「下次檢查日」時，排名仍在前 {buf} 名就續抱，跌出就在隔天開盤賣出、換成當時的新名單；"
-            f"不設固定停利停損，所以賣點會隨排名浮動。排名走勢＝最近 5 次（每 5 個交易日）的名次。</div>")
+            f"不設固定停利停損，所以賣點會隨排名浮動。排名走勢＝最近 5 次（每 5 個交易日）的名次；持有報酬算到 {RDAY:%m/%d} 收盤。</div>")
     if not trs:
         return head + "<div class='kq-muted'>目前沒有持股紀錄。</div>"
     desk = ui.table(["股票", "進場日／價", "持有報酬", "排名走勢", "下次檢查日", "判斷"], trs, left=(0, 1, 4, 5))
@@ -1320,7 +1389,7 @@ def page_picks():
     sold = [t for t in prev_picks(h) if t not in now_set and t in TIDX]
     def fmt(xs):
         return "、".join(f"{t} {NAMES[TIDX[t]]}" for t in xs if t in TIDX) or "無"
-    st.markdown(f"<div class='kq-verdict'><b>明日開盤要做的事（{HZ[h]}）</b><br>"
+    st.markdown(f"<div class='kq-verdict'><b>{exec_day()}開盤要做的事（{HZ[h]}）</b><br>"
                 f"🟦 買進：{ui.esc(fmt(new))}<br>🟥 賣出：{ui.esc(fmt(sold))}<br>"
                 f"🟪 續抱：其餘 {len(its) - len(new)} 檔不動　<span class='kq-muted'>名單日 {lt['date']} 收盤後產生</span></div>",
                 unsafe_allow_html=True)
@@ -1434,13 +1503,13 @@ def page_live():
         for t in uni:
             j = TIDX[t]
             hs = member.get(t, [])
-            h = hs[0] if hs else "mid"
-            pl = plan_of(j, h)
-            close, ch = last_close(j)
-            live = t in q.index and ui.ok(q.loc[t, "price"])
-            px = float(q.loc[t, "price"]) if live else close
-            chg = float(q.loc[t, "chg"]) if live else ch
-            lu = float(q.loc[t, "limit_up"]) if live else np.nan
+            h = "mid" if "mid" in hs or not hs else hs[0]              # 價位以中線計畫為準（不在中線名單時用所在名單）
+            di = intr.get(t)
+            bq = now_quote(t, di, q)
+            pl = plan_today(j, h, bq)
+            live, px, chg = bq["live"], bq["px"], bq["chg"]
+            lu = px if bq["lock"] == "up" else (float(q.loc[t, "limit_up"]) if bq["src"] not in ("yahoo", "close") and "limit_up" in q.columns
+                                                 else np.nan)
             role = "pick" if hs else "none"
             if not hs:
                 for hh in HZ:
@@ -1456,28 +1525,26 @@ def page_live():
             elif pl and px <= pl.alert:
                 code, txt = "warn", "跌破警戒"
             else:
-                code, txt = "none", ("開盤後判斷" if ph in ("盤前", "盤前試撮") else "收盤價參考")
+                code, txt = "none", ("開盤後判斷" if ph in ("盤前", "盤前試撮") else f"{bq['label']}參考")
             if code in ("buy", "dip"):
                 chances.append(t)
-            vol = f"{q.loc[t, 'volume']:,.0f}" if live and ui.ok(q.loc[t, "volume"]) else "–"
-            di = intr.get(t)
-            src = str(q.loc[t, "src"]) if live and "src" in q.columns else "trade"
-            src_tag = {"bid": "<span class='sub' style='display:block'>委買價</span>",
-                       "ask": "<span class='sub' style='display:block'>委賣價</span>"}.get(src, "")
+            vol = f"{bq['volume']:,.0f}" if live and ui.ok(bq["volume"]) else "–"
+            src_tag = quote_tags(bq)
             rows.append([stock_cell(t), chain_html(t, themes=False), f"<b>{ui.price(px)}</b>{src_tag}", ui.chg(chg),
                          ui.intraday_mini(di, h=34, fluid=False, w=120, labels=False) or "–",
-                         (f"{ui.price(q.loc[t, 'open'])}/{ui.price(q.loc[t, 'high'])}/{ui.price(q.loc[t, 'low'])}" if live else "–"),
+                         (f"{ui.price(bq['open'])}/{ui.price(bq['high'])}/{ui.price(bq['low'])}" if live and ui.ok(bq["open"]) else "–"),
                          vol, f"{ui.price(pl.buy_low)}～{ui.price(pl.buy_high)}" if pl else "–",
                          ui.price(pl.chase) if pl else "–", ui.price(pl.alert) if pl else "–",
                          ui.badge(txt, planlib.STATUS_STYLE[code]),
                          " ".join(ui.tag(HZ[x]) for x in hs) + (ui.tag("持股", "g") if t in holds else "")])
             mcards.append(ui.mcard(f"<span class='kq-cd'>{t}</span><span class='nm'>{ui.esc(NAMES[j])}</span> "
                                    + " ".join(ui.tag(HZ[x]) for x in hs) + (ui.tag("持股", "g") if t in holds else ""),
-                                   f"{ui.price(px)}<small>{ui.chg(chg)}</small>",
+                                   f"{ui.price(px)}<small>{ui.chg(chg)}</small>{quote_tags(bq)}",
                                    ui.intraday_mini(di, h=44, labels=False)
                                    + (ui.ladder(px, pl.buy_low, pl.buy_high, pl.chase, pl.alert, compact=True) if pl else ""),
                                    ui.badge(txt, planlib.STATUS_STYLE[code]) + (f" <span>量 {vol} 張</span>" if vol != "–" else "")))
-        tm = q["time"].iloc[0] if len(q) else "收盤價"
+        tm = q["time"].iloc[0] if len(q) else ("分時報價（可能延遲數分鐘）" if any(
+            d_ is not None and d_["date"] > RDAY.date() for d_ in intr.values()) else f"{RDAY:%m/%d} 收盤價")
         st.markdown(f"<div class='kq-muted'>更新 {pd.Timestamp.now(tz='Asia/Taipei'):%H:%M:%S}｜報價時間 {ui.esc(tm)}｜{ph}</div>",
                     unsafe_allow_html=True)
         st.markdown(ui.resp(ui.table(["股票", "族群", "現價", "漲跌", "今日走勢（虛線＝平盤）", "開/高/低", "量(張)", "買進區", "追價上限",
@@ -1485,7 +1552,8 @@ def page_live():
         st.markdown("<div class='kq-muted' style='margin-top:6px'>" + "　".join(
             f"{ui.badge(k_, planlib.STATUS_STYLE[c_])} {ui.esc(planlib.STATUS_HELP[c_].split('→')[-1].strip())}"
             for c_, k_ in (("buy", "可進場"), ("dip", "拉回買點"), ("wait", "等拉回"), ("warn", "跌破警戒"), ("lock", "漲停不追")))
-            + "</div>", unsafe_allow_html=True)
+            + f"<br>價位（買進區、追價上限、警戒價）以前一個交易日（{RDAY:%m/%d}）收盤計算，同時在多個名單時以中線為準；"
+              "除權息日或研究資料不是前一個交易日時，自動依證交所今日參考價等比例換算。</div>", unsafe_allow_html=True)
         if chances:
             st.success("盤中可進場：" + "、".join(f"{t} {NAMES[TIDX[t]]}" for t in chances))
         if holds:
@@ -1514,8 +1582,9 @@ def page_live():
                     else:
                         cells.append("<span class='sub'>不在選股範圍</span>")
                         acts.append("na")
-                pl = plan_of(TIDX[t], "mid")
-                px = float(q.loc[t, "price"]) if t in q.index and ui.ok(q.loc[t, "price"]) else last_close(TIDX[t])[0]
+                bq_h = now_quote(t, intr.get(t), q)
+                pl = plan_today(TIDX[t], "mid", bq_h)
+                px = bq_h["px"]
                 if pl and px <= pl.alert:
                     act = ui.badge("跌破警戒，重新檢視", "#dc2626")
                 elif "hold" in acts:
@@ -1543,7 +1612,7 @@ def page_live():
 
 
 # ================================================================== page: 個股診斷
-def verdict_for(t, h, live_px=np.nan):
+def verdict_for(t, h, live_px=np.nan, bq=None):
     """回傳 (等級, 標題, 細節)；等級 buy/hold/watch/no/na。"""
     j = TIDX[t]
     try:
@@ -1551,8 +1620,9 @@ def verdict_for(t, h, live_px=np.nan):
     except Exception:  # noqa: BLE001
         rk = pd.DataFrame()
     picks = [p["ticker"] for p in latest(h)["picks"]]
-    pl = plan_of(j, h)
+    pl = plan_today(j, h, bq)
     px = live_px if ui.ok(live_px) else last_close(j)[0]
+    lu = px if bq and bq.get("lock") == "up" else np.nan
     if t not in rk.index:
         return "na", "不在選股範圍", "成交量或規模未進入模型股票池，模型不評分"
     r = rk.loc[t]
@@ -1562,7 +1632,7 @@ def verdict_for(t, h, live_px=np.nan):
         return "no", "暫不建議（風控排除）", f"原因：{r['why']}｜分數位於股票池{top}"
     rank = int(r["rank"])
     if t in picks or rank <= KH(h):
-        code, txt = planlib.live_status(px, pl, "pick")
+        code, txt = planlib.live_status(px, pl, "pick", lu)
         note = "" if t in picks else f"（排名前 {KH(h)}；本期名單保留了續抱股，空手者可列為首選候補）"
         if code in ("buy", "dip"):
             return "buy", f"可以買進（第 {rank} 名）", planlib.STATUS_HELP[code] + note
@@ -1570,6 +1640,8 @@ def verdict_for(t, h, live_px=np.nan):
             return "watch", f"推薦但先別追（第 {rank} 名）", planlib.STATUS_HELP["wait"] + note
         if code == "warn":
             return "watch", f"推薦但股價轉弱（第 {rank} 名）", planlib.STATUS_HELP["warn"] + note
+        if code == "lock":
+            return "watch", f"推薦但今天漲停（第 {rank} 名）", planlib.STATUS_HELP["lock"] + note
         return "buy", f"推薦（第 {rank} 名）", f"{txt}{note}"
     if rank <= BUF(h):
         return "hold", f"持有可續抱（第 {rank}/{n} 名）", f"未進前 {KH(h)} 名：空手者不新買，等它進入推薦名單"
@@ -1593,26 +1665,27 @@ def page_stock():
     if q0 != t:
         st.query_params["s"] = t
     j = TIDX[t]
-    live_px = np.nan
-    if is_live_time():
+    live_px, bq = np.nan, None
+    if market_phase() in ("盤前試撮", "盤中", "盤後"):
         q, _ = quotes_for([t])
-        if t in q.index:
-            live_px = float(q.loc[t, "price"])
-    vs = {h: verdict_for(t, h, live_px) for h in HZ}
+        bq = now_quote(t, tw_intraday([t]).get(t), q)
+        if bq["live"]:
+            live_px = bq["px"]
+    vs = {h: verdict_for(t, h, live_px, bq) for h in HZ}
     color = {"buy": "#1d4ed8", "hold": "#5b21b6", "watch": "#d97706", "no": "#475569", "na": "#475569"}
     items = []
     for h, (lvl, title, det) in vs.items():
         items.append((f"{HZ[h]}｜{HZ_SUB[h].split('・')[0]}", f"<span style='font-size:16px;color:var(--strong)'>{ui.badge(title, color[lvl])}</span>",
                        ui.esc(det)))
     best = next((h for h in ("mid", "short", "long") if vs[h][0] == "buy"), None)
-    pl = plan_of(j, best or "mid")
+    pl = plan_today(j, best or "mid", bq)
     if best:
         msg = (f"✅ <b>現在可以投資</b>：{HZ[best]}模型推薦。建議價位 <b class='kq-mono'>{ui.price(pl.buy_low)}～{ui.price(pl.buy_high)}</b>，"
                f"高於 <b class='kq-mono'>{ui.price(pl.chase)}</b> 不追；跌破 <b class='kq-mono'>{ui.price(pl.alert)}</b> 重新檢視。") if pl else \
             f"✅ <b>現在可以投資</b>：{HZ[best]}模型推薦。"
     elif any(v[0] == "watch" for v in vs.values()):
         h2 = next(h for h in HZ if vs[h][0] == "watch")
-        pl = plan_of(j, h2)
+        pl = plan_today(j, h2, bq)
         msg = (f"⏳ <b>可以買但先等價位</b>：{vs[h2][2].split('（')[0]}。等回到 <b class='kq-mono'>{ui.price(pl.buy_low)}～{ui.price(pl.buy_high)}</b> 再分批。"
                if pl else f"⏳ <b>可以買但先等價位</b>：{vs[h2][2]}")
     elif any(v[0] == "hold" for v in vs.values()):
@@ -1767,7 +1840,7 @@ def page_alloc():
         mc.append(ui.mcard("<span class='kq-cd'>0050</span><span class='nm'>元大台灣50</span>", f"{w['0050']:.0%}", "",
                            f"{cap * w['0050']:,.0f} 元，可定期定額"))
     if rows:
-        st.markdown(ui.resp(ui.table(["股票", "族群", "來源（子帳戶權重）", "金額", "占總資金", "參考價", "建議股數", "建議買進區"],
+        st.markdown(ui.resp(ui.table(["股票", "族群", "來源（子帳戶權重）", "金額", "占總資金", f"參考價（{RDAY:%m/%d} 收盤）", "建議股數", "建議買進區"],
                                      rows, left=(0, 1, 2)), "".join(mc)), unsafe_allow_html=True)
     st.markdown(ui.panel("執行方式", ui.bullets([ui.esc(s) for s in sleeves] + [
         "中線：把中線資金分成 4 份，每週用 1 份換成當週最新名單（每份約抱 4 週）；長線：分成 3 份，每 4 週換 1 份。",
@@ -2102,6 +2175,68 @@ def ban_xs_html() -> str:
             f"{e}：{x[2] * 100:+.0f}" for e, x in zip(rv.BAN_XS_EVENTS, evs)), "之後 60 日超額（百分點）"))
     return ui.resp(ui.table(["最高 20% 減最低 20%（百分點）", "2020-03　5／20／60 日", "2022-10", "2025-04（與這次相同）"], rows, left=(0,)),
                    "".join(mrows))
+
+
+def audit_html() -> str:
+    """v2.4 驗效摘要（每日研究結果）＋偏移檢查（docs/v2.4_model_audit.md）。"""
+    from kosto import review as rv
+    from kosto import tournament as T
+    rows, mrows = [], []
+    au = (RES or {}).get("auto") or {}
+    for h in HZ:
+        hb = ((RES or {}).get("horizons") or {}).get(h)
+        if not hb:
+            continue
+        ev = hb.get("eval") or {}
+        g = (hb.get("validation") or {}).get("gates")
+        npass = f"{int(g['通過'].sum())}/{len(g)}" if g is not None and len(g) else "–"
+        pre = np.nan
+        if g is not None and len(g):
+            m = g[g["閘門"].astype(str).str.contains("未用期間")]
+            pre = float(m["數值"].iloc[0]) if len(m) else np.nan
+        vs = (hb.get("vs_pool_ew") or {}).get("holdout", np.nan)
+        cp = hb.get("chosen_pool") or {}
+        pn = hb.get("pool_note") or {}
+        since = ((au.get("pools") or {}).get(h) or {}).get("since")
+        pool = f"{cp.get('rule', '')}{cp.get('size', '')}" + ("<span class='sub'>（沿用）</span>" if pn.get("kept") else "") \
+            + (f"<span class='sub'>　自 {since}</span>" if since else "")
+        rows.append([f"<b>{HZ[h]}</b>", pool, ui.pct(ev.get("dev_excess_cagr"), 1, color=True), f"{ev.get('dev_info_ratio', np.nan):.2f}",
+                     ui.pct(ev.get("hold_excess_cagr"), 1, color=True), ui.pct(pre, 1, color=True), ui.pct(vs, 1, color=True), npass])
+        mrows.append(ui.mcard(f"<span class='nm'>{HZ[h]}</span>", f"閘門 {npass}",
+                              f"開發期超額 {ui.pct(ev.get('dev_excess_cagr'), 1, color=True)}｜盲測期 {ui.pct(ev.get('hold_excess_cagr'), 1, color=True)}"
+                              f"｜2019–21 {ui.pct(pre, 1, color=True)}",
+                              f"母池 {pool}｜盲測期勝母池等權 {ui.pct(vs, 1, color=True)}"))
+    out = ""
+    if rows:
+        out += ui.resp(ui.table(["期間", "母池", "開發期超額", "資訊比率", "盲測期超額", "2019–21 超額", "盲測期勝母池等權", "閘門"], rows, left=(0, 1)),
+                       "".join(mrows))
+    ld = {h: x for h, x in (au.get("leader") or {}).items() if x}
+    rb = {h: x for h, x in (au.get("risk_blocked") or {}).items() if x}
+    lead_txt = "；".join(f"{HZ.get(h, h)} {ui.esc(T.describe(x['params'], (au.get('champions') or {}).get(h) or T.base_params(CFG0, h)))}"
+                        f"（連續 {x['streak']} 天）" for h, x in ld.items()) or "沒有"
+    k = rv.TOPK_6_VS_8
+    lines = [
+        "<b>原來的目標</b>：開發期以「贏 0050」（超額報酬、資訊比率）挑母池與模型，並用 8 道預先宣告的閘門檢查。"
+        "開發期三個期間都明顯勝過 0050；盲測期（最近 12 個月）與 2019–21 都落後——兩段都是台積電等權值股獨強，"
+        "模型仍勝過自己的母池（中小型股等權），落後來自選股範圍，不是選股失靈。",
+        "<b>權重沒有偏移</b>：12 次重估技術／基本約 48／52，長線技術 55～61%（見下方「因子權重平衡」）。"
+        "v2.4 起報告的族群占比也改成含「營收相對同業」15% 疊加的實際權重（舊報告寫 57／43）。",
+        "<b>母池不再每天換</b>：前一天的母池與今天第一名綜合分數差不到 0.05 就沿用（舊版短中線在 ADV500／BLEND500／MCAP500 間來回切換）。",
+        f"<b>自動晉級加風險護欄</b>：中線「持股 8→6 檔」在五種換股日 × 4 個母池平均開發期超額 {k['dev_excess'] * 100:+.1f}、"
+        f"但最大回撤深 {abs(k['dev_mdd']) * 100:.1f} 個百分點、2019–20 {k['pre_excess'] * 100:+.1f} → 超過 2 個百分點的回撤上限，不自動換上。"
+        f"目前領先的挑戰者：{lead_txt}" + ("；被護欄擋下：" + "、".join(HZ.get(h, h) for h in rb) if rb else "") + "。",
+        "<b>累積的風險偏移</b>：長線開發期最大回撤隨每次通過門檻的改良由 −39% 累積到 −45%（下表），已超過「比 0050 深不超過 10 個百分點」的閘門；"
+        "降低回撤最有效的仍是 0050 核心（中線 0050 30%：全期最大回撤 −41% → −37%）。",
+        "<b>選股風格</b>跟著市場領漲股走：名單市值越來越大、電子占比 2025 下半年後約 75%，這是動能模型的本質，不是參數改變；"
+        "同產業 ≥3 檔時名單頁會提醒。"]
+    out += ui.panel("檢查結論", ui.bullets(lines))
+    mrow = [[ui.esc(v), ui.esc(w), ui.pct(x, 1, color=True), ui.pct(y, 1)] for v, w, x, y in rv.MDD_DRIFT_LONG]
+    out += ("<div class='kq-muted' style='margin:8px 0 2px'>長線（MCAP500）每次改良後的開發期超額與最大回撤（研究報告）</div>"
+            + ui.table(["版本", "改了什麼", "開發期超額", "開發期最大回撤"], mrow, left=(0, 1)))
+    srow = [[ui.esc(a), f"{b:.2f}", f"{c:.2f}", f"{d:.2f}", f"{e:.0%}", f"{f:.0%}", f"{g_:.1f}"] for a, b, c, d, e, f, g_ in rv.STYLE_DRIFT_MID]
+    out += ("<div class='kq-muted' style='margin:8px 0 2px'>中線名單特性（每半年平均；市值分位＝全市場百分位，動能／波動分位＝成交金額前 500 名中的百分位）</div>"
+            + ui.table(["半年", "市值分位", "120 日動能分位", "60 日波動分位", "金融占比", "電子占比", "同產業最多檔數"], srow, left=(0,)))
+    return out
 
 
 def balance_html() -> str:
@@ -2634,6 +2769,9 @@ def page_insight():
                         unsafe_allow_html=True)
             st.markdown(ui.table(["0050 比例", "年化（2021 起）", "最大回撤", "近 12 月", "目前自高點"], rows, left=(0,)), unsafe_allow_html=True)
         from kosto import review as rv
+        st.markdown(ui.section("驗效與偏移檢查（v2.4）", "研究報告的預先宣告閘門、盲測期、未用期間；模型有沒有往某個方向偏"),
+                    unsafe_allow_html=True)
+        st.markdown(audit_html(), unsafe_allow_html=True)
         st.markdown(ui.section("因子權重平衡", "目前權重（每日研究）中各家族的占比；括號為 2021 年以來每 6 個月重估一次的範圍"),
                     unsafe_allow_html=True)
         st.markdown(balance_html(), unsafe_allow_html=True)
@@ -3109,7 +3247,8 @@ def auto_panel():
     from kosto import tournament as T
     au = (RES or {}).get("auto") or {}
     st.markdown(ui.section("冠軍／挑戰者（每日自動比較）",
-                           f"規則：開發期超額多 {au.get('rule', {}).get('min_gain', 0.02):.0%} 以上、資訊比率不降、2019–20 不退步，"
+                           f"規則：開發期超額多 {au.get('rule', {}).get('min_gain', 0.02):.0%} 以上、資訊比率不降、2019–20 不退步、"
+                           f"最大回撤不深於冠軍 {float(au.get('rule', {}).get('max_mdd_worse') or 0.02) * 100:.0f} 個百分點（v2.4），"
                            f"連續 {au.get('rule', {}).get('streak', 10)} 個交易日第一名才換上"
                            + ("" if au.get("enabled", True) else "（目前設定為只比較、不自動換）")), unsafe_allow_html=True)
     if not au.get("table"):
@@ -3127,6 +3266,12 @@ def auto_panel():
         mc.append(ui.mcard(f"<span class='nm'>{HZ[h]}</span>", "", "", f"冠軍：{ui.esc(T.describe(champ))}<br>挑戰者：{lead}"))
     st.markdown(ui.resp(ui.table(["期間", "目前模型（冠軍）", "領先的挑戰者", "上次換模型"], rows, left=(0, 1, 2)), "".join(mc)),
                 unsafe_allow_html=True)
+    rb = {h: x for h, x in (au.get("risk_blocked") or {}).items() if x}
+    if rb:
+        st.markdown("<div class='kq-muted' style='margin-top:6px'>風險護欄擋下（報酬較高但回撤較深）：" + "；".join(
+            f"{HZ.get(h, h)} " + "、".join(f"{ui.esc(T.describe(b['params'], (au.get('champions') or {}).get(h) or T.base_params(CFG0, h)))}"
+                                         f"（超額 {b['d_excess']:+.1%}、回撤 {b['d_mdd']:+.1%}）" for b in x)
+            for h, x in rb.items()) + "</div>", unsafe_allow_html=True)
     if au.get("log"):
         st.markdown("<div class='kq-muted' style='margin-top:6px'>換模型紀錄：" + "；".join(
             f"{x['date']} {HZ.get(x['h'], x['h'])}：{ui.esc(x['text'])}" for x in au["log"][-6:]) + "</div>", unsafe_allow_html=True)
@@ -3134,9 +3279,9 @@ def auto_panel():
         for h in [x for x in HORIZON_KEYS if x in au["table"]]:
             t = au["table"][h].sort_values("d_excess", ascending=False)
             st.markdown(f"**{HZ[h]}**")
-            st.dataframe(t[["desc", "dev_excess", "d_excess", "dev_ir", "d_ir"] + (["pre_excess"] if "pre_excess" in t else []) + ["qualified"]]
+            st.dataframe(t[["desc", "dev_excess", "d_excess", "dev_ir", "d_ir"] + [c for c in ("d_mdd", "pre_excess") if c in t] + ["qualified"]]
                          .rename(columns={"desc": "設定（相對冠軍）", "dev_excess": "開發期超額", "d_excess": "差異", "dev_ir": "資訊比率",
-                                          "d_ir": "IR差", "pre_excess": "2019-20超額", "qualified": "今日合格"}),
+                                          "d_ir": "IR差", "d_mdd": "回撤差", "pre_excess": "2019-20超額", "qualified": "今日合格"}),
                          hide_index=True, width="stretch")
 
 

@@ -149,7 +149,8 @@ def test_optimizer_finds_planted_signals_and_respects_prior(world):
     fit = R.final_fit("ADV", 100, "mid", Variant("t", "opt", 0.4))
     w = dict(zip(world.B.factors, fit.weights))
     assert w["k_hands"] > 0 and w["c_foreign20"] > 0                     # planted informed flows
-    assert fit.family.get("K", 0) >= 0.4 - 1e-9                          # Kostolany floor
+    ov = sum((world.cfg["research"].get("overlay") or {}).values())     # v2.4 族群占比含疊加 → 下限被疊加等比例稀釋
+    assert fit.family.get("K", 0) >= 0.4 * (1 - ov) - 1e-6               # Kostolany floor (before the fixed overlay)
     signs = np.sign(fit.weights) * np.array(world.B.meta["directions"])
     assert (signs >= 0).all()                                            # never flips an economic prior
     data = R.final_fit("ADV", 100, "mid", Variant("d", "data", 0.0))

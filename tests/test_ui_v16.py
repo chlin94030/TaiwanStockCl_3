@@ -199,6 +199,16 @@ def test_rank_table_consistent_with_latest(small):
     assert [p["ticker"] for p in lt["picks"]][:3] == top[:3] or set(p["ticker"] for p in lt["picks"]) <= set(top[:25])
     assert rt["rank"].dropna().min() == 1 and (rt.loc[~rt["valid"], "rank"].isna()).all()
     assert all(isinstance(x, list) for x in rt["reasons"])
+    # v2.3.2 推薦表的警戒價＝App 交易計畫的警戒價（同一套 ATR 規則）
+    from kosto.plan import trade_plan
+    for p in lt["picks"]:
+        j = small.B.tickers.index(p["ticker"])
+        pl = trade_plan(ta.indicators(ta.stock_frame(small.B, j)), "mid")
+        assert p["stop_price"] == pytest.approx(pl.alert)
+        assert p["close"] == pytest.approx(pl.close)
+    # v2.3.2 參考價（Q_RF）存在，收盤÷參考價＝報酬
+    df = ta.stock_frame(small.B, 0)
+    assert "ref" in df and np.isfinite(df["ref"].iloc[-5:]).all()
 
 
 def test_kline_figure_builds():
@@ -211,3 +221,15 @@ def test_kline_figure_builds():
     assert "K線" in names and "週線(5)" in names and "外資(張)" in names
     assert "大戶≥400張(%)" not in names                               # 沒有集保資料時自動略過
     assert len(nav_figure({"a": ind["close"]}).data) == 1
+
+
+def test_family_share_includes_overlay(small):
+    """v2.4 族群占比＝含疊加（research.overlay）的實際權重。"""
+    from kosto.research import Research
+    R = Research(small.B, small.cfg, log=lambda m: None)
+    v = R.model_variant("mid")
+    fit = R.final_fit("ADV", 40, "mid", v)
+    w = np.abs(np.asarray(fit.weights, float))
+    fams = np.array(small.B.meta["families"])
+    for k, x in fit.family.items():
+        assert x == pytest.approx(w[fams == k].sum() / w.sum(), abs=1e-6)

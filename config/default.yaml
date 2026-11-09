@@ -44,6 +44,7 @@ research:
     sharpe: 0.20
     calmar: 0.20
   pool_smoothing: true       # 母池分數與相鄰大小平均（0.5/0.25/0.25），避免挑到單一幸運格
+  pool_keep_margin: 0.05     # v2.4 母池沿用：前一天的母池與今天第一名綜合分數相差 <0.05 就繼續用（避免每天換母池）
   lambdas: [0.10, 0.25, 0.40]          # 階層式模型：科斯托蘭尼因子族群最低權重候選（λ）
   sparse_k_alternatives: [3, 8]        # 精簡因子模型：除了預設 k 之外也比較的因子數
   max_per_sector: null                 # 同產業最多幾檔（null=不限；實測 2/3 檔沒有穩定改善）
@@ -65,6 +66,7 @@ research:
   auto_min_gain: 0.02                  # 開發期五種換股日平均超額至少多 2 個百分點
   auto_streak: 10                      # 連續 10 個交易日都是第一名
   auto_cooldown: 20                    # 兩次換模型至少間隔 20 個交易日
+  auto_max_mdd_worse: 0.02             # v2.4 風險護欄：挑戰者開發期最大回撤不可比冠軍深超過 2 個百分點（null＝不檢查）
   lock_model: true                     # v1.3：使用設定檔指定的模型（多窗口「不退步原則」決定），不再只看開發期自動挑
   sparse_exclude: [t_lowidio]          # 只給成長動能假說使用、不讓精簡模型自己挑的因子
   # v1.7 國際連動／族群因子：照樣計算並在 App 顯示，但預先宣告的研究未通過（見 docs/v1.7_protocol.md）→ 不進任何模型

@@ -154,6 +154,7 @@ table.kq td .sub, .kq-sub { color:var(--muted); font-size:11.5px; font-family:'N
   background:linear-gradient(90deg, rgba(240,70,75,.14), rgba(240,70,75,.03)); }
 .kq-alert .t { font-weight:700; color:#f0464b; font-size:16px; margin-bottom:2px; }
 .kq-alert .s { color:var(--text); font-size:13.5px; } .kq-alert .s2 { color:var(--muted); font-size:12.5px; margin-top:4px; }
+.kq-lock { display:inline-block; font-size:10.5px; font-weight:700; line-height:1; padding:2px 5px; border-radius:4px; margin-left:4px; color:#fff; vertical-align:middle; } .kq-lock.up { background:#e5383b; } .kq-lock.dn { background:#16a35f; }
 .kq-dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; vertical-align:middle; background:#94a3b8; }
 .kq-dot.red { background:#f0464b; box-shadow:0 0 0 3px rgba(240,70,75,.18); } .kq-dot.amber { background:#e9a23b; box-shadow:0 0 0 3px rgba(233,162,59,.18); }
 .kq-dot.green { background:#16a35f; box-shadow:0 0 0 3px rgba(22,163,95,.16); }

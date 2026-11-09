@@ -5,6 +5,9 @@
   * 候選＝冠軍在 GRID 每個維度往上／往下一格（精簡因子數 k、價格假說比例、成長假說比例、續抱倍數、持股檔數）。
   * 分數只用開發期（盲測期不參與）：五種換股日平均的年化超額報酬與資訊比率；再看 2019-20 未用期間不可明顯退步。
   * 每日合格：超額 ≥ 冠軍 + min_gain、資訊比率不低於冠軍、2019-20 超額不低於冠軍 − 5pp。
+  * v2.4 風險護欄：開發期最大回撤不可比冠軍深超過 auto_max_mdd_worse（預設 2 個百分點，與 v1.9「平衡型」門檻一致）。
+    理由：v1.4→v1.7→v1.9 每一步都「多一點報酬、深一點回撤」，長線開發期最大回撤由 −39% 累積到 −45%，
+    已超過「最大回撤比 0050 多不超過 10pp」的驗收閘門；自動晉級不能再單向往高風險方向走。
   * 同一個挑戰者連續 streak 個交易日都是第一名才換上；兩次換上至少間隔 cooldown 個交易日。
 """
 from __future__ import annotations
@@ -83,7 +86,7 @@ def evaluate(R, res: dict, cfg_eff: dict, phase: int, presample: bool = False) -
             e = R.evaluate(rule, size, h, v)
             row = {"phase": phase, "h": h, "key": key(p), "params": p, "champion": key(p) == key(champ),
                    "dev_excess": e.get("dev_excess_cagr"), "dev_ir": e.get("dev_info_ratio"), "dev_cagr": e.get("dev_cagr"),
-                   "hold_cagr": e.get("hold_cagr")}
+                   "dev_mdd": e.get("dev_mdd"), "hold_cagr": e.get("hold_cagr")}
             if presample:
                 try:
                     ps = R.presample(h, rule, size, v)
@@ -106,6 +109,7 @@ def update(prev: dict | None, rows: list[dict], res: dict, cfg: dict, cfg_eff: d
     min_gain = float(rcfg.get("auto_min_gain", 0.02))
     need = int(rcfg.get("auto_streak", 10))
     cool = int(rcfg.get("auto_cooldown", 20))
+    mdd_tol = rcfg.get("auto_max_mdd_worse", 0.02)               # None＝不檢查回撤（v1.9 原規則）
     today = res["protocol"]["last_date"]
     same_day = (prev or {}).get("updated") == today          # 同一資料日重跑（備援排程、上傳程式觸發）→ 連續天數不重複累加
     t = pd.DataFrame(rows)
@@ -115,8 +119,11 @@ def update(prev: dict | None, rows: list[dict], res: dict, cfg: dict, cfg_eff: d
         st["champions"].setdefault(h, champ)
         if t.empty or h not in set(t["h"]):
             continue
-        g = t[t["h"] == h].groupby("key").agg(dev_excess=("dev_excess", "mean"), dev_ir=("dev_ir", "mean"),
-                                              hold_cagr=("hold_cagr", "mean"), n=("phase", "nunique"))
+        tt = t[t["h"] == h]
+        if "dev_mdd" not in tt:
+            tt = tt.assign(dev_mdd=np.nan)
+        g = tt.groupby("key").agg(dev_excess=("dev_excess", "mean"), dev_ir=("dev_ir", "mean"), dev_mdd=("dev_mdd", "mean"),
+                                  hold_cagr=("hold_cagr", "mean"), n=("phase", "nunique"))
         if "pre_excess" in t:
             g = g.join(t[(t["h"] == h) & t["pre_excess"].notna()].groupby("key")["pre_excess"].mean())
         g["params"] = [next(r["params"] for r in rows if r["h"] == h and r["key"] == k_) for k_ in g.index]
@@ -126,11 +133,21 @@ def update(prev: dict | None, rows: list[dict], res: dict, cfg: dict, cfg_eff: d
         c = g.loc[ck]
         g["d_excess"] = g["dev_excess"] - c["dev_excess"]
         g["d_ir"] = g["dev_ir"] - c["dev_ir"]
+        g["d_mdd"] = g["dev_mdd"] - c["dev_mdd"]                    # 負＝回撤比冠軍深
+        if mdd_tol is not None and np.isfinite(c.get("dev_mdd", np.nan)):
+            risk_ok = g["d_mdd"].isna() | (g["d_mdd"] >= -float(mdd_tol))
+        else:
+            risk_ok = pd.Series(True, index=g.index)
+        g["risk_ok"] = risk_ok
         if "pre_excess" in g and np.isfinite(c.get("pre_excess", np.nan)):
             pre_ok = g["pre_excess"].isna() | (g["pre_excess"] >= c["pre_excess"] - 0.05)
         else:
             pre_ok = pd.Series(True, index=g.index)
-        g["qualified"] = (g.index != ck) & (g["d_excess"] >= min_gain) & (g["d_ir"] >= 0) & pre_ok & (g["n"] >= 3)
+        g["qualified"] = (g.index != ck) & (g["d_excess"] >= min_gain) & (g["d_ir"] >= 0) & pre_ok & risk_ok & (g["n"] >= 3)
+        # 報酬夠好但回撤太深而被擋下的候選（給報告與 App 顯示）
+        blocked = g[(g.index != ck) & (g["d_excess"] >= min_gain) & (g["d_ir"] >= 0) & pre_ok & ~risk_ok & (g["n"] >= 3)]
+        st.setdefault("risk_blocked", {})[h] = [{"key": k_, "params": blocked.loc[k_, "params"], "d_excess": float(blocked.loc[k_, "d_excess"]),
+                                               "d_mdd": float(blocked.loc[k_, "d_mdd"])} for k_ in blocked.index]
         q = g[g["qualified"]].sort_values("d_excess", ascending=False)
         ld = st["leader"].get(h) or {}
         if len(q):
@@ -155,7 +172,7 @@ def update(prev: dict | None, rows: list[dict], res: dict, cfg: dict, cfg_eff: d
         table[h] = g.drop(columns=["params"]).assign(desc=[describe(p_, champ) for p_ in g["params"]]).reset_index()
     st["table"] = table
     st["enabled"] = on
-    st["rule"] = {"min_gain": min_gain, "streak": need, "cooldown": cool}
+    st["rule"] = {"min_gain": min_gain, "streak": need, "cooldown": cool, "max_mdd_worse": mdd_tol}
     st["updated"] = today
     return st
 
@@ -170,3 +187,15 @@ def log_picks(st: dict, res: dict, keep: int = 400) -> dict:
     st["picks_log"] = log[-keep * 3:]
     st.setdefault("live_since", log[0]["date"] if log else d)
     return st
+
+
+def pool_state(prev: dict | None, res: dict) -> dict:
+    """v2.4 每個期間目前使用的母池與起始日（research.run_all 依此決定是否沿用）。"""
+    out = dict(prev or {})
+    d = res["protocol"]["last_date"]
+    for h, hb in res["horizons"].items():
+        cp = hb["chosen_pool"]
+        old = out.get(h) or {}
+        same = old.get("rule") == cp["rule"] and int(old.get("size", -1)) == int(cp["size"])
+        out[h] = {"rule": cp["rule"], "size": int(cp["size"]), "since": old.get("since", d) if same else d}
+    return out

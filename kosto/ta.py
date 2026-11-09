@@ -11,7 +11,7 @@ import pandas as pd
 MA_LINES = {5: "週線(5)", 10: "雙週線(10)", 20: "月線(20)", 60: "季線(60)", 120: "半年線(120)", 240: "年線(240)"}
 FIELDS = {"Q_O": "open", "Q_H": "high", "Q_L": "low", "Q_C": "close", "Q_V": "volume", "Q_FI": "foreign",
           "Q_TR": "trust", "Q_DL": "dealer", "Q_MB": "mbal", "Q_SB": "sbal", "Q_ML": "mlimit", "Q_FR": "fr",
-          "Q_H400": "big400", "Q_H1000": "big1000", "Q_HR": "retail50", "Q_HN": "holders"}
+          "Q_H400": "big400", "Q_H1000": "big1000", "Q_HR": "retail50", "Q_HN": "holders", "Q_RF": "ref"}
 
 
 def stock_frame(B, j: int) -> pd.DataFrame:
@@ -117,5 +117,13 @@ def round_tick(p: float, mode: str = "near", etf: bool = False) -> float:
         return np.nan
     t = tick(p, etf)
     f = {"near": np.round, "down": np.floor, "up": np.ceil}[mode]
-    v = f(p / t + 1e-9 * (1 if mode != "down" else -1)) * t
+    # 浮點容差：剛好落在有效價位上的價格不可被推到下一檔（v2.3.1：110.0 往下取不再變成 109.5）
+    v = f(p / t + 1e-9 * (-1 if mode == "up" else 1)) * t
     return float(round(v, 2))
+
+
+def limit_prices(prev: float, etf: bool = False) -> tuple[float, float]:
+    """漲跌停價：昨收 ×1.1 往下、×0.9 往上對齊升降單位（台股 ±10%）。"""
+    if prev is None or not np.isfinite(prev) or prev <= 0:
+        return np.nan, np.nan
+    return round_tick(prev * 1.1, "down", etf), round_tick(prev * 0.9, "up", etf)

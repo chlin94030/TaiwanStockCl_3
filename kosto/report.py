@@ -101,11 +101,12 @@ def hints(H: dict) -> list[str]:
         for _, row in ab.sort_values("貢獻(開發期CAGR)").head(3).iterrows():
             c = row["貢獻(開發期CAGR)"]
             if np.isfinite(c) and c < -0.01 and row.get("目前", "啟用") == "啟用":
-                out.append(f"{lab}：「{row['case']}」後開發期 CAGR 提高 {-c*100:.1f}% → 此規則在本期間拖累績效，可考慮關閉或放寬。")
+                out.append(f"{lab}：「{row['case']}」後開發期 CAGR 提高 {-c*100:.1f}%（單一換股日的消融結果）→ 列入下次預先宣告研究的候選；"
+                           "未經五種換股日與門檻驗證前不要直接改設定。")
         for _, row in ab.sort_values("貢獻(開發期CAGR)", ascending=False).head(2).iterrows():
             c = row["貢獻(開發期CAGR)"]
             if np.isfinite(c) and c > 0.01 and row.get("目前") == "關閉":
-                out.append(f"{lab}：「{row['case']}」可讓開發期 CAGR 提高 {c*100:.1f}% → 可考慮在設定檔開啟。")
+                out.append(f"{lab}：「{row['case']}」可讓開發期 CAGR 提高 {c*100:.1f}%（單一換股日的消融結果）→ 列入下次預先宣告研究的候選。")
         dex, hex_ = ev.get("dev_excess_cagr"), ev.get("hold_excess_cagr")
         if dex is not None and hex_ is not None and np.isfinite(dex) and np.isfinite(hex_) and hex_ < dex - 0.10:
             vs = r.get("vs_pool_ew", {}).get("holdout", np.nan)
@@ -304,7 +305,7 @@ def build_html(res: dict, cfg: dict, comparison: tuple | None = None) -> str:
         p.append("<p class='mut'>貢獻＝規則開啟 − 規則關閉的 CAGR（正＝有幫助）。盲測欄只供檢查，從未用來挑選。</p>")
         fw = r["family_final"]
         p.append("<h3>因子與權重（最新一次估計）</h3><p>族群權重：" + "、".join(f"{k}={v:.0%}" for k, v in fw.items())
-                 + "（T技術、C籌碼、F基本、K科斯托蘭尼）</p>")
+                 + "（T技術、C籌碼、F基本、K科斯托蘭尼；v2.4 起含「營收相對同業」15% 疊加，即實際用來選股的權重）</p>")
         ft = r["factor_table"]
         ft = ft[ft["horizon_ok"]][["factor", "中文", "family", "coverage", "ic_dev", "t_dev", "ic_holdout", "ic_all", "weight"]]
         p.append(table(ft.rename(columns=ZH), {ZH[k]: v for k, v in {"coverage": "pct0", "ic_dev": "{:.3f}", "t_dev": "{:.1f}",
@@ -368,6 +369,18 @@ def build_html(res: dict, cfg: dict, comparison: tuple | None = None) -> str:
                          "領先挑戰者": (_T.describe(ld["params"], champ) + f"（+{ld['d_excess']:.1%}，連續 {ld['streak']} 天）") if ld else "無",
                          "上次換模型": (au.get("last_switch") or {}).get(h, "")})
         p.append(table(pd.DataFrame(rows), left=("期間", "冠軍", "領先挑戰者")))
+        rb = {h: x for h, x in (au.get("risk_blocked") or {}).items() if x}
+        if rb:
+            p.append("<p class='mut'>v2.4 風險護欄（開發期最大回撤不可比冠軍深超過 "
+                     f"{float((au.get('rule') or {}).get('max_mdd_worse') or 0.02) * 100:.0f} 個百分點）擋下："
+                     + "；".join(f"{ {'short': '短線', 'mid': '中線', 'long': '長線'}.get(h, h)} " + "、".join(
+                         f"{_T.describe(b['params'], (au.get('champions') or {}).get(h) or b['params'])}（超額 {b['d_excess']:+.1%}、回撤 {b['d_mdd']:+.1%}）"
+                         for b in x) for h, x in rb.items()) + "</p>")
+    pn = {h: r.get("pool_note") for h, r in H.items() if r.get("pool_note", {}).get("kept")}
+    if pn:
+        p.append("<p class='mut'>v2.4 母池沿用：" + "；".join(
+            f"{H[h]['label']} 沿用 {x['chosen']}（今天第一名 {x['best']} 只多 {x['best_score'] - x.get('kept_score', x['best_score']):.3f} 分，"
+            f"門檻 {x['margin']:.2f}）" for h, x in pn.items()) + "</p>")
     # ---------------- v1.7 international linkage
     wd = res.get("world") or {}
     if wd.get("study") is not None and len(wd.get("study")):

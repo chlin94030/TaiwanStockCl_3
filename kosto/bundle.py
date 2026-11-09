@@ -332,7 +332,8 @@ def build_bundle(P: Panel, cfg: dict, log=print) -> Bundle:
                           ("Q_V", "volume", 1e-3), ("Q_FI", "foreign", 1e-3), ("Q_TR", "trust", 1e-3),
                           ("Q_DL", "dealer", 1e-3), ("Q_MB", "mbal", 1), ("Q_SB", "sbal", 1), ("Q_ML", "mlimit", 1),
                           ("Q_FR", "foreign_ratio", 1), ("Q_H400", "big400", 1), ("Q_H1000", "big1000", 1),
-                          ("Q_HR", "retail50", 1), ("Q_HN", "holders", 1)):
+                          ("Q_HR", "retail50", 1), ("Q_HN", "holders", 1),
+                          ("Q_RF", "ref", 1)):                     # v2.3.2 參考價（除權息日≠前一日收盤）→ 漲跌幅與官方一致
         a[key] = qa(name, sc)
     for key, name in (("Q_PE", "pe"), ("Q_PB", "pb"), ("Q_DY", "dy")):      # v1.8 估值歷史（基本面快照）
         a[key] = qa(name)
