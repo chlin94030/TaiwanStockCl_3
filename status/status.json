@@ -7,7 +7,7 @@
   "misc": 1.0
  },
  "blocked": {},
- "checked_at": "2026-11-14 00:18:21+08:00",
+ "checked_at": "2026-11-14 04:52:28+08:00",
  "percent": 1.0,
  "complete": true,
  "stage": "done",
@@ -19,7 +19,7 @@
  },
  "research": {
   "last_date": "2026-11-13",
-  "built": "2026-11-14T00:10:33+08:00",
+  "built": "2026-11-14T04:42:09+08:00",
   "synthetic": false
  }
 }
