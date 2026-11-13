@@ -344,3 +344,44 @@ def treemap_figure(df: pd.DataFrame, period: str = "r1", dark: bool = True, heig
     fig.update_layout(height=height, margin=dict(l=2, r=2, t=26, b=2), paper_bgcolor="rgba(0,0,0,0)",
                       font=dict(family="Noto Sans TC, Inter, sans-serif"))
     return fig
+
+
+# ------------------------------------------------------------------ v3.2 AI 晶片陣營輪動
+CAMP_LABEL = {"nv": "輝達陣營", "amd": "AMD 陣營", "asic": "ASIC 陣營", "shared": "三陣營共用"}
+CAMP_COLOR = {"nv": "#76b900", "amd": "#ed1c24", "asic": "#4285f4", "shared": "#94a3b8"}
+
+
+def camp_rows(camps, hist: pd.DataFrame | None, paths: pd.DataFrame | None, cell) -> tuple[list, list]:
+    """camps：[(陣營, depth, 速度, 理由)]；hist：camp 事件平均（index＝陣營）；paths：camp_paths（近 120 日累積超額）。"""
+    rows, mrows = [], []
+    items = list(camps) + [("shared", 0, "—", "同時供應兩個以上陣營：一進一出，影響小")]
+    for cid, dep, speed, why in items:
+        reps = supply.shared_members() if cid == "shared" else [t for t, _ in supply.camp_members(cid, exclusive=True)]
+        names = "、".join(cell(t) for t in reps[:7])
+        h = hist.loc[cid] if hist is not None and cid in hist.index else None
+        hs = f"{ui.pct(h['d0'], 1, color=True)} / {ui.pct(h['d5'], 1, color=True)}" if h is not None else "–"
+        r20 = np.nan
+        if paths is not None and cid in paths and len(paths) > 21:
+            r20 = (1 + paths[cid].iloc[-1]) / (1 + paths[cid].iloc[-21]) - 1
+        dot = f"<span style='display:inline-block;width:10px;height:10px;border-radius:50%;background:{CAMP_COLOR[cid]};margin-right:6px'></span>"
+        lab = f"{dot}<b>{esc(CAMP_LABEL[cid])}</b>"
+        rows.append([lab, depth_bar(dep), esc(speed), esc(why), hs, ui.pct(r20, 1, color=True), names])
+        mrows.append(ui.mcard(lab, depth_bar(dep), f"{esc(speed)}｜{esc(why)}",
+                              f"歷史競爭者利多日 當天／5 日 {hs}｜近 20 日相對大盤 {ui.pct(r20, 1)}<br>{names}"))
+    return rows, mrows
+
+
+def camp_figure(paths: pd.DataFrame, dark: bool = True, height: int = 280):
+    import plotly.graph_objects as go
+    from kosto.charts import THEME
+    BG, GRID, TXT, MUTED = THEME[bool(dark)]
+    fig = go.Figure()
+    for c in paths.columns:
+        fig.add_trace(go.Scatter(x=paths.index, y=paths[c] * 100, mode="lines", name=CAMP_LABEL.get(c, c),
+                                 line=dict(color=CAMP_COLOR.get(c, MUTED), width=2.2 if c != "shared" else 1.5,
+                                           dash="dot" if c == "shared" else "solid")))
+    fig.add_hline(y=0, line_color=MUTED, line_dash="dot")
+    fig.update_layout(height=height, margin=dict(l=8, r=40, t=10, b=34), paper_bgcolor=BG, plot_bgcolor=BG,
+                      font=dict(color=TXT, family="Inter, Noto Sans TC, sans-serif"), legend=dict(orientation="h", y=1.12),
+                      xaxis=dict(gridcolor=GRID), yaxis=dict(title="相對大盤累積 %", gridcolor=GRID, side="right"))
+    return fig

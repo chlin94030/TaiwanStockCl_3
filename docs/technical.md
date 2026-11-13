@@ -641,3 +641,19 @@ v1.9 改為每個交易日 **21:40 一次更新全部**（融資融券約 21:00�
 * `ui.schip`（可點的股票籤 → 個股診斷）、`ui.action_board`（今日行動看板：買進／賣出／續抱三欄，買進顯示資金 %）；
   CSS：卡片懸停、分頁底線漸層、區塊標題漸層字。
 * 導覽：`st.navigation` 改為兩組——常用（今日選股、盤中監控、盤勢儀表板、產業鏈地圖、個股診斷）直接顯示，其餘放「更多」下拉；手機快速切換列不變。
+
+## v3.2 AI 晶片陣營輪動（docs/v3.2_notes.md）
+* `supply.CAMPS`（nv／amd／asic：名稱、美國指標、白話、代表股與角色；也加入 THEMES 為 camp_*）、`camp_members(cid, exclusive)`、
+  `camps_of`、`shared_members`（同時在兩個以上陣營）。
+* `impact.EVENT_SETS["rival"]`（競爭者利多日，2026-11-10／11-13 資料進來自動納入）、`camp_index`、`camp_paths`（近 120 日各陣營專屬股
+  相對大盤累積）、`us_moves`（WORLD 有 NVDA／AMD／AVGO／GOOGL 時的前一晚、5、20 日）。`SCENARIOS["nvidia_ceo"]` 改寫並加 `camps`。
+* `chainmap.camp_rows`、`camp_figure`；App：消息衝擊評估（情境有 camps 時）與題材地圖顯示「陣營輪動」；個股診斷「產業鏈位置」顯示陣營；
+  觀察重點輝達事件加「誰補位」。選股模型不變。
+
+## v3.3 科斯托蘭尼總檢視（docs/v3.3_kostolany_review.md）
+* `kosto/egg.py`：`STAGE_INFO`（原著定義與做法）、`PRINCIPLES`（原著→做法→驗證→狀態）、`market_stage`（MKT_DAILY；`stage_model` 原分類、
+  `stage` 依原著修正 B3：距高點 ≥15% 且近 20 日 ≤ −8% 或廣度 ≤ 25%）、`mkt300`、`stage_forward`、`news_reaction`（利多不漲／利空不跌、超賣／超買燈號）、
+  `money_psych`（TNX／IRX／TWD／股息殖利率−美債／融資 z／成交量比／廣度／VIX／集保持股人數）、`egg_svg`。只做顯示，不進模型。
+* `sources/world.RATES`（TNX、IRX、DXY）加入每日國際資料（`build.world` 的 keys）。
+* App：盤勢儀表板新增「🥚 科斯托蘭尼」分頁；個股診斷「科斯托蘭尼雞蛋階段」（STAGE 最後一個換股日）；熱力圖今日漲跌在交易日改用 MIS 即時報價；
+  `research_stamp` TTL 180 秒、`load_github`／`load_local` max_entries=1；長線持股水位說明改為「其餘放 0050」。

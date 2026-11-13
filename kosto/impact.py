@@ -25,6 +25,8 @@ EVENT_SETS = {
     "election": ("美國大選／期中選舉", ["2020-11-04", "2022-11-09", "2024-11-06", "2026-11-04"], "開票當天（台股盤中）"),
     "apple": ("蘋果秋季發表會", ["2019-09-11", "2020-10-14", "2021-09-15", "2022-09-08", "2023-09-13", "2024-09-10", "2025-09-10",
                            "2026-09-10"], "2026-09-10 為 iPhone Duo 發表"),
+    "rival": ("競爭者利多（輝達相對利空）", ["2025-10-07", "2025-10-14", "2025-11-26", "2026-11-10", "2026-11-13"],
+              "AMD 與 OpenAI 合作（AMD +24%）、博通與 OpenAI 合作、Meta 傳採用 Google TPU（輝達 −2.6%）；2026-11 黃仁勳風波日資料進來後自動納入"),
 }
 
 # ------------------------------------------------------------------ 情境：基本面判斷（depth：− 受傷、＋ 受惠；3 最深）
@@ -90,15 +92,31 @@ SCENARIOS = [
                   ("foundry", 0, "—", "台積電占比小")],
          note="蘋果發表會當天常見「利多出盡」；請看下方歷史發表會後的族群反應。",
          sources=[("財報狗：iPhone Duo 13 檔台廠", "https://statementdog.com/news/17652")]),
-    dict(id="nvidia_ceo", name="輝達執行長黃仁勳請辭（2026-11-12）", date="2026-11-13", analog="ai_down",
+    dict(id="nvidia_ceo", name="輝達執行長黃仁勳請辭（2026-11-12）", date="2026-11-13", analog="rival",
          facts=["黃仁勳辭去總裁、執行長與董事，財務長 Colette Kress 暫代；公司表示營運、客戶承諾與產品路線圖不受影響。",
-                "第三季財報照原訂台灣 11/18 清晨 5:20 公布；輝達股價跌近 10%。"],
-         chain=["治理事件，不是需求改變：關鍵看財報與財測、雲端業者資本支出",
-                "短線情緒：AI 供應鏈全面跟跌；歷史上費半重挫後輝達供應鏈 20／60 日多半反彈（v2.5）"],
-         impacts=[("server", -2, "立即", "輝達直接客戶"), ("abf", -2, "立即", "GPU 載板"), ("ccl", -2, "立即", "高速板材"),
-                  ("thermal", -2, "立即", "GPU 散熱"), ("power", -1, "立即", ""), ("chassis", -1, "立即", ""), ("adv_pkg", -1, "立即", "CoWoS"),
-                  ("foundry", -1, "立即", ""), ("asic", 0, "—", "雲端自研晶片反而可能受惠")],
-         note="見「盤勢儀表板 → 觀察重點」的輝達事件歷史參考。", sources=[("NVIDIA 公告", "https://nvidianews.nvidia.com/news/nvidia-announces-ceo-transition")]),
+                "美股 11/12：輝達 −4.3%（收 166.19 美元），AMD +5.9%、博通 +5.5%（風波期間 AMD 單日一度 +13%、博通 +8.8%）；"
+                "費半 −0.5%、台積電 ADR −1.9%；台指期夜盤 +548 點（43,676）。",
+                "第三季財報照原訂台灣 11/18 清晨 5:20 公布。"],
+         chain=["治理事件，不是 AI 需求消失：雲端巨頭的資本支出還在，只是可能從輝達「分一些」給 AMD 與自研晶片（ASIC／TPU）",
+                "台灣大部分 AI 供應商同時做三個陣營（台積電、日月光、欣興、台光電、金像電、緯創、緯穎、英業達）→ 一進一出，影響小",
+                "只做輝達整櫃的環節（鴻海、廣達的 GB 機櫃、水冷板、電源櫃、滑軌）相對受傷",
+                "AMD 與 ASIC 專屬的環節（世芯、創意、聯發科 TPU、京元電與測試介面、智邦；力成、南電、嘉澤、技嘉）相對受惠",
+                "歷史經驗：只有「明確搶輝達份額」的消息（Meta 傳採用 TPU）才出現分化；「整個 AI 餅變大」的消息（OpenAI 與 AMD／博通合作）三個陣營一起漲"],
+         impacts=[("server", -2, "立即", "鴻海、廣達以輝達整櫃為主"), ("thermal", -2, "立即", "水冷板以輝達 GB 機櫃為主"),
+                  ("power", -1, "1～2 季", "電源櫃、800V 與輝達合作最深"), ("chassis", -1, "1～2 季", "機櫃滑軌"),
+                  ("abf", -1, "立即", "輝達、AMD 都用，一進一出"), ("ccl", -1, "立即", "高速板材三個陣營都用"),
+                  ("foundry", 0, "—", "三個陣營的晶片都在台積電生產"), ("adv_pkg", 0, "—", "CoWoS 產能仍供不應求，只是換客戶"),
+                  ("asic", 2, "1～2 季", "世芯、創意：雲端自研晶片設計服務"), ("soc", 1, "1～2 季", "聯發科：Google TPU 推論晶片"),
+                  ("probe", 1, "1～2 季", "ASIC／TPU 測試時間長，探針卡、測試座受惠")],
+         camps=[("nv", -2, "立即", "輝達整櫃專屬環節：份額可能被分走、短線情緒最差"),
+                ("amd", 1, "1～2 季", "AMD 份額有機會增加；但 AMD 本身產能與軟體生態仍在追趕"),
+                ("asic", 2, "1～2 季", "雲端巨頭加速自研晶片的理由更充分（Google TPU、AWS Trainium、Meta）")],
+         note="陣營名單是市場常見分類，不代表公開供應關係；同一家公司常同時供應多個陣營。也請看「盤勢儀表板 → 觀察重點」的輝達事件歷史參考。",
+         sources=[("NVIDIA 公告", "https://nvidianews.nvidia.com/news/nvidia-announces-ceo-transition"),
+                  ("Yahoo Finance：AMD、博通大漲", "https://finance.yahoo.com/markets/article/amd-broadcom-stocks-jump-as-nvidia-ceo-jensen-huang-resigns-143725561.html"),
+                  ("聯合報：台指期夜盤 +548 點", "https://udn.com/news/story/6811/9875869"),
+                  ("my-finance：AMD 台灣供應鏈", "https://www.my-finance.com.tw/tw/News_Detail/2336"),
+                  ("經濟日報：TPU 供應鏈", "https://money.udn.com/money/amp/story/5607/9337921")]),
 ]
 SCEN_BY_ID = {s["id"]: s for s in SCENARIOS}
 
@@ -212,3 +230,41 @@ def betas(B, groups: dict[str, list[int]] | None = None, key: str = "SOX", since
 
 def depth_label(x: int) -> str:
     return {3: "深", 2: "中", 1: "淺", 0: "幾乎無", -1: "淺", -2: "中", -3: "深"}.get(int(x), "")
+
+
+# ------------------------------------------------------------------ v3.2 AI 晶片陣營輪動
+def camp_index(B, exclusive: bool = True) -> dict[str, list[int]]:
+    """陣營 → 代表股欄位；exclusive＝只算只在這個陣營的公司；另加 shared（同時供應兩個以上陣營）。"""
+    tix = {t: j for j, t in enumerate(B.tickers)}
+    out = {c: [tix[t] for t, _ in supply.camp_members(c, exclusive) if t in tix] for c in supply.CAMPS}
+    out["shared"] = [tix[t] for t in supply.shared_members() if t in tix]
+    return {k: v for k, v in out.items() if v}
+
+
+def camp_paths(B, days: int = 120) -> pd.DataFrame:
+    """近 days 個交易日，各陣營（只在該陣營的代表股）等權相對全市場的累積超額（起點＝0）。"""
+    dd = pd.DatetimeIndex(B.meta["days"])
+    R = B.a["R"].astype(float)
+    m = _market(B)
+    a = max(0, len(dd) - days)
+    out = {}
+    for c, js in camp_index(B).items():
+        with np.errstate(invalid="ignore"):
+            g = np.nanmean(np.where(np.isfinite(R[a:, js]), R[a:, js], np.nan), axis=1)
+        out[c] = np.cumprod(1 + np.nan_to_num(g - m[a:])) - 1
+    return pd.DataFrame(out, index=dd[a:])
+
+
+def us_moves(B, keys=("NVDA", "AMD", "AVGO", "GOOGL", "SOX")) -> pd.DataFrame:
+    """美國指標股前一晚、5 日、20 日漲跌（WORLD 有資料時；每日更新的國際同業）。"""
+    wk = list(B.meta.get("world_keys") or [])
+    if "WORLD" not in B.a or not wk:
+        return pd.DataFrame()
+    W = pd.DataFrame(B.a["WORLD"].astype(float), index=pd.DatetimeIndex(B.meta["days"]), columns=wk).ffill()
+    rows = []
+    for k in keys:
+        if k not in W or W[k].notna().sum() < 25:
+            continue
+        x = W[k].dropna()
+        rows.append({"key": k, "r1": x.iloc[-1] / x.iloc[-2] - 1, "r5": x.iloc[-1] / x.iloc[-6] - 1, "r20": x.iloc[-1] / x.iloc[-21] - 1})
+    return pd.DataFrame(rows).set_index("key") if rows else pd.DataFrame()

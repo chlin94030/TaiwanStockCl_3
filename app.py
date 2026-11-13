@@ -101,7 +101,7 @@ def cached_workflow_present(repo, token):
     return workflow_present(repo, token)
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=180, show_spinner=False)
 def research_stamp(repo, token):
     info = release_info(repo, RESEARCH_TAG, token)
     stamp = (info.get("assets", {}).get("bundle.npz") or {}).get("updated_at", "")
@@ -111,7 +111,7 @@ def research_stamp(repo, token):
 
 
 # ------------------------------------------------------------------ loaders
-@st.cache_resource(show_spinner="下載每日研究資料（約 50~90 MB，第一次較久）…")
+@st.cache_resource(show_spinner="下載每日研究資料（約 50~90 MB，第一次較久）…", max_entries=1)
 def load_github(repo, token, stamp):
     B = Bundle.load(io.BytesIO(fetch_asset(repo, RESEARCH_TAG, "bundle.npz", token)))
     try:
@@ -121,7 +121,7 @@ def load_github(repo, token, stamp):
     return B, res
 
 
-@st.cache_resource(show_spinner="讀取本機資料…")
+@st.cache_resource(show_spinner="讀取本機資料…", max_entries=1)
 def load_local(stamp):
     B = Bundle.load("artifacts/bundle.npz")
     res = None
@@ -1155,6 +1155,9 @@ def stock_view(j, h="mid", key="sv"):
         unsafe_allow_html=True)
     nw2.markdown(ui.panel("今天的重大訊息", material_html([t])), unsafe_allow_html=True)
     st.markdown(ui.panel(f"產業鏈位置｜{ui.esc(NAMES[j])}", chain_position_html(t)), unsafe_allow_html=True)
+    eg = stock_egg_html(j)
+    if eg:
+        st.markdown(ui.panel(f"科斯托蘭尼雞蛋階段｜{ui.esc(NAMES[j])}", eg), unsafe_allow_html=True)
     g1, g2 = st.columns([1.6, 1])
     seg, grp_html = group_compare_html(j)
     g1.markdown(ui.panel(f"同族群比較｜{seg}", grp_html), unsafe_allow_html=True)
@@ -2360,11 +2363,111 @@ def nv_event_html() -> str:
         "但之後 20／60 日平均反彈，而且反彈幅度大於其他類股（費半 ≤ −7% 的 14 次：60 日平均 +18%）。",
         "<b>這次不同的地方</b>：不是景氣或總體利空，而是領導人與治理風險（婚外情對象疑涉外國情報、出口管制疑慮）。"
         "關鍵是訂單與資本支出有沒有改變——11/18 清晨的輝達財報與財測、四大雲端業者的資本支出、台積電與鴻海的月營收（12/10 前公布）。",
+        "<b>輝達失分、誰補位</b>：AMD、博通與雲端自研晶片（TPU）可能分走份額；台灣多數 AI 供應商三個陣營都做（一進一出），"
+        "只做輝達整櫃的環節相對受傷、ASIC／AMD 專屬環節相對受惠——見「產業鏈地圖 → 消息衝擊評估 → 輝達執行長」的陣營輪動。",
         "<b>開盤怎麼應對</b>：前一晚美股的影響幾乎在開盤一次反映（v2.3），不必在開盤恐慌賣出；分批計畫與止穩檢查照常；"
         "名單中與輝達直接相關的股票，若跌破警戒價再重新檢視。",
         "<b>模型名單的曝險</b>：" + "；".join(expo) + "。" + ("名單中輝達供應鏈占比不高，主要風險是整體電子股同步下跌。" if share < 0.34 else
                                                        "名單中輝達供應鏈占比偏高，留意財報與接班消息；不建議因單一事件全數出清（歷史上 20／60 日多半反彈）。")]))
     return out
+
+
+@st.cache_data(show_spinner=False)
+def egg_cached(bid):
+    from kosto import egg
+    md = egg.market_stage(B)
+    return md, egg.stage_forward(B), egg.news_reaction(B), egg.money_psych(B)
+
+
+def kostolany_tab():
+    """v3.3 科斯托蘭尼：雞蛋圖與目前階段、各階段歷史表現、對消息的反應、貨幣＋心理溫度計、原著原則對照。"""
+    from kosto import egg
+    md, fw, nr, mp = egg_cached(BID)
+    if md is None or md.empty:
+        st.info("大盤階段資料將在下一次每日研究後提供。")
+        return
+    cur = md["stage"].iloc[-1]
+    info = egg.STAGE_INFO.get(cur, {"name": "階段不明", "book": "", "act": "—", "color": "#94a3b8"})
+    scores = {k: float(md[k].iloc[-1]) for k in egg.STAGE_INFO if k in md}
+    st.markdown(ui.section("科斯托蘭尼雞蛋理論：大盤現在在哪裡", f"依 {md.index[-1]:%Y-%m-%d} 收盤；成交量比、融資水位（代替持股人數）、廣度、位置"),
+                unsafe_allow_html=True)
+    c1, c2 = st.columns([1.15, 1])
+    c1.markdown(egg.egg_svg(cur, scores), unsafe_allow_html=True)
+    f = fw.loc[cur] if fw is not None and cur in fw.index else None
+    hist = (f"這個階段歷史上（2019-07 起 {int(f['n'])} 天）之後 20 日大盤平均 {ui.pct(f['f20'], 1, color=True)}、60 日 {ui.pct(f['f60'], 1, color=True)}，"
+            f"60 日後上漲機率 {f['w60']:.0%}。") if f is not None and f["n"] > 0 else ""
+    prev = md["stage"].iloc[-21] if len(md) > 21 else cur
+    since = int((md["stage"][::-1] == cur).cumprod().sum())
+    c2.markdown(ui.panel(f"目前：{cur} {info['name']}", ui.bullets([
+        f"<b>原著定義</b>：{ui.esc(info['book'])}；<b>原著做法</b>：<b style='color:{info['color']}'>{ui.esc(info['act'])}</b>",
+        f"<b>已持續</b> {since} 個交易日（20 日前是 {prev}）；判斷信心 {float(md['confidence'].iloc[-1]):.0%}",
+        hist or "歷史樣本不足。",
+        "<b>本系統怎麼用</b>：長線在 A3／B1／B2 自動降低持股（60%／50%／40%，其餘放 0050）；"
+        "短中線不依階段減碼（回測顯示台股過熱後常續漲，照書減碼年化少 4～7 個百分點）。"]
+        + ([f"<b>B3 為 v3.3 依原著修正的判定</b>（原分類：{md['stage_model'].iloc[-1]}）；模型持股水位仍用原分類，B2 減碼的資金放 0050，總持股不變。"]
+           if bool(md["b3_fix"].iloc[-1]) else []))), unsafe_allow_html=True)
+    if fw is not None and len(fw):
+        rows = [[f"<b style='color:{egg.STAGE_INFO[k]['color']}'>{k}</b> {ui.esc(egg.STAGE_INFO[k]['name'])}", ui.esc(egg.STAGE_INFO[k]['act']),
+                 f"{int(r['n'])}", ui.pct(r["f20"], 1, color=True), ui.pct(r["f60"], 1, color=True), f"{r['w60']:.0%}" if np.isfinite(r["w60"]) else "–"]
+                for k, r in fw.iterrows() if k in egg.STAGE_INFO]
+        r = fw.loc["全部"]
+        rows.append(["<b>全部日子</b>", "", f"{int(r['n'])}", ui.pct(r["f20"], 1, color=True), ui.pct(r["f60"], 1, color=True), f"{r['w60']:.0%}"])
+        st.markdown(ui.section("原著說的對不對？各階段之後大盤怎麼走", "市值前 300 大等權；2019-07 起"), unsafe_allow_html=True)
+        mrows = [ui.mcard(f"<b style='color:{egg.STAGE_INFO[k]['color']}'>{k}</b> {ui.esc(egg.STAGE_INFO[k]['name'])}", ui.esc(egg.STAGE_INFO[k]["act"]),
+                          f"之後 20 日 {ui.pct(r['f20'], 1, color=True)}｜60 日 {ui.pct(r['f60'], 1, color=True)}",
+                          f"60 日上漲機率 {r['w60']:.0%}｜{int(r['n'])} 天" if np.isfinite(r["w60"]) else f"{int(r['n'])} 天")
+                 for k, r in fw.iterrows() if k in egg.STAGE_INFO]
+        st.markdown(ui.resp(ui.table(["階段", "原著做法", "天數", "之後 20 日", "之後 60 日", "60 日上漲機率"], rows, left=(0, 1)), "".join(mrows)),
+                    unsafe_allow_html=True)
+        st.caption("B3（恐慌出清）與 A1（量小打底）之後最好、B1（高檔初跌）之後最差、B2（下跌途中）之後平平——與原著一致；"
+                   "只有 A3（過熱）不同：台股過熱後常續漲。B3 依原著修正判定（v3.3）：原分類把 2020-03、2022-10、2025-04 的重挫都判成 B2。")
+    if nr:
+        lines = [f"近 20 個交易日：費半大漲（≥ +2%）{nr['good_days']} 天，其中台股沒跟漲 {len(nr['good_no_react'])} 天"
+                 + (f"（{'、'.join(d[5:] for d in nr['good_no_react'])}）" if nr["good_no_react"] else "") + "；"
+                 f"費半大跌（≤ −2%）{nr['bad_days']} 天，其中台股沒跟跌 {len(nr['bad_no_react'])} 天"
+                 + (f"（{'、'.join(d[5:] for d in nr['bad_no_react'])}）" if nr["bad_no_react"] else "") + "。"]
+        if nr.get("oversold_signal"):
+            lines.append("<b style='color:#22c55e'>超賣訊號（原著 133 題：利空不跌就進場）</b>：大盤距高點已逾 10%，且出現利空不跌。"
+                         "歷史上這種情況之後 60 日大盤平均 +11.4%（一般下跌期 +7.7%），22 次。")
+        elif nr.get("overbought_watch"):
+            lines.append("<b style='color:#f59e0b'>原著的超買警訊（長期上漲後利多不漲）</b>：但台股 2019 年以來這種情況之後 60 日平均仍 +6.7%（48 次），"
+                         "只當提醒，不當賣出訊號。")
+        else:
+            lines.append("目前沒有原著定義的超買或超賣訊號（需「長期上漲後利多不漲」或「長期下跌後利空不跌」）。")
+        st.markdown(ui.section("市場對消息的反應（原著：好消息不漲就退場、壞消息不跌就進場）"), unsafe_allow_html=True)
+        st.markdown(ui.panel("最近的反應", ui.bullets(lines)), unsafe_allow_html=True)
+    if mp:
+        rows = [[ui.esc(k), ui.esc(nm), ui.esc(txt), {1: "<b style='color:#22c55e'>偏多</b>", -1: "<b style='color:#ef4444'>偏空</b>"}.get(t, "中性")]
+                for k, nm, v, txt, t in mp]
+        sc = sum(t for *_, t in mp)
+        st.markdown(ui.section("貨幣＋心理＝趨勢（原著公式）", f"偏多 {sum(1 for *_, t in mp if t > 0)} 項、偏空 {sum(1 for *_, t in mp if t < 0)} 項；"
+                               "只做溫度計參考，沒有經過回測驗證"), unsafe_allow_html=True)
+        st.markdown(ui.table(["類別", "指標", "現況", "傾向"], rows, left=(0, 1, 2)), unsafe_allow_html=True)
+        st.caption("利率與美元指數在下一次每日更新後開始提供（v3.3 新增）；持股人數（集保）每週更新，歷史持續累積中。"
+                   + (f" 綜合：{'偏多' if sc > 0 else '偏空' if sc < 0 else '中性'}。" if mp else ""))
+    st.markdown(ui.section("原著原則與本系統的對照", "哪些照書做、哪些被台股資料否決（docs/v3.3_kostolany_review.md）"), unsafe_allow_html=True)
+    rows = [[ui.esc(a), ui.esc(b_), ui.esc(c), ("<b>" + ui.esc(d) + "</b>") if d.startswith("✅") else ui.esc(d)] for a, b_, c, d in egg.PRINCIPLES]
+    st.markdown(ui.resp(ui.table(["原著", "本系統怎麼做", "台股歷史驗證", "狀態"], rows, left=(0, 1, 2, 3)),
+                        "".join(ui.mcard(f"<b>{ui.esc(a)}</b>", ui.esc(d), ui.esc(b_), ui.esc(c)) for a, b_, c, d in egg.PRINCIPLES)),
+                unsafe_allow_html=True)
+
+
+def stock_egg_html(j: int) -> str:
+    """個股雞蛋階段（研究資料最後一個換股日）＋原著做法；個股階段閘門已關閉（回測傷報酬），只做提醒。"""
+    from kosto import egg
+    from kosto.config import STAGES
+    if "STAGE" not in B.a:
+        return ""
+    code = int(B.a["STAGE"][-1, j])
+    if not 1 <= code <= 6:
+        return "<div class='kq-muted'>這檔目前的雞蛋階段不明確（各階段分數都不高）。</div>"
+    k = STAGES[code - 1]
+    info = egg.STAGE_INFO[k]
+    hist = [STAGES[c - 1] if 1 <= c <= 6 else "–" for c in B.a["STAGE"][-6:, j].astype(int)]
+    return (f"<div style='font-size:13.5px;line-height:1.7'><b style='color:{info['color']}'>{k} {ui.esc(info['name'])}</b>"
+            f"｜原著：{ui.esc(info['book'])} → <b>{ui.esc(info['act'])}</b><br>"
+            f"<span class='kq-muted'>近 6 個換股日：{' → '.join(hist)}。個股階段只做提醒：回測顯示照個股階段不買 A3／B1／B2，"
+            "開發期年化少 23～50 個百分點（台股強勢股常續強），所以模型不用它擋買進。</span></div>")
 
 
 def audit_html() -> str:
@@ -2810,8 +2913,8 @@ def page_insight():
     live_checks = dash_today(cur)
 
     in_crash = any(f[2] for f in cur.get("flags", [])) or sto["corr"]
-    names = ["🚨 急跌應變", "✅ 止穩檢查", "🎯 特別時期選股", "🩺 模型體檢", "🧭 觀察重點"]
-    order = names if in_crash else [names[4], names[1], names[0], names[2], names[3]]
+    names = ["🚨 急跌應變", "✅ 止穩檢查", "🎯 特別時期選股", "🩺 模型體檢", "🧭 觀察重點", "🥚 科斯托蘭尼"]
+    order = names if in_crash else [names[4], names[5], names[1], names[0], names[2], names[3]]
     tabs = dict(zip(order, st.tabs(order)))
 
     with tabs["🚨 急跌應變"]:
@@ -2837,7 +2940,7 @@ def page_insight():
         stage = latest("long").get("market_stage", "")
         exp_l = latest("long").get("exposure", 1.0)
         st.markdown(ui.panel("模型怎麼因應", ui.bullets([
-            f"<b>長線</b>：科斯托蘭尼階段 {ui.esc(STAGE_ZH.get(stage, stage).split(' ')[0])}，模型持股水位 {exp_l:.0%}（B1／B2 自動降到 50%／40%，其餘放現金）。",
+            f"<b>長線</b>：科斯托蘭尼階段 {ui.esc(STAGE_ZH.get(stage, stage).split(' ')[0])}，模型持股水位 {exp_l:.0%}（A3／B1／B2 自動降到 60%／50%／40%，其餘放 0050）。",
             "<b>短線、中線</b>：維持 100% 持股——v1.1、v1.7 實測「依階段或費半跌破百日線降水位」兩段期間都拖累報酬，所以不自動降。",
             "<b>v2.2、v2.3 測試</b>（見「模型體檢」）：急跌時動能權重減半、同產業檔數上限、技術面上限、加入籌碼或券資比，"
             "都沒有通過預先宣告的門檻 → 主模型不改。",
@@ -3010,6 +3113,9 @@ def page_insight():
             n_user_ok = sum(1 for x in rv.IDEAS if x[2] == "使用者提問" and x[5].startswith("✅"))
             st.caption(f"使用者提問引發的 {n_user} 組想法中，{n_user_ok} 組改變了主模型；其餘都轉為儀表板、燈號、提醒等資訊顯示。"
                        "主模型最近一次調整是 v3.0（短中線改名次加權，docs/v3.0_protocol.md）；之前是 v1.9（營收優於同業 15%）。")
+
+    with tabs["🥚 科斯托蘭尼"]:
+        kostolany_tab()
 
     with tabs["🧭 觀察重點"]:
         st.markdown(insight_focus(df, sto, f5, t5, mchg, sox_dd), unsafe_allow_html=True)
@@ -3784,6 +3890,43 @@ def since_cached(bid, date: str) -> pd.Series:
 
 
 @st.cache_data(show_spinner=False)
+def camp_cached(bid):
+    """陣營輪動：近 120 日路徑、歷史競爭者利多日的反應（只在該陣營的代表股＋共用）。"""
+    from kosto import impact as I
+    paths = I.camp_paths(B, 120)
+    ev = I.event_returns(B, I.EVENT_SETS["rival"][1], I.camp_index(B))
+    sm = I.event_summary(ev)
+    return paths, sm, sorted(ev["event"].unique().tolist()) if len(ev) else [], I.us_moves(B)
+
+
+def camp_section(camps, key: str, title: str = "陣營輪動：輝達失分，誰補位？"):
+    """v3.2 AI 晶片陣營輪動：輝達／AMD／ASIC 誰受傷、誰受惠＋近 120 日相對表現＋美國指標股。"""
+    from kosto import chainmap as cm
+    paths, sm, evs, us = camp_cached(BID)
+    cell = lambda t: stock_cell(t) if t in TIDX else ui.esc(t)          # noqa: E731
+    rows, mrows = cm.camp_rows(camps, sm, paths, cell)
+    st.markdown(ui.section(title, "台灣 AI 供應商多數同時做輝達、AMD、ASIC 三個陣營；"
+                           "只在單一陣營的公司才會明顯分化（代表股＝只在該陣營）"), unsafe_allow_html=True)
+    st.markdown(ui.resp(ui.table(["陣營", "判斷", "多快反映", "原因", f"歷史競爭者利多日 當天／5 日（{len(evs)} 次）", "近 20 日相對大盤",
+                                  "只在這個陣營的代表股"], rows, left=(0, 1, 3, 6)), "".join(mrows)), unsafe_allow_html=True)
+    c1, c2 = st.columns([1.6, 1])
+    if len(paths):
+        c1.plotly_chart(cm.camp_figure(paths, dark=bool(DARK)), width="stretch", theme=None, key=f"{key}_camp",
+                        config={"displaylogo": False, "displayModeBar": False})
+    if len(us):
+        urow = [[f"<b>{ui.esc(k)}</b>", ui.pct(r["r1"], 1, color=True), ui.pct(r["r5"], 1, color=True), ui.pct(r["r20"], 1, color=True)]
+                for k, r in us.iterrows()]
+        c2.markdown(ui.panel("美國指標股（前一晚、5 日、20 日）", ui.table(["", "前一晚", "5 日", "20 日"], urow, left=(0,))),
+                    unsafe_allow_html=True)
+    else:
+        c2.markdown(ui.panel("美國指標股", "<div class='kq-muted'>輝達、AMD、博通、Alphabet 的報價會在每日更新的國際同業資料中提供。</div>"),
+                    unsafe_allow_html=True)
+    st.caption("歷史競爭者利多日：" + ("、".join(evs) if evs else "–") + "。只有「明確搶輝達份額」的消息（2025-11-26 Meta 傳採用 Google TPU）"
+               "出現分化（ASIC 陣營 5 日 +4.5%、輝達陣營 +1.5%）；「AI 餅變大」的消息（OpenAI 與 AMD／博通合作）三個陣營一起漲。"
+               "模型的動能與營收因子會在 1～2 季內跟著陣營輪動換股（中線名單 2025Q4 偏輝達、2026 上半年轉向 ASIC）。")
+
+
+@st.cache_data(show_spinner=False)
 def betas_cached(bid) -> pd.Series:
     from kosto import impact as I
     return I.betas(B)
@@ -3807,11 +3950,26 @@ def heatmap_section(key: str, height: int | None = None, default_top: int = 300)
     if df is None or not len(df):
         st.info("熱力圖需要看盤資料包（下一次每日研究後提供）。")
         return
+    live_n = 0
+    if per == "r1" and market_phase() in ("盤前試撮", "盤中", "盤後"):     # v3.3：交易日改用證交所即時漲跌（研究資料還沒更新時）
+        try:
+            q, _ = quotes_for(df["t"].tolist())
+            if len(q) and "chg" in q:
+                q = q[q["date"].astype(str) > RDAY.strftime("%Y%m%d")] if "date" in q else q
+                ch = q["chg"].dropna()
+                if len(ch):
+                    df = df.copy()
+                    m = df["t"].isin(ch.index)
+                    df.loc[m, "r1"] = df.loc[m, "t"].map(ch).astype(float)
+                    live_n = int(m.sum())
+        except Exception:  # noqa: BLE001
+            live_n = 0
     fig = cm.treemap_figure(df, per, dark=bool(DARK), height=height or (560 if IS_MOBILE else 660))
     st.plotly_chart(fig, width="stretch", theme=None, key=f"{key}_fig", config={"displaylogo": False, "displayModeBar": False})
     up = df[df[per] > 0]["amt"].sum() / max(df["amt"].sum(), 1e-9)
     g = df.groupby("group").apply(lambda x: np.average(x[per].fillna(0), weights=x["amt"])).sort_values()
-    st.caption(f"成交金額前 {int(top)} 名（{'電子' if scope == 'elec' else '全市場'}）；{cm.PERIODS[per][0]}上漲的成交額占 {up:.0%}。"
+    st.caption((f"今日漲跌：{live_n} 檔用證交所即時報價（15 秒更新），其餘為 {RDAY:%m/%d} 收盤。" if live_n else "")
+               + f"成交金額前 {int(top)} 名（{'電子' if scope == 'elec' else '全市場'}）；{cm.PERIODS[per][0]}上漲的成交額占 {up:.0%}。"
                f"最強族群：{'、'.join(f'{k} {v * 100:+.1f}%' for k, v in g.tail(3)[::-1].items())}；"
                f"最弱：{'、'.join(f'{k} {v * 100:+.1f}%' for k, v in g.head(3).items())}。點方塊可放大、點上方路徑可返回。資料到 {B.sig_dates[-1]:%m/%d}。")
 
@@ -3845,9 +4003,13 @@ def chain_position_html(t: str) -> str:
         lines.append(f"<a href='./chain?g={g}' target='_self'><b>{ui.esc(d['name'])}</b></a>（{ui.esc(S.LAYER_NAME[d['layer']])}）：{ui.esc(role)}"
                      f"<br><span class='kq-muted'>上游：{ui.esc('、'.join(S.group_name(x) for x in S.suppliers(g)) or '原料、國外設備')}｜"
                      f"下游：{ui.esc('、'.join(S.group_name(x) for x in S.customers(g)) or '國外終端客戶')}｜同業：{ui.esc('、'.join(peers_))}</span>")
-    th = S.themes_of(t)
+    th = [x for x in S.themes_of(t) if "陣營" not in x]
     if th:
         lines.append("題材：" + "、".join(ui.tag(x) for x in th))
+    cp = S.camps_of(t)
+    if cp:
+        lines.append("AI 晶片陣營：" + "、".join(ui.tag(S.CAMPS[c]["name"].split("（")[0]) for c in cp)
+                     + ("（同時供應多個陣營，輝達與競爭者此消彼長時影響較小）" if len(cp) > 1 else "（只在這個陣營，陣營輪動時波動較大）"))
     ex = []
     for sc in I.SCENARIOS:
         dep = [x for x in sc["impacts"] if x[0] in gs and x[1] != 0]
@@ -3912,6 +4074,8 @@ def page_chain():
         c1, c2 = st.columns(2)
         for k, h in enumerate(cards):
             (c1 if k % 2 == 0 else c2).markdown(h, unsafe_allow_html=True)
+        from kosto import impact as I2
+        camp_section(I2.SCEN_BY_ID["nvidia_ceo"]["camps"], "cm_theme", "AI 晶片陣營輪動（判斷欄＝輝達執行長請辭情境）")
         st.caption("階段：成熟＝營收已明顯貢獻；成長＝營收開始貢獻；題材＝主要看預期（股價波動大、容易「利多出盡」）。"
                    "新題材／轉型：CPO 矽光子、800V 高壓直流、FOPLP／CoPoS 面板級封裝、玻璃基板、人形機器人。")
     with tabs[3]:
@@ -3936,6 +4100,8 @@ def page_chain():
         st.caption(("歷史同類事件：" + "、".join(evs) + "。" if evs else "")
                    + ("「事件後至今」：資料庫還沒有事件日之後的資料（下一次每日更新後自動出現）。" if not len(since) else
                       f"「事件後至今」：{sc['date']} 前一日收盤到 {B.sig_dates[-1]:%m/%d}。") + " " + ui.esc(sc.get("note", "")))
+        if sc.get("camps"):
+            camp_section(sc["camps"], f"cmsc_{sc['id']}")
         if sc["id"] == "rates":
             ch, _ = event_summary_cached(BID, "cut")
             hk, _ = event_summary_cached(BID, "hike")
@@ -3964,17 +4130,23 @@ def page_chain():
                 st.caption(f"事件前 60 日到事件前一日：相對大盤 {ui.pct(pre, 1)}；事件後 " + "、".join(f"{d_} 日 {ui.pct(v_, 1)}" for d_, v_ in post.items())
                            + "。題材股常見「上市前漲、上市後利多出盡」。")
         ex = []
+        cdep = {c: d for c, d, *_ in sc.get("camps", [])}
         for h in HZ:
             for pk in latest(h).get("picks", []):
                 t = pk["ticker"]
                 hit = [x for x in sc["impacts"] if x[0] in S.groups_of(t) and x[1] != 0]
-                if hit:
-                    d0 = min(hit, key=lambda x: x[1])
-                    ex.append((h, t, d0))
+                cps = S.camps_of(t) if cdep else []
+                if hit or cps:
+                    d0 = min(hit, key=lambda x: x[1]) if hit else None
+                    ex.append((h, t, d0, cps))
         if ex:
-            rows = [[HZ[h], cell(t), ui.esc(S.group_name(d0[0])), cm.depth_bar(d0[1])] for h, t, d0 in ex]
+            cname = {c: S.CAMPS[c]["name"].split("（")[0] for c in S.CAMPS}
+            rows = [[HZ[h], cell(t), ui.esc(S.group_name(d0[0])) if d0 else "–", cm.depth_bar(d0[1]) if d0 else "–"]
+                    + ([("、".join(cname[c] for c in cps) + ("（多陣營，一進一出）" if len(cps) > 1 else "")) if cps else "–"] if cdep else [])
+                    for h, t, d0, cps in ex]
             st.markdown(ui.section("模型名單在這個消息的曝險"), unsafe_allow_html=True)
-            st.markdown(ui.table(["期間", "股票", "所屬細族群", "影響"], rows, left=(0, 1, 2)), unsafe_allow_html=True)
+            st.markdown(ui.table(["期間", "股票", "所屬細族群", "影響"] + (["AI 晶片陣營"] if cdep else []), rows, left=(0, 1, 2, 4)),
+                        unsafe_allow_html=True)
         else:
             st.markdown("<div class='kq-muted'>模型名單沒有直接受這個消息影響的代表股。</div>", unsafe_allow_html=True)
         st.caption("基本面判斷是依營收曝險與傳導順序的人工整理（v3.0 研究），不進選股模型；歷史同類事件樣本少（3～12 次），只看方向與量級。")

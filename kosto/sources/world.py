@@ -26,6 +26,13 @@ for _k, (_sym, _zh, _rg) in _PEERS.items():
     NAME_ZH.setdefault(_k, _zh)
     (ASIA if _rg == "asia" else US).add(_k)
 PEER_KEYS = list(_PEERS)
+# v3.3 科斯托蘭尼「貨幣」：美國利率與美元指數（只做顯示，不進選股模型）
+RATES = {"TNX": ("^TNX", "美國10年期公債殖利率"), "IRX": ("^IRX", "美國3個月國庫券利率"), "DXY": ("DX-Y.NYB", "美元指數")}
+for _k, (_sym, _zh) in RATES.items():
+    SYMBOLS.setdefault(_k, _sym)
+    NAME_ZH.setdefault(_k, _zh)
+    US.add(_k)
+RATE_KEYS = list(RATES)
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"}
 
 

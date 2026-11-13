@@ -205,7 +205,50 @@ THEMES = [
     dict(id="ev", name="電動車", stage="成熟", new=False, us="TSLA", plain="車用電子、連接器、電源。", groups=["auto"],
          members=[("2308", "車用電源"), ("3665", "車用線材"), ("6282", "車用電源")]),
 ]
+# ------------------------------------------------------------------ v3.2 AI 晶片陣營（輝達／AMD／ASIC）：誰的供應鏈
+# 台廠大多同時供應多個陣營（台積電、日月光、欣興、台光電、金像電、緯創、緯穎、英業達…）；
+# 「只在這個陣營」的代表股才會在陣營輪動時明顯分化（docs/v3.2_notes.md）。名單為市場常見分類，不代表公開供應關係。
+CAMPS = {
+    "nv": dict(name="輝達陣營（GB／Rubin 整櫃）", us="NVDA", color="#76b900",
+               plain="輝達 GPU 與整櫃 NVL72 伺服器；台廠負責整櫃組裝、水冷、電源、滑軌。",
+               members=[("2317", "整櫃組裝（最大）"), ("2382", "整櫃伺服器"), ("3231", "GPU 運算板（也做 AMD）"), ("3017", "水冷板"),
+                        ("3324", "水冷板、CDU"), ("2308", "電源櫃、800V"), ("2383", "高速板材"), ("3037", "ABF 載板"), ("2059", "機櫃滑軌"),
+                        ("3653", "均熱片"), ("6805", "液冷快接頭"), ("8996", "熱交換器")]),
+    "amd": dict(name="AMD 陣營（MI 系列、Helios 機櫃）", us="AMD", color="#ed1c24",
+                plain="AMD Instinct GPU 與 Helios 整櫃；在台灣的封裝、載板、伺服器與連接器。",
+                members=[("2330", "MI 晶片、CoWoS"), ("3711", "封裝（矽品）"), ("6239", "面板式封裝"), ("3037", "ABF 載板"), ("8046", "ABF 載板"),
+                         ("2368", "伺服器板"), ("2313", "PCB"), ("6669", "Helios 機櫃、伺服器"), ("3231", "AI 伺服器"), ("2356", "伺服器"),
+                         ("8210", "機殼"), ("3533", "CPU 插槽"), ("3665", "高速線材"), ("2376", "GPU 伺服器")]),
+    "asic": dict(name="ASIC 陣營（博通、Google TPU、AWS、Meta）", us="AVGO、GOOGL", color="#4285f4",
+                 plain="雲端巨頭自己設計的 AI 晶片（Google TPU、AWS Trainium…）；台廠負責設計服務、測試與高階板材。",
+                 members=[("3661", "AWS Trainium 設計服務"), ("3443", "ASIC 設計服務"), ("2454", "Google TPU（推論）"), ("2449", "AI 晶片測試"),
+                          ("6223", "探針卡"), ("6515", "測試座"), ("2360", "測試設備"), ("2368", "TPU／ASIC 板"), ("2383", "高速板材"),
+                          ("3711", "封裝"), ("2330", "製造"), ("2345", "雲端交換器"), ("2356", "雲端伺服器"), ("6669", "雲端伺服器")]),
+}
+for _cid, _c in CAMPS.items():
+    THEMES.append(dict(id=f"camp_{_cid}", name=_c["name"], stage="成熟" if _cid == "nv" else "成長", new=False, us=_c["us"],
+                       plain=_c["plain"], members=_c["members"], camp=_cid))
 THEME_BY_ID = {t["id"]: t for t in THEMES}
+
+
+def camp_members(cid: str, exclusive: bool = False, universe=None) -> list[tuple[str, str]]:
+    """陣營代表股；exclusive=True 只留「不在其他陣營」的公司（陣營輪動時分化最明顯）。"""
+    others = {t for o, c in CAMPS.items() if o != cid for t, _ in c["members"]}
+    return [(t, r) for t, r in CAMPS[cid]["members"]
+            if (not exclusive or t not in others) and (universe is None or t in universe)]
+
+
+def camps_of(ticker: str) -> list[str]:
+    return [c for c, d in CAMPS.items() if any(t == ticker for t, _ in d["members"])]
+
+
+def shared_members(universe=None) -> list[str]:
+    """同時在兩個以上陣營的公司（陣營輪動時大致中性）。"""
+    cnt = {}
+    for c in CAMPS.values():
+        for t, _ in c["members"]:
+            cnt[t] = cnt.get(t, 0) + 1
+    return [t for t, n in cnt.items() if n >= 2 and (universe is None or t in universe)]
 
 
 def present(tickers) -> set:

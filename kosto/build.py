@@ -273,7 +273,7 @@ class Builder:
         from .sources import world as W
         old = self.store.read("world")
         last = old.groupby("ticker")["date"].max() if not old.empty else pd.Series(dtype="datetime64[ns]")
-        keys = list(W.CORE) + [k for k in W.PEER_KEYS if k not in W.CORE]
+        keys = list(W.CORE) + [k for k in W.PEER_KEYS + W.RATE_KEYS if k not in W.CORE]
         fresh = [k for k in keys if k in last.index]                     # 已有歷史：只補最近 20 天
         new = [k for k in keys if k not in last.index]                    # v2.1 新加入的國際同業：補完整歷史
         parts = []
