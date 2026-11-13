@@ -279,7 +279,7 @@ def _best_quote(q, d, close, chg, research_day, etf, limit_prices) -> dict:
         lock = "up" if np.isfinite(up) and px >= up - 1e-9 else ("down" if np.isfinite(dn) and px <= dn + 1e-9 else "")
         vol = np.nansum(np.asarray(d.get("vol"), float)) / 1000 if d.get("vol") is not None and np.isfinite(d["vol"]).any() else np.nan
         return {"px": px, "prev": prev, "chg": px / prev - 1, "src": "yahoo", "live": True, "lock": lock, "date": d["date"],
-                "label": "分時・可能延遲", "open": _f(d.get("open")), "high": _f(d.get("high")), "low": _f(d.get("low")),
+                "label": "分時・可能延遲 20 分", "open": _f(d.get("open")), "high": _f(d.get("high")), "low": _f(d.get("low")),
                 "volume": vol if vol and vol > 0 else np.nan}
     lab = f"{pd.Timestamp(rd):%m/%d} 收盤" if rd is not None else "收盤"
     return {"px": _f(close), "prev": np.nan, "chg": _f(chg), "src": "close", "live": False, "lock": "", "label": lab, "date": rd,

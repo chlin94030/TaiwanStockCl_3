@@ -78,7 +78,7 @@ def channel(ticker: str, board: str) -> str:
 
 
 class Quotes:
-    def __init__(self, timeout: int = 6, cooldown: int = 300):
+    def __init__(self, timeout: int = 6, cooldown: int = 90):        # v2.5：失敗後冷卻 300→90 秒（盤中不要整整 5 分鐘都沒有報價）
         self.s = requests.Session()
         self.s.headers.update(UA)
         self.timeout, self.cooldown = timeout, cooldown
@@ -105,14 +105,26 @@ class Quotes:
         out = []
         for i in range(0, len(channels), 50):
             part = channels[i:i + 50]
-            try:
-                r = self.s.get(f"{MIS}/api/getStockInfo.jsp",
-                               params={"ex_ch": "|".join(part), "json": "1", "delay": "0", "_": int(time.time() * 1000)},
-                               timeout=self.timeout)
-                r.raise_for_status()
-                out.append(parse_mis(r.json()))
-            except (requests.RequestException, ValueError) as e:
-                self.error = f"即時報價暫時無法取得（{type(e).__name__}），以最近收盤價顯示"
+            err = None
+            for attempt in range(2):                     # v2.5：連線錯誤時換新連線重試一次（證交所偶爾斷掉閒置連線）
+                try:
+                    r = self.s.get(f"{MIS}/api/getStockInfo.jsp",
+                                   params={"ex_ch": "|".join(part), "json": "1", "delay": "0", "_": int(time.time() * 1000)},
+                                   timeout=self.timeout)
+                    r.raise_for_status()
+                    out.append(parse_mis(r.json()))
+                    err = None
+                    break
+                except (requests.RequestException, ValueError) as e:
+                    err = e
+                    self.s = requests.Session()
+                    self.s.headers.update(UA)
+                    self._warm = 0.0
+                    if attempt == 0:
+                        time.sleep(0.8)
+                        self._warmup()
+            if err is not None:
+                self.error = f"即時報價暫時無法取得（{type(err).__name__}），改用分時資料（可能延遲約 20 分鐘）或最近收盤價"
                 self._fail = time.time()
                 break
         return pd.concat(out, ignore_index=True) if out else pd.DataFrame()

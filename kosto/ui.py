@@ -274,6 +274,27 @@ div[data-testid="stMetricValue"] { font-family:'Inter', 'Noto Sans TC', sans-ser
   .block-container { max-width:1520px; }
   .kq-grid { grid-template-columns:repeat(4, minmax(0, 1fr)); }
 }
+/* ---------- v3.1 美化：卡片懸停、今日行動看板、股票籤、分頁底線、區塊標題 */
+.kq-card, .kq-pcard, .kq-tile, .kq-panel { transition: border-color .15s ease, transform .15s ease, box-shadow .15s ease; }
+@media (hover:hover) { .kq-card:hover, .kq-pcard:hover, .kq-tile:hover { border-color:color-mix(in srgb, var(--accent) 55%, var(--line)); transform:translateY(-1px); } }
+.kq-h .t { background:linear-gradient(90deg, var(--strong), color-mix(in srgb, var(--strong) 70%, var(--accent))); -webkit-background-clip:text; background-clip:text; }
+[data-testid="stTabs"] [data-baseweb="tab-highlight"] { background:linear-gradient(90deg, var(--accent), var(--accent2)) !important; height:3px !important; border-radius:3px; }
+[data-testid="stTabs"] button[aria-selected="true"] p { color:var(--strong) !important; font-weight:600; }
+.kq-act { display:grid; grid-template-columns: 1.25fr 1fr 1fr; gap:10px; margin:6px 0 12px; }
+.kq-act .col { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:11px 13px; box-shadow:var(--shadow); }
+.kq-act .hd { display:flex; align-items:center; gap:8px; font-weight:700; color:var(--strong); font-size:14px; margin-bottom:8px; }
+.kq-act .hd .dot { width:10px; height:10px; border-radius:50%; }
+.kq-act .hd .n { margin-left:auto; font-size:12px; color:var(--muted); font-weight:500; }
+.kq-act .empty { color:var(--muted); font-size:12.5px; }
+.kq-act .title { grid-column:1 / -1; display:flex; flex-wrap:wrap; align-items:baseline; gap:6px 12px; font-size:15px; font-weight:700; color:var(--strong); }
+.kq-act .title small { font-size:12px; color:var(--muted); font-weight:400; }
+.kq-chips { display:flex; flex-wrap:wrap; gap:6px; }
+a.kq-schip { display:inline-flex; align-items:baseline; gap:5px; padding:4px 9px; border-radius:10px; border:1px solid var(--line);
+  background:var(--panel2); color:var(--text) !important; text-decoration:none !important; font-size:13px; }
+a.kq-schip:hover { border-color:var(--accent); }
+a.kq-schip b { font-family:'Inter', sans-serif; font-variant-numeric: tabular-nums; color:var(--accent); font-weight:600; }
+a.kq-schip small { color:var(--muted); font-size:11px; }
+@media (max-width: 760px) { .kq-act { grid-template-columns: 1fr; gap:8px; } .kq-act .col { padding:10px 11px; } a.kq-schip { font-size:12.5px; } }
 
 </style>
 """
@@ -567,3 +588,21 @@ def tile(label: str, value: str, change=None, sub: str = "", sparkline: str = ""
 def light(level: str, text: str) -> str:
     c = {"green": "#16a35f", "amber": "#e9a23b", "red": "#f0464b"}.get(level, "#94a3b8")
     return f"<span class='kq-light' style='color:{c}'><i style='background:{c}'></i>{esc(text)}</span>"
+
+
+def schip(code: str, name: str, extra: str = "", href: str | None = None) -> str:
+    """可點的股票籤（代號＋名稱＋小字），預設連到個股診斷。"""
+    href = href or f"./stock?s={esc(code)}"
+    return (f"<a class='kq-schip' href='{href}' target='_self'><b>{esc(code)}</b>{esc(name)}"
+            + (f"<small>{esc(extra)}</small>" if extra else "") + "</a>")
+
+
+def action_board(title: str, note: str, cols) -> str:
+    """今日行動看板：cols＝[(標題, 顏色, [股票籤 html…], 空白時文字)]。"""
+    out = [f"<div class='kq-act'><div class='title'>{esc(title)}<small>{note}</small></div>"]
+    for head, color, chips, empty in cols:
+        body = f"<div class='kq-chips'>{''.join(chips)}</div>" if chips else f"<div class='empty'>{esc(empty)}</div>"
+        out.append(f"<div class='col' style='border-top:3px solid {color}'><div class='hd'><span class='dot' style='background:{color}'></span>"
+                   f"{esc(head)}<span class='n'>{len(chips)} 檔</span></div>{body}</div>")
+    out.append("</div>")
+    return "".join(out)

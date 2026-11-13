@@ -268,11 +268,27 @@ def blend_nav(navs: dict, weights: dict, rebalance: str = "ME") -> pd.Series:
     return pd.Series(out, index=df.index)
 
 
-def stock_weights(n: int, horizon: str) -> np.ndarray:
-    """短中線等權；長線名次加權 1.5→0.5（與回測一致）。"""
+def stock_weights(n: int, horizon: str, weighting: str | None = None, vols=None) -> np.ndarray:
+    """每檔資金比重，與回測一致：rank＝名次加權 1.5→0.5（v3.0 起三個期間都用；長線自 v1.x）、equal＝等權；
+    rank_invvol＝名次加權 × 近 60 日波動倒數、單檔上限 2/n（v3.1 選用「回撤較小」分配，需要 vols）。
+    weighting 沒給時依 v3.0 預設（三個期間都是 rank）。"""
     if n <= 0:
         return np.zeros(0)
-    if horizon == "long" and n > 1:
+    if weighting == "rank_invvol" and vols is not None and n > 1:
+        v = np.asarray(vols, dtype=float)
+        v = np.where(np.isfinite(v) & (v > 0), v, np.nanmedian(v) if np.isfinite(v).any() else 0.03)
+        w = np.linspace(1.5, 0.5, n) / np.clip(v, 0.005, None)
+        w = w / w.sum()
+        cap = 2.0 / n
+        for _ in range(20):                                   # 單檔上限：超出部分平均分給其他檔
+            over = w > cap + 1e-12
+            if not over.any():
+                break
+            extra = float((w[over] - cap).sum())
+            w[over] = cap
+            w[~over] += extra * w[~over] / w[~over].sum()
+        return w
+    if (weighting or "rank") in ("rank", "rank_invvol") and n > 1:          # rank_invvol 沒有波動資料 → 退回名次加權
         w = np.linspace(1.5, 0.5, n)
     else:
         w = np.ones(n)

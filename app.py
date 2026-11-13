@@ -626,7 +626,7 @@ def world_strip() -> str:
 @st.cache_data(ttl=180, show_spinner=False)
 def actions_runs(repo, token):
     try:
-        runs = latest_runs(repo, token, 6)
+        runs = latest_runs(repo, token, 10)
     except Exception:  # noqa: BLE001
         return []
     return [r for r in runs if "全自動" in (r.get("name") or "") or "pipeline" in (r.get("name") or "").lower()] or runs
@@ -636,7 +636,7 @@ def data_status() -> tuple[str, str, str, str]:
     """(燈號, 文字, 連結, 滑鼠提示)：見 kosto/freshness.py。"""
     runs = actions_runs(REPO, TOKEN) if REPO else []
     run = runs[0] if runs else None
-    lvl, txt, url = freshness.status(pd.Timestamp.now(tz="Asia/Taipei"), pd.Timestamp(B.sig_dates[-1]), run)
+    lvl, txt, url = freshness.status(pd.Timestamp.now(tz="Asia/Taipei"), pd.Timestamp(B.sig_dates[-1]), run, runs)
     dd = B.meta.get("data_dates") or {}
     if lvl == "green" and dd.get("margin") and dd.get("price") and dd["margin"] < dd["price"]:
         txt += "｜融資券 21:40 補上"
@@ -684,15 +684,15 @@ def taiex_now() -> dict:
             out = {"px": float(tx.iloc[-1]), "chg": float(tx.iloc[-1] / tx.iloc[-2] - 1), "date": tx.index[-1], "live": False}
     ph = market_phase()
     if ph in ("盤前試撮", "盤中", "盤後"):
+        # v2.5 頁首與「加權指數｜今日走勢」用同一份資料（分時＋證交所最新價合併），不會一個 43,236、一個 43,444
+        d = taiex_intraday()
+        if d is not None and (not out or pd.Timestamp(d["date"]) > out["date"]) and d["prev"] > 0:
+            return {"px": float(d["last"]), "chg": float(d["last"] / d["prev"] - 1), "live": True,
+                    "date": pd.Timestamp(d["date"]), "time": f"{d['time']:%H:%M}", "delayed": not d.get("live_point")}
         q, _ = live_quotes((INDEX_CH["加權指數"],))
         if len(q) and ui.ok(q["price"].iloc[0]):
             out = {"px": float(q["price"].iloc[0]), "chg": float(q["chg"].iloc[0]), "live": True,
                    "date": pd.Timestamp.now(tz="Asia/Taipei").normalize().tz_localize(None), "time": q["time"].iloc[0]}
-        else:                                                   # v2.3.1 證交所取不到 → 用今天的加權分時（Yahoo），不顯示前一日的漲跌
-            d = taiex_intraday()
-            if d is not None and (not out or pd.Timestamp(d["date"]) > out["date"]) and d["prev"] > 0:
-                out = {"px": float(d["last"]), "chg": float(d["last"] / d["prev"] - 1), "live": True,
-                       "date": pd.Timestamp(d["date"]), "time": f"{d['time']:%H:%M}"}
     return out
 
 
@@ -797,7 +797,8 @@ def header(world: bool = True):
     tx = taiex_now()
     html = ["<div class='kq-bar kq-top'><span class='kq-brand'>KOSTO<small class='kq-hide-m'>量化選股</small></span>"]
     if tx:
-        tag = ("即時" if ph in ("盤中", "盤前試撮") else "今日收盤") if tx.get("live") else f"{tx['date']:%m/%d} 收盤"
+        tag = (("延遲" if tx.get("delayed") and ph == "盤中" else "即時") if ph in ("盤中", "盤前試撮") else "今日收盤") \
+            if tx.get("live") else f"{tx['date']:%m/%d} 收盤"
         html.append(f"<span class='kq-item'>加權<b>{tx['px']:,.0f}</b> {ui.chg(tx['chg'])} <span class='kq-sub'>{tag}</span></span>")
     lvl, txt, url, tip = data_status()
     st_html = ui.light(lvl, txt)
@@ -820,9 +821,22 @@ def header(world: bool = True):
     st.markdown("".join(html) + quick_nav(), unsafe_allow_html=True)
     if lvl == "red":
         update_now_row()
+    if lvl != "green" and REPO:
+        rr = freshness.run_rows(actions_runs(REPO, TOKEN))
+        if rr:
+            with st.expander("最近幾次自動更新（研究資料為什麼還沒更新？）"):
+                rows = [[ui.esc(r["start"]), ui.esc(r["event"]),
+                         f"<b style='color:{ui.DOWN if r['result'] == '成功' else ui.UP if r['result'] == '失敗' else 'inherit'}'>{ui.esc(r['result'])}</b>",
+                         f"{r['minutes']} 分" if r["minutes"] is not None else "–",
+                         f"<a href='{ui.esc(r['url'])}' target='_blank' rel='noopener'>看細節</a>" if r["url"] else ""] for r in rr]
+                st.markdown(ui.table(["開始（台北）", "觸發", "結果", "耗時", "GitHub"], rows, left=(0, 1)), unsafe_allow_html=True)
+                st.caption("每天 17:23 初版、21:40 完整版，23:17／00:47／06:23 為備援；同一時間只會跑一個，後到的會排隊（再後到的會被取消）。"
+                           "連續「失敗」：點「看細節」→ 紅色 ✗ 的步驟看錯誤訊息；「成功」但資料日沒前進：多半是資料源（證交所）當天沒有給資料。"
+                           "上傳新程式會觸發一次更新，Streamlit 也會重新啟動（所以打開時會看到 reboot）。")
 
 
-QNAV = [("picks", "📋", "選股"), ("insight", "🎛️", "儀表板"), ("live", "⏱️", "盤中"), ("stock", "🔍", "個股"), ("world", "🌏", "國際"),
+QNAV = [("picks", "📋", "選股"), ("insight", "🎛️", "儀表板"), ("live", "⏱️", "盤中"), ("stock", "🔍", "個股"), ("chain", "🗺️", "產業鏈"),
+        ("world", "🌏", "國際"),
         ("market", "📈", "大盤"), ("etf", "💰", "ETF"), ("alloc", "⚖️", "配置"), ("guide", "📖", "指南")]
 
 
@@ -1111,7 +1125,7 @@ def stock_view(j, h="mid", key="sv"):
         bq = now_quote(t, tw_intraday([t]).get(t), q)
         if bq["live"]:
             nm = {"bid": "委買", "ask": "委賣", "yahoo": "分時"}.get(bq["src"], "即時" if is_live_time() else "今日收盤")
-            tm = q.loc[t, "time"] if bq["src"] not in ("yahoo",) and t in q.index else "可能延遲"
+            tm = q.loc[t, "time"] if bq["src"] not in ("yahoo",) and t in q.index else "可能延遲 20 分"
             lock = {"up": " <span class='kq-lock up'>漲停</span>", "down": " <span class='kq-lock dn'>跌停</span>"}.get(bq["lock"], "")
             live_html = (f"<span class='kq-item'>{nm}<b>{ui.price(bq['px'])}</b> {ui.chg(bq['chg'])}{lock}"
                          f" <span class='kq-muted'>{ui.esc(tm)}</span></span>")
@@ -1132,6 +1146,15 @@ def stock_view(j, h="mid", key="sv"):
     c3.markdown(ui.panel("基本面快照與短評", brief_html(j) + "<div style='margin-top:8px'></div>" + fundamentals_html(j)),
                 unsafe_allow_html=True)
     stock_today(j, key)
+    nw1, nw2 = st.columns([1.6, 1])
+    from urllib.parse import quote as _q
+    gq = f"https://news.google.com/search?q={_q(NAMES[j] + ' ' + t)}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+    nw1.markdown(ui.panel(f"最新新聞｜{ui.esc(NAMES[j])}（Google 新聞，近 3 天）", headlines_html(
+        news_headlines(f"{NAMES[j]} {t}", 6, 3),
+        empty=f"目前抓不到新聞（網路或來源暫時無法連線），可直接開 <a href='{gq}' target='_blank' rel='noopener'>Google 新聞搜尋</a>。")),
+        unsafe_allow_html=True)
+    nw2.markdown(ui.panel("今天的重大訊息", material_html([t])), unsafe_allow_html=True)
+    st.markdown(ui.panel(f"產業鏈位置｜{ui.esc(NAMES[j])}", chain_position_html(t)), unsafe_allow_html=True)
     g1, g2 = st.columns([1.6, 1])
     seg, grp_html = group_compare_html(j)
     g1.markdown(ui.panel(f"同族群比較｜{seg}", grp_html), unsafe_allow_html=True)
@@ -1178,6 +1201,9 @@ def pick_items(h, lt) -> list[dict]:
         out.append({"n": n, "t": t, "j": j, "close": close, "ch": ch, "pl": plan_of(j, h), "cs": chips(BID, j) if HAS_Q else {},
                     "kept": bool(p.get("kept") or (t in prev)),
                     "reasons": "、".join(clean_reason(x) for x in p.get("reasons", [])[:3])})
+    ws = planlib.stock_weights(len(out), h, CFG0["horizons"][h].get("weighting"))        # v3.0 名次加權：與回測相同的資金比重
+    for it, w_ in zip(out, ws):
+        it["w"] = float(w_)
     return out
 
 
@@ -1222,7 +1248,8 @@ def pick_card(it, mode: str = "m3", d=None, q=None) -> str:
             f"<div class='px'>{ui.price(px)}<small>{ui.chg(ch)}</small>{tag}</div></div>"
             f"<div class='grp'>{ui.tag(c.get('group', SECTORS[j]), 'gold')}<span class='kq-sub'>{ui.esc(c.get('segment', ''))}</span>{themes}</div>"
             f"<div class='sp'>{card_chart(j, mode, d)}</div>{lad}"
-            f"<div class='ft'>{status} {tone}<span class='why'>{ui.esc(it['reasons'])}</span></div></div>")
+            f"<div class='ft'>{status} {tone}" + (f"<span class='kq-tag' title='名次加權：分數越高放越多（與回測相同）'>資金 {it['w'] * 100:.1f}%</span>"
+                                                    if it.get("w") else "") + f"<span class='why'>{ui.esc(it['reasons'])}</span></div></div>")
 
 
 def render_picks(items, mode: str = "m3") -> str:
@@ -1387,12 +1414,14 @@ def page_picks():
     now_set = [p["ticker"] for p in lt["picks"]]
     new = [it["t"] for it in its if not it["kept"]]
     sold = [t for t in prev_picks(h) if t not in now_set and t in TIDX]
-    def fmt(xs):
-        return "、".join(f"{t} {NAMES[TIDX[t]]}" for t in xs if t in TIDX) or "無"
-    st.markdown(f"<div class='kq-verdict'><b>{exec_day()}開盤要做的事（{HZ[h]}）</b><br>"
-                f"🟦 買進：{ui.esc(fmt(new))}<br>🟥 賣出：{ui.esc(fmt(sold))}<br>"
-                f"🟪 續抱：其餘 {len(its) - len(new)} 檔不動　<span class='kq-muted'>名單日 {lt['date']} 收盤後產生</span></div>",
-                unsafe_allow_html=True)
+    wmap = {it["t"]: it.get("w") for it in its}
+    kept = [it["t"] for it in its if it["kept"]]
+    chip = lambda t, x="": ui.schip(t, NAMES[TIDX[t]], x)                     # noqa: E731
+    st.markdown(ui.action_board(f"{exec_day()}開盤要做的事（{HZ[h]}）", f"名單日 {lt['date']} 收盤後產生｜點股票看診斷", [
+        ("買進", "#3b82f6", [chip(t, f"資金 {wmap[t] * 100:.1f}%" if wmap.get(t) else "") for t in new if t in TIDX], "今天沒有新買進"),
+        ("賣出", "#f0464b", [chip(t) for t in sold if t in TIDX], "今天沒有要賣的"),
+        ("續抱", "#8b5cf6", [chip(t, f"{wmap[t] * 100:.1f}%" if wmap.get(t) else "") for t in kept if t in TIDX], "—")]),
+        unsafe_allow_html=True)
     secs = pd.Series([SECTORS[TIDX[t]] for t in now_set if t in TIDX]).value_counts()
     if len(secs) and secs.iloc[0] >= 3:                    # v2.2 產業集中提醒（研究：同產業 ≤2～3 檔可降低回撤，但報酬也略降）
         st.markdown(f"<div class='kq-muted' style='margin:-4px 0 8px'>⚠ 名單中有 {secs.iloc[0]} 檔{ui.esc(secs.index[0])}"
@@ -1543,7 +1572,7 @@ def page_live():
                                    ui.intraday_mini(di, h=44, labels=False)
                                    + (ui.ladder(px, pl.buy_low, pl.buy_high, pl.chase, pl.alert, compact=True) if pl else ""),
                                    ui.badge(txt, planlib.STATUS_STYLE[code]) + (f" <span>量 {vol} 張</span>" if vol != "–" else "")))
-        tm = q["time"].iloc[0] if len(q) else ("分時報價（可能延遲數分鐘）" if any(
+        tm = q["time"].iloc[0] if len(q) else ("分時報價（證交所即時報價暫停，可能延遲約 20 分鐘）" if any(
             d_ is not None and d_["date"] > RDAY.date() for d_ in intr.values()) else f"{RDAY:%m/%d} 收盤價")
         st.markdown(f"<div class='kq-muted'>更新 {pd.Timestamp.now(tz='Asia/Taipei'):%H:%M:%S}｜報價時間 {ui.esc(tm)}｜{ph}</div>",
                     unsafe_allow_html=True)
@@ -1810,12 +1839,19 @@ def page_alloc():
             "建議：能承受與大盤不同步、追求報酬 → 可以不買 0050；希望穩定、不想連續幾個月輸大盤 → 保留 2–5 成 0050。"]),
             unsafe_allow_html=True)
     st.markdown(ui.section("下單明細", "以最近收盤價換算，實際以成交價為準"), unsafe_allow_html=True)
+    wmode = st.segmented_control("每檔資金分配", ["rank", "rank_invvol"], default="rank", key="alloc_wmode",
+                                 format_func=lambda k: {"rank": "名次加權（預設、報酬較高）", "rank_invvol": "名次×波動（回撤較小）"}[k]) or "rank"
+    if wmode == "rank_invvol":
+        st.caption("v3.1 研究（五種換股日、2021–25 開發期）：同一份名單，波動大的股票少放。中線最大回撤少 6.7 個百分點，"
+                   "但年化超額少 5.1 個百分點；短線回撤少 7.4、超額少 4.0。適合在意帳面起伏、不追求最高報酬的人。")
+    vol_now = B.a["VOL60"][-1] if "VOL60" in B.a else None
     agg, sleeves = {}, []
     for h in HZ:
         if w.get(h, 0) <= 0:
             continue
         picks = [p for p in latest(h)["picks"] if p["ticker"] in TIDX]
-        ws = planlib.stock_weights(len(picks), h)
+        ws = planlib.stock_weights(len(picks), h, wmode if wmode == "rank_invvol" else CFG0["horizons"][h].get("weighting"),
+                                   vols=[float(vol_now[TIDX[p["ticker"]]]) for p in picks] if vol_now is not None else None)
         sleeves.append(f"{HZ[h]} {w[h]:.0%}：{HZ_SUB[h]}")
         for p, wt in zip(picks, ws):
             t = p["ticker"]
@@ -1973,6 +2009,9 @@ def page_market():
                             "modeBarButtonsToRemove": ["lasso2d", "select2d", "autoScale2d"]})
     if not has_ohlc:
         st.caption("加權指數的開高低將在下一次每日研究後補齊（目前以前一日收盤近似開盤）。")
+    st.markdown(ui.section("台股熱力圖", "面積＝近 20 日成交金額、顏色＝漲跌（紅漲綠跌，越深越多）；電子依產業鏈層級與細族群分組"),
+                unsafe_allow_html=True)
+    heatmap_section("mk_heat", default_top=150)
     if "up" in df:
         brd = df[["up", "down"]].tail(60)
         import plotly.graph_objects as go
@@ -2175,6 +2214,157 @@ def ban_xs_html() -> str:
             f"{e}：{x[2] * 100:+.0f}" for e, x in zip(rv.BAN_XS_EVENTS, evs)), "之後 60 日超額（百分點）"))
     return ui.resp(ui.table(["最高 20% 減最低 20%（百分點）", "2020-03　5／20／60 日", "2022-10", "2025-04（與這次相同）"], rows, left=(0,)),
                    "".join(mrows))
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def news_headlines(query: str, n: int = 6, days: int = 3) -> list:
+    from kosto import news
+    return news.google_news(query, n=n, days=days)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def material_today_df() -> pd.DataFrame:
+    from kosto import news
+    return news.material_today()
+
+
+def headlines_html(items, empty="目前抓不到新聞（網路或來源暫時無法連線），請用下方「可靠的即時消息來源」。") -> str:
+    if not items:
+        return f"<div class='kq-muted'>{empty}</div>"
+    rows = []
+    for x in items:
+        tm = f"{x['time']:%m/%d %H:%M}" if x.get("time") is not None else ""
+        rows.append(f"<div style='padding:4px 0;border-bottom:1px dashed var(--line)'><a href='{ui.esc(x['link'])}' target='_blank' rel='noopener'>"
+                    f"{ui.esc(x['title'])}</a><div class='kq-sub'>{ui.esc(x.get('source', ''))}　{tm}</div></div>")
+    return "".join(rows)
+
+
+def sources_html() -> str:
+    from kosto import news
+    rows = [[ui.tag(k, "gold" if k == "官方" else ""), f"<a href='{u}' target='_blank' rel='noopener'>{ui.esc(n)}</a>", ui.esc(d)]
+            for k, n, u, d in news.SOURCES]
+    mrows = [ui.mcard(f"<a href='{u}' target='_blank' rel='noopener'>{ui.esc(n)}</a>", ui.tag(k), "", ui.esc(d)) for k, n, u, d in news.SOURCES]
+    return ui.resp(ui.table(["類別", "來源", "用途"], rows, left=(0, 1, 2)), "".join(mrows))
+
+
+def material_html(tickers) -> str:
+    """名單／自選股今天的重大訊息（證交所、櫃買中心 OpenAPI）。"""
+    df = material_today_df()
+    if df is None or not len(df):
+        return ("<div class='kq-muted'>今天的重大訊息暫時無法取得（或尚未公布），可到 <a href='https://mops.twse.com.tw/mops/web/t05sr01_1' "
+                "target='_blank' rel='noopener'>公開資訊觀測站｜即時重大訊息</a> 查詢。</div>")
+    x = df[df["ticker"].isin(list(tickers))]
+    if not len(x):
+        return f"<div class='kq-muted'>名單中的股票今天沒有重大訊息（全市場今天共 {len(df)} 則）。</div>"
+    rows = [[stock_cell(r.ticker) if r.ticker in TIDX else ui.esc(f"{r.ticker} {r.name}"), f"{ui.esc(r.date[5:])} {ui.esc(r.time)}",
+             f"<b>{ui.esc(r.title)}</b><div class='kq-sub' style='white-space:normal'>{ui.esc(r.detail[:160])}</div>"] for r in x.itertuples()]
+    return ui.table(["股票", "時間", "主旨"], rows, left=(0, 2))
+
+
+@st.cache_data(show_spinner=False)
+def shock_df(bid) -> pd.DataFrame:
+    from kosto import review as rv
+    return rv.shock_events(B)
+
+
+def shock_html(df: pd.DataFrame, cnt: dict) -> str:
+    """近 10 日消息面急漲／急跌股＋歷史上同類事件之後的表現（v2.5 研究）。df：每檔只留最近一次事件。"""
+    ranks_mid = {}
+    try:
+        rk = ranks(BID, "mid")
+        ranks_mid = {t: int(r) for t, r in rk["rank"].dropna().items()}
+    except Exception:  # noqa: BLE001
+        pass
+    picks = {p["ticker"] for h in HZ for p in latest(h).get("picks", [])}
+    rows, mrows = [], []
+    for r in df.itertuples():
+        t = B.tickers[r.j]
+        tag = ui.tag("名單", "gold") if t in picks else (ui.tag(f"中線第 {ranks_mid[t]} 名") if ranks_mid.get(t, 999) <= 50 else "")
+        kind = f"<b style='color:{ui.UP if r.up else ui.DOWN}'>{'急漲' if r.up else '急跌'}</b>"
+        rep = f"<span class='sub'>（10 日內 {cnt[r.j]} 次）</span>" if cnt.get(r.j, 1) > 1 else ""
+        rows.append([stock_cell(t) + " " + tag, f"{r.date:%m/%d}{rep}", f"{kind} {ui.pct(r.ret, 1, color=True)}", f"{r.volx:.1f} 倍",
+                     ui.pct(r.inst, 0, color=True) if ui.ok(r.inst) else "–", ui.pct(r.marg, 0) if ui.ok(r.marg) else "–",
+                     ui.pct(r.rev3, 0, color=True) if ui.ok(r.rev3) else "–", ui.esc(r.group), ui.pct(r.since, 1, color=True) if r.days_ago > 0 else "<span class='sub'>最新一天</span>",
+                     f"{ui.pct(r.hist_x20, 1, color=True)} / {ui.pct(r.hist_x60, 1, color=True)}"])
+        mrows.append(ui.mcard(f"<span class='kq-cd'>{t}</span><span class='nm'>{ui.esc(NAMES[r.j])}</span> {tag}",
+                              f"{kind} {ui.pct(r.ret, 1, color=True)}",
+                              f"{r.date:%m/%d}{rep}｜量 {r.volx:.1f} 倍｜法人 {ui.pct(r.inst, 0) if ui.ok(r.inst) else '–'}｜融資 {ui.pct(r.marg, 0) if ui.ok(r.marg) else '–'}",
+                              f"{ui.esc(r.group)}：歷史之後 20／60 日超額 {ui.pct(r.hist_x20, 1)}／{ui.pct(r.hist_x60, 1)}"
+                              + (f"｜事件後至今 {ui.pct(r.since, 1)}" if r.days_ago > 0 else "｜最新一天")))
+    return ui.resp(ui.table(["股票", "最近事件", "當天", "成交量", "法人買賣／量", "融資增減／量", "營收年增(3月)", "歸類", "事件後至今",
+                             "歷史同類之後 20／60 日超額"], rows, left=(0, 7)), "".join(mrows))
+
+
+def shock_section(n_show: int = 15):
+    df = shock_df(BID)
+    if df is None or not len(df):
+        st.markdown("<div class='kq-muted'>近 10 個交易日沒有符合條件的事件（或資料包尚未更新）。</div>", unsafe_allow_html=True)
+        return
+    cnt = df.groupby("j").size().to_dict()
+    d1 = df.drop_duplicates("j", keep="first").reset_index(drop=True)          # 已依日期新到舊排序 → 每檔留最近一次
+    st.markdown(shock_html(d1.head(n_show), cnt), unsafe_allow_html=True)
+    if len(d1) > n_show:
+        with st.expander(f"其餘 {len(d1) - n_show} 檔（共 {len(d1)} 檔、{len(df)} 次事件）"):
+            st.markdown(shock_html(d1.iloc[n_show:], cnt), unsafe_allow_html=True)
+
+
+def shock_study_html() -> str:
+    from kosto import review as rv
+    def tbl(data):
+        rows = [[ui.esc(g), f"{n:,}", ui.pct(a, 1, color=True), ui.pct(b_, 1, color=True), ui.pct(c, 1, color=True), ui.pct(d, 1, color=True),
+                 f"{w20:.0%}／{w60:.0%}"] for g, n, a, b_, c, d, w20, w60 in data]
+        return ui.table(["分組", "次數", "隔天", "5 日", "20 日", "60 日", "勝率 20／60 日"], rows, left=(0,))
+    pk = rv.SHOCK_PEAK
+    return ("<div class='kq-muted' style='margin:4px 0'>急漲（單日 ≥ +7% 且量 ≥ 20 日均量 3 倍）之後的超額報酬（減成交金額前 800 名平均）</div>" + tbl(rv.SHOCK_UP)
+            + "<div class='kq-muted' style='margin:8px 0 4px'>急跌（單日 ≤ −7% 且量 ≥ 3 倍）</div>" + tbl(rv.SHOCK_DOWN)
+            + ui.panel("怎麼解讀", ui.bullets([
+                f"<b>多數急漲之後會修正，但少數大漲把平均拉高</b>：20 日內最高點有 {pk['day0'] + pk['day1']:.0%} 出現在當天或隔天，中位數第 {pk['median_day']} 天；"
+                "60% 的事件 20 日後輸給大盤，但平均仍是正的（少數股票持續大漲）。",
+                "<b>分辨「會延續」與「會修正」看三件事</b>：法人當天有沒有買（外資＋投信買超 > 當日量 5%）、營收是否真的成長、"
+                "是不是融資追價而法人在賣。法人買＋營收年增 > 20% 之後 60 日超額 +4.1%；融資追＋法人賣 −3.0%。",
+                "<b>近兩年消息面延續性變強</b>：急漲之後 60 日超額 2021–2024 介於 −1.4%～+1.1%，2025 年 +3.1%、2026 年 +4.9%；"
+                "題材股比過去更容易續漲，但只有兩年、過去方向曾反覆。",
+                "<b>急跌</b>：法人當天逢低承接的，之後 5 日小幅反彈；法人賣、營收也衰退的，之後 60 日再落後 3.5%。",
+                "<b>模型怎麼用</b>：模型每天收盤後重算，急漲股要等「動能＋營收」都到位才會進名單，所以不會追第一天的消息；"
+                "v2.5 測試把「急漲＋法人買」「急漲＋融資未追」當因子加進模型，2021–2025 開發期反而少 1～4 個百分點 → 不改模型；"
+                "「急漲＋法人買」在最近 12 個月較好，列入觀察（不能用最近一年挑模型）。"])))
+
+
+@st.cache_data(show_spinner=False)
+def nv_chain_set(bid) -> set:
+    from kosto import review as rv
+    return rv.nv_chain(CH)
+
+
+def nv_event_html() -> str:
+    """v2.5 輝達執行長請辭（2026-11-12）：歷史上美股半導體重挫時台灣供應鏈怎麼走＋名單曝險。"""
+    from kosto import review as rv
+    ev = rv.NV_EVENT
+    out = ui.panel(f"重大事件：輝達執行長請辭（{ev['date']}）", ui.bullets([ui.esc(x) for x in ev["facts"]]))
+    for (thr, n), data in rv.NV_CHAIN_SHOCK.items():
+        rows = [[f"<b>{ui.esc(g)}</b>", ui.pct(a, 1, color=True), ui.pct(b_, 1, color=True), ui.pct(c, 1, color=True), ui.pct(d, 1, color=True),
+                 ui.pct(e, 1, color=True) + (f"<span class='sub'>（20／60 日上漲比例 {w20:.0%}／{w60:.0%}）</span>" if w20 is not None else "")]
+                for g, a, b_, c, d, e, w20, w60 in data]
+        out += (f"<div class='kq-muted' style='margin:8px 0 2px'>費半前一晚 {thr}（2019–2026 有之後 60 日資料的 {n} 次）：台股市值前 300 大等權；之後 5／20／60 日自當天收盤起算</div>"
+                + ui.table(["組別", "開盤跳空", "當天", "之後 5 日", "之後 20 日", "之後 60 日"], rows, left=(0,)))
+    chain_set = nv_chain_set(BID)
+    expo, nh, nt = [], 0, 0
+    for h in HZ:
+        xs = [p["ticker"] for p in latest(h).get("picks", []) if p["ticker"] in TIDX]
+        hit = [t for t in xs if t in chain_set]
+        nh, nt = nh + len(hit), nt + len(xs)
+        expo.append(f"{HZ[h]} {len(hit)}/{len(xs)} 檔" + (f"（{'、'.join(f'{t} {NAMES[TIDX[t]]}' for t in hit)}）" if hit else ""))
+    share = nh / nt if nt else 0.0
+    out += ui.panel("怎麼看", ui.bullets([
+        "<b>歷史上美股半導體重挫後，台灣輝達供應鏈並沒有「直接完蛋」</b>：開盤跳空約 −3～−4%、當天收斂一些，1～2 週內常再探底，"
+        "但之後 20／60 日平均反彈，而且反彈幅度大於其他類股（費半 ≤ −7% 的 14 次：60 日平均 +18%）。",
+        "<b>這次不同的地方</b>：不是景氣或總體利空，而是領導人與治理風險（婚外情對象疑涉外國情報、出口管制疑慮）。"
+        "關鍵是訂單與資本支出有沒有改變——11/18 清晨的輝達財報與財測、四大雲端業者的資本支出、台積電與鴻海的月營收（12/10 前公布）。",
+        "<b>開盤怎麼應對</b>：前一晚美股的影響幾乎在開盤一次反映（v2.3），不必在開盤恐慌賣出；分批計畫與止穩檢查照常；"
+        "名單中與輝達直接相關的股票，若跌破警戒價再重新檢視。",
+        "<b>模型名單的曝險</b>：" + "；".join(expo) + "。" + ("名單中輝達供應鏈占比不高，主要風險是整體電子股同步下跌。" if share < 0.34 else
+                                                       "名單中輝達供應鏈占比偏高，留意財報與接班消息；不建議因單一事件全數出清（歷史上 20／60 日多半反彈）。")]))
+    return out
 
 
 def audit_html() -> str:
@@ -2717,6 +2907,13 @@ def page_insight():
                             unsafe_allow_html=True)
                 st.caption(f"融資券資料 {(B.meta.get('data_dates') or {}).get('margin') or '–'}。歷史上限空後這類股票 2020、2022 年較強、2025 年沒有差別；"
                            "資料不含借券賣出餘額。")
+        st.markdown(ui.section("近 10 日消息面急漲／急跌股", "成交金額前 800 名；單日 ≥ ±7% 且量 ≥ 20 日均量 3 倍；依法人、融資、營收歸類，附歷史上同類事件之後的表現"),
+                    unsafe_allow_html=True)
+        shock_section()
+        with st.expander("歷史研究：消息面急漲急跌之後怎麼走（2019-07～2026-10，v2.5）"):
+            st.markdown(shock_study_html(), unsafe_allow_html=True)
+        tick_all = sorted({p["ticker"] for h in HZ for p in latest(h).get("picks", [])})
+        st.markdown(ui.panel("名單今天的重大訊息（證交所／櫃買中心）", material_html(tick_all)), unsafe_allow_html=True)
         gm = group_moves(BID)
         if len(gm):
             g2 = gm.sort_values("r20", ascending=False)
@@ -2787,12 +2984,24 @@ def page_insight():
         rows = [[ui.esc(nm), rv.FAMILY_ZH[f], f"{a:+.3f}", f"<b style='color:{ui.UP if b_ > 0 else ui.DOWN}'>{b_:+.3f}</b>"] for nm, f, a, b_ in rv.PANIC_IC]
         st.markdown(ui.table(["因子", "家族", "一般時期", "急跌時"], rows, left=(0, 1)), unsafe_allow_html=True)
         st.caption("急跌時「接近新高、低波動、高殖利率」失效，「營收動能」更有效。這正是 B1（急跌時動能減半）想利用的現象，但開發期只多 0.6 個百分點、未達門檻。")
-        st.markdown(ui.section("預先宣告測試（docs/v2.2_crash_protocol.md、docs/v2.3_protocol.md）",
+        st.markdown(ui.section("預先宣告測試（docs/v2.2_crash_protocol.md、v2.3、v2.5、v3.0、v3.1_protocol.md）",
                                "五種換股日、2021–2025 開發期；單位：百分點（資訊比率為差值）；與 v1.9 相同的採用門檻"), unsafe_allow_html=True)
         st.markdown(ui.table(["候選", "中線超額", "中線 IR", "中線回撤改善", "短線超額", "長線超額", "判定"],
-                             [[f"<b>{a}</b>", b, c_, d, e, f, g] for a, b, c_, d, e, f, g in V22_TESTS + rv.V23_TESTS], left=(0, 6)),
+                             [[f"<b>{a}</b>", b, c_, d, e, f, g] for a, b, c_, d, e, f, g in V22_TESTS + rv.V23_TESTS]
+                             + [[f"<b>{a}</b>", b, c_, d, e, f, f"{g_}（盲測期中線 {bl}，只報告）"] for a, b, c_, d, e, f, bl, g_ in rv.V25_TESTS + rv.V30_TESTS + rv.V31_TESTS],
+                             left=(0, 6)),
                     unsafe_allow_html=True)
-        with st.expander("歷次想法總檢視（v1.1～v2.3）：每個想法對模型的影響"):
+        st.markdown(ui.section("模型的時效（v2.5）", "中線分數與之後 60 日報酬的相關（IC，越高越準）；消息面因子逐年方向"), unsafe_allow_html=True)
+        rows = [[f"<b>{y}</b>", f"{v:+.3f}"] for y, v in rv.SCORE_IC.items()] + [[f"<b>{q}</b>", f"{v:+.3f}"] for q, v in rv.SCORE_IC_Q.items()]
+        rows2 = [[f"<b>{y}</b>", f"{rv.SHOCK_IC['t_limitup20'].get(y, np.nan):+.3f}", f"{rv.SHOCK_IC['t_max20'].get(y, np.nan):+.3f}"]
+                 for y in rv.SHOCK_IC["t_limitup20"]]
+        c1, c2 = st.columns(2)
+        c1.markdown(ui.table(["期間", "模型分數 IC"], rows, left=(0,)), unsafe_allow_html=True)
+        c2.markdown(ui.table(["年", "近 20 日漲停次數", "近 20 日沒有暴漲"], rows2, left=(0,)), unsafe_allow_html=True)
+        st.caption("模型分數的預測力逐年上升（2026 年 0.079），但 2026 第二、三季明顯轉弱（0.012、0.036）——權值股獨強、題材輪動快的行情。"
+                   "「漲停次數」以前是反向（追漲停股之後較差），2025 年起轉正；「沒有暴漲」以前是正向，2025 年起轉為零或負："
+                   "最近兩年題材股比較會延續。方向還不穩定、只有兩年，依規則不加入模型，持續觀察。")
+        with st.expander("歷次想法總檢視（v1.1～v3.1）：每個想法對模型的影響"):
             rows = [[ui.esc(v), ui.esc(i), ui.esc(src), ui.esc(tp), ui.esc(res), ("<b>" if st_.startswith("✅") else "") + ui.esc(st_)
                      + ("</b>" if st_.startswith("✅") else ""), ui.esc(imp)] for v, i, src, tp, res, st_, imp in rv.IDEAS]
             st.markdown(ui.table(["版本", "想法", "來源", "類型", "驗證結果", "狀態", "對模型的影響"], rows, left=(1, 2, 3, 4, 5, 6)),
@@ -2800,10 +3009,18 @@ def page_insight():
             n_user = sum(1 for x in rv.IDEAS if x[2] == "使用者提問")
             n_user_ok = sum(1 for x in rv.IDEAS if x[2] == "使用者提問" and x[5].startswith("✅"))
             st.caption(f"使用者提問引發的 {n_user} 組想法中，{n_user_ok} 組改變了主模型；其餘都轉為儀表板、燈號、提醒等資訊顯示。"
-                       "主模型最後一次調整是 v1.9（營收優於同業 15%）；完整說明見 docs/v2.3_model_review.md。")
+                       "主模型最近一次調整是 v3.0（短中線改名次加權，docs/v3.0_protocol.md）；之前是 v1.9（營收優於同業 15%）。")
 
     with tabs["🧭 觀察重點"]:
         st.markdown(insight_focus(df, sto, f5, t5, mchg, sox_dd), unsafe_allow_html=True)
+        st.markdown(ui.section("重大事件與即時消息", "事件的歷史參考、可靠的即時消息來源、最新頭條（10 分鐘更新）"), unsafe_allow_html=True)
+        st.markdown(nv_event_html(), unsafe_allow_html=True)
+        n1, n2 = st.columns(2)
+        n1.markdown(ui.panel("台股頭條（Google 新聞，近 2 天）", headlines_html(news_headlines("台股 盤勢", 6, 2))), unsafe_allow_html=True)
+        n2.markdown(ui.panel("輝達／AI 供應鏈頭條（近 2 天）", headlines_html(news_headlines("輝達 供應鏈 台股", 6, 2))), unsafe_allow_html=True)
+        with st.expander("可靠的即時消息來源（官方優先）"):
+            st.markdown(sources_html(), unsafe_allow_html=True)
+            st.caption("媒體標題只是線索；公司是否「打入供應鏈」「取得專利」等，以公開資訊觀測站的重大訊息為準。")
         lead_section()
         with st.expander("模型裡原本就有的「跌深／止跌」設計"):
             st.markdown(ui.bullets([
@@ -3540,17 +3757,258 @@ def page_lab():
         st.caption(f"{APP_NAME} v{__version__}")
 
 
+# ================================================================== v3.0 產業鏈地圖（上下游、細族群、AI 伺服器拆解、題材、消息衝擊評估）
+@st.cache_data(show_spinner=False)
+def chain_metrics(bid) -> pd.DataFrame:
+    from kosto import chainmap as cm
+    return cm.metrics(B)
+
+
+@st.cache_data(show_spinner=False)
+def chain_groups(bid) -> pd.DataFrame:
+    from kosto import chainmap as cm
+    return cm.group_stats(chain_metrics(bid))
+
+
+@st.cache_data(show_spinner="計算歷史同類事件…")
+def event_summary_cached(bid, key: str) -> tuple[pd.DataFrame, list]:
+    from kosto import impact as I
+    ev = I.event_returns(B, I.EVENT_SETS[key][1])
+    return I.event_summary(ev), sorted(ev["event"].unique().tolist()) if len(ev) else []
+
+
+@st.cache_data(show_spinner=False)
+def since_cached(bid, date: str) -> pd.Series:
+    from kosto import chainmap as cm
+    return cm.since_event(B, date)
+
+
+@st.cache_data(show_spinner=False)
+def betas_cached(bid) -> pd.Series:
+    from kosto import impact as I
+    return I.betas(B)
+
+
+@st.cache_data(show_spinner=False)
+def heat_frame(bid, top: int, elec_only: bool) -> pd.DataFrame:
+    from kosto import chainmap as cm
+    return cm.treemap_frame(B, chain_metrics(bid), CH, top=top, elec_only=elec_only)
+
+
+def heatmap_section(key: str, height: int | None = None, default_top: int = 300):
+    """v3.1 台股熱力圖：面積＝近 20 日均成交金額、顏色＝漲跌（紅漲綠跌，越深越多）；電子依產業鏈層級與細族群分組。"""
+    from kosto import chainmap as cm
+    c1, c2, c3 = st.columns([1.3, 1.2, 1])
+    per = c1.segmented_control("期間", list(cm.PERIODS), format_func=lambda k: cm.PERIODS[k][0], default="r1", key=f"{key}_per") or "r1"
+    scope = c2.segmented_control("範圍", ["all", "elec"], format_func=lambda k: {"all": "全市場", "elec": "只看電子"}[k], default="all",
+                                 key=f"{key}_scope") or "all"
+    top = c3.segmented_control("檔數", [150, 300, 500], format_func=lambda k: f"前 {k}", default=default_top, key=f"{key}_top") or default_top
+    df = heat_frame(BID, int(top), scope == "elec")
+    if df is None or not len(df):
+        st.info("熱力圖需要看盤資料包（下一次每日研究後提供）。")
+        return
+    fig = cm.treemap_figure(df, per, dark=bool(DARK), height=height or (560 if IS_MOBILE else 660))
+    st.plotly_chart(fig, width="stretch", theme=None, key=f"{key}_fig", config={"displaylogo": False, "displayModeBar": False})
+    up = df[df[per] > 0]["amt"].sum() / max(df["amt"].sum(), 1e-9)
+    g = df.groupby("group").apply(lambda x: np.average(x[per].fillna(0), weights=x["amt"])).sort_values()
+    st.caption(f"成交金額前 {int(top)} 名（{'電子' if scope == 'elec' else '全市場'}）；{cm.PERIODS[per][0]}上漲的成交額占 {up:.0%}。"
+               f"最強族群：{'、'.join(f'{k} {v * 100:+.1f}%' for k, v in g.tail(3)[::-1].items())}；"
+               f"最弱：{'、'.join(f'{k} {v * 100:+.1f}%' for k, v in g.head(3).items())}。點方塊可放大、點上方路徑可返回。資料到 {B.sig_dates[-1]:%m/%d}。")
+
+
+def picks_all() -> set:
+    return {p["ticker"] for h in HZ for p in latest(h).get("picks", [])}
+
+
+def rank_mid_map() -> dict:
+    try:
+        rk = ranks(BID, "mid")
+        return {t: int(r) for t, r in rk["rank"].dropna().items()}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def chain_position_html(t: str) -> str:
+    """個股頁：這檔在產業鏈的位置（細族群、上下游、同業、題材、目前重大消息的曝險）。"""
+    from kosto import impact as I
+    from kosto import supply as S
+    gs = S.groups_of(t)
+    if not gs:
+        g = S.primary_group(t, CH.get(t))
+        return (f"<div class='kq-muted'>這檔不在代表個股名單；依產業鏈標籤歸為「{ui.esc(S.group_name(g))}」。"
+                "完整上下游請看「產業鏈地圖」。</div>")
+    lines = []
+    for g in gs:
+        d = S.SUBGROUPS[g]
+        role = next(r for x, r in d["members"] if x == t)
+        peers_ = [f"{x} {NAMES[TIDX[x]]}" for x, _ in d["members"] if x != t and x in TIDX][:6]
+        lines.append(f"<a href='./chain?g={g}' target='_self'><b>{ui.esc(d['name'])}</b></a>（{ui.esc(S.LAYER_NAME[d['layer']])}）：{ui.esc(role)}"
+                     f"<br><span class='kq-muted'>上游：{ui.esc('、'.join(S.group_name(x) for x in S.suppliers(g)) or '原料、國外設備')}｜"
+                     f"下游：{ui.esc('、'.join(S.group_name(x) for x in S.customers(g)) or '國外終端客戶')}｜同業：{ui.esc('、'.join(peers_))}</span>")
+    th = S.themes_of(t)
+    if th:
+        lines.append("題材：" + "、".join(ui.tag(x) for x in th))
+    ex = []
+    for sc in I.SCENARIOS:
+        dep = [x for x in sc["impacts"] if x[0] in gs and x[1] != 0]
+        if dep:
+            d0 = min(dep, key=lambda x: x[1]) if any(x[1] < 0 for x in dep) else max(dep, key=lambda x: x[1])
+            ex.append(f"{ui.esc(sc['name'].split('（')[0])}：<b style='color:{ui.DOWN if d0[1] < 0 else ui.UP}'>"
+                      f"{'受傷' if d0[1] < 0 else '受惠'}{I.depth_label(d0[1])}</b>")
+    if ex:
+        lines.append("重大消息曝險：" + "；".join(ex))
+    return ui.bullets(lines)
+
+
+def page_chain():
+    from kosto import chainmap as cm
+    from kosto import impact as I
+    from kosto import supply as S
+    header()
+    st.markdown(ui.section("產業鏈地圖", "台股電子業從材料到整櫃伺服器的上下游、細族群與代表個股；AI 與新題材；重大消息會傷到誰"),
+                unsafe_allow_html=True)
+    met = chain_metrics(BID)
+    gs = chain_groups(BID)
+    mk = cm.market_ref(met)
+    lead = cm.lead_names(B, met)
+    picks, rmid = picks_all(), rank_mid_map()
+    cell = lambda t: stock_cell(t) if t in TIDX else ui.esc(t)          # noqa: E731
+    tabs = st.tabs(["🗺️ 全景圖・細族群", "🔥 熱力圖", "🧩 AI 伺服器拆解", "🚀 題材地圖", "⚡ 消息衝擊評估", "📏 族群敏感度"])
+    with tabs[1]:
+        heatmap_section("cm_heat", default_top=150 if IS_MOBILE else 300)
+    tabs = [tabs[0], *tabs[2:]]
+    with tabs[0]:
+        q = st.query_params.get("g", "")
+        sel = q if q in S.SUBGROUPS else None
+        st.markdown(cm.overview_html(gs, sel), unsafe_allow_html=True)
+        opts = list(S.SUBGROUPS)
+        g = st.selectbox("細族群拆解（也可以直接點上方方塊）", opts, index=opts.index(sel) if sel else opts.index("server"),
+                         format_func=lambda x: f"{S.LAYER_NAME[S.SUBGROUPS[x]['layer']]}｜{S.SUBGROUPS[x]['name']}", key="cm_sel")
+        if g != sel:
+            st.query_params["g"] = g
+        st.markdown(ui.panel(f"拆解：{S.SUBGROUPS[g]['name']}", cm.group_detail(g, met, rmid, picks, cell)), unsafe_allow_html=True)
+        st.caption("代表個股依主要營收來源人工整理，同一家公司可能出現在多個族群（例：台達電＝電源＋散熱）；名單不是推薦，也不代表與某客戶有公開供應關係。"
+                   f"資料到 {B.sig_dates[-1]:%m/%d}；「相對大盤」＝減成交金額前 800 名平均。")
+    with tabs[1]:
+        mob = "".join(ui.mcard(f"<b>{ui.esc(nm)}</b>", ui.pct(gs.loc[g, "r20"], 1, color=True), ui.esc(plain),
+                               f"{ui.esc('、'.join(lead.get(g, [])[:4]))}｜<a href='./chain?g={g}' target='_self'>{ui.esc(S.group_name(g))}</a>")
+                      for nm, plain, g in cm.CHIP_PARTS[::-1] + cm.RACK_PARTS[::-1])
+        st.markdown(cm.CSS + ui.resp(cm.rack_svg(lead), "<div class='kq-muted' style='font-size:12.5px;margin-bottom:6px'>由晶片（最內層）到整櫃（最外層）："
+                                     "</div>" + mob), unsafe_allow_html=True)
+        st.markdown(ui.panel("怎麼看這張圖", ui.bullets([
+            "<b>由內到外</b>：晶片（台積電做）→ 封裝成一顆（CoWoS）→ 裝在載板與主機板 → 加上散熱、電源 → 放進托盤 → 18 盤組成一整櫃 → 交給雲端巨頭。",
+            "<b>越靠近晶片，越難替代、毛利越高</b>（台積電、CoWoS、ABF 載板）；<b>越靠近整櫃，量越大、毛利越低</b>（組裝廠），但最先感受到出貨時程變化。",
+            "<b>AI 伺服器跟一般伺服器的差別</b>：晶片更燙（要液冷）、更耗電（電源與 BBU 升級）、更重（滑軌與機殼升級）、傳輸更快（高速板材、光通訊）"
+            "——這些「升級」就是台廠受惠最多的地方。"])), unsafe_allow_html=True)
+        rows = []
+        for nm, plain, g in cm.RACK_PARTS + cm.CHIP_PARTS:
+            r = gs.loc[g]
+            rows.append([f"<b>{ui.esc(nm)}</b>", ui.esc(plain), f"<a href='./chain?g={g}' target='_self'>{ui.esc(S.group_name(g))}</a>",
+                         ui.esc("、".join(lead.get(g, [])[:5])), ui.pct(r["r20"], 1, color=True), ui.pct(r["x20"], 1, color=True)])
+        st.markdown(ui.resp(ui.table(["零件", "白話", "細族群", "代表公司", "近 20 日", "相對大盤"], rows, left=(0, 1, 2, 3)), ""),
+                    unsafe_allow_html=True)
+    with tabs[2]:
+        cards = cm.theme_cards(met, cell, mk)
+        c1, c2 = st.columns(2)
+        for k, h in enumerate(cards):
+            (c1 if k % 2 == 0 else c2).markdown(h, unsafe_allow_html=True)
+        st.caption("階段：成熟＝營收已明顯貢獻；成長＝營收開始貢獻；題材＝主要看預期（股價波動大、容易「利多出盡」）。"
+                   "新題材／轉型：CPO 矽光子、800V 高壓直流、FOPLP／CoPoS 面板級封裝、玻璃基板、人形機器人。")
+    with tabs[3]:
+        names = [sc["name"] for sc in I.SCENARIOS]
+        k = st.selectbox("選一個重大消息", range(len(names)), format_func=lambda i: names[i], key="cm_sc")
+        sc = I.SCENARIOS[k]
+        hist, evs = (event_summary_cached(BID, sc["analog"]) if sc.get("analog") else (None, []))
+        since = since_cached(BID, sc["date"])
+        a1, a2 = st.columns([1.25, 1])
+        a1.markdown(ui.panel("發生什麼事", ui.bullets([ui.esc(x) for x in sc["facts"]])
+                             + "<div class='kq-muted' style='font-size:12px'>來源：" + "、".join(
+                                 f"<a href='{u}' target='_blank' rel='noopener'>{ui.esc(n)}</a>" for n, u in sc.get("sources", [])) + "</div>"),
+                    unsafe_allow_html=True)
+        a2.markdown(ui.panel("影響怎麼傳下去（由快到慢）", cm.CSS + cm.steps_html(sc["chain"])), unsafe_allow_html=True)
+        rows, mrows = cm.impact_rows(sc, hist, since, met, lead)
+        an = I.EVENT_SETS.get(sc.get("analog") or "", ("", [], ""))
+        st.markdown(ui.section("各族群受影響深淺", "基本面判斷（人工）＋" + (f"歷史同類事件（{ui.esc(an[0])}，{len(evs)} 次）" if evs else
+                                                                         "歷史同類事件：無（看下方族群路徑）") + "＋事件後至今的實際表現（相對大盤）"),
+                    unsafe_allow_html=True)
+        st.markdown(ui.resp(ui.table(["細族群", "基本面判斷", "多快反映", "原因", "歷史同類 5 日／20 日", "事件後至今", "代表公司"], rows,
+                                     left=(0, 1, 3, 6)), "".join(mrows)), unsafe_allow_html=True)
+        st.caption(("歷史同類事件：" + "、".join(evs) + "。" if evs else "")
+                   + ("「事件後至今」：資料庫還沒有事件日之後的資料（下一次每日更新後自動出現）。" if not len(since) else
+                      f"「事件後至今」：{sc['date']} 前一日收盤到 {B.sig_dates[-1]:%m/%d}。") + " " + ui.esc(sc.get("note", "")))
+        if sc["id"] == "rates":
+            ch, _ = event_summary_cached(BID, "cut")
+            hk, _ = event_summary_cached(BID, "hike")
+            rr = [[ui.esc(S.group_name(g)), ui.pct(hk.loc[g, "d5"], 1, color=True) if g in hk.index else "–",
+                   ui.pct(ch.loc[g, "d5"], 1, color=True) if g in ch.index else "–"] for g in hk.index]
+            with st.expander("升息日 vs 降息日：各族群之後 5 日相對大盤（2019 年以來）"):
+                st.markdown(ui.table(["細族群", "升息後 5 日", "降息後 5 日"], rr, left=(0,)), unsafe_allow_html=True)
+                st.caption("單一次升降息決議的影響都很小（多在 ±1% 內）；真正的影響是整段升息循環對高本益比族群的評價壓力（2022 年）。")
+        if sc.get("theme"):
+            js = I.theme_index(B, sc["theme"])
+            p = I.path(B, js, sc["date"], 60, 90)
+            if len(p) > 10:
+                import plotly.graph_objects as go
+                from kosto.charts import THEME
+                BG, GRID, TXT, MUTED = THEME[bool(DARK)]
+                fig = go.Figure(go.Scatter(x=p.index, y=p.values * 100, mode="lines", line=dict(color=ui.UP, width=2)))
+                fig.add_vline(x=0, line_dash="dot", line_color=MUTED)
+                fig.update_layout(height=260, margin=dict(l=8, r=40, t=10, b=40), paper_bgcolor=BG, plot_bgcolor=BG,
+                                  font=dict(color=TXT, family="Inter, Noto Sans TC, sans-serif"),
+                                  xaxis=dict(title="事件前後交易日", gridcolor=GRID), yaxis=dict(title="累積超額 %", gridcolor=GRID, side="right"))
+                st.markdown(ui.section(f"{S.THEME_BY_ID[sc['theme']]['name']}族群：事件前後相對大盤的累積表現",
+                                       f"代表股等權，事件前一日＝0；{len(js)} 檔"), unsafe_allow_html=True)
+                st.plotly_chart(fig, width="stretch", theme=None, config={"displaylogo": False, "displayModeBar": False})
+                pre = (1 / (1 + p.get(-60, p.iloc[0])) - 1) if p.index.min() <= -20 else np.nan
+                post = {d_: p.get(d_) for d_ in (5, 20, 60) if d_ in p.index}
+                st.caption(f"事件前 60 日到事件前一日：相對大盤 {ui.pct(pre, 1)}；事件後 " + "、".join(f"{d_} 日 {ui.pct(v_, 1)}" for d_, v_ in post.items())
+                           + "。題材股常見「上市前漲、上市後利多出盡」。")
+        ex = []
+        for h in HZ:
+            for pk in latest(h).get("picks", []):
+                t = pk["ticker"]
+                hit = [x for x in sc["impacts"] if x[0] in S.groups_of(t) and x[1] != 0]
+                if hit:
+                    d0 = min(hit, key=lambda x: x[1])
+                    ex.append((h, t, d0))
+        if ex:
+            rows = [[HZ[h], cell(t), ui.esc(S.group_name(d0[0])), cm.depth_bar(d0[1])] for h, t, d0 in ex]
+            st.markdown(ui.section("模型名單在這個消息的曝險"), unsafe_allow_html=True)
+            st.markdown(ui.table(["期間", "股票", "所屬細族群", "影響"], rows, left=(0, 1, 2)), unsafe_allow_html=True)
+        else:
+            st.markdown("<div class='kq-muted'>模型名單沒有直接受這個消息影響的代表股。</div>", unsafe_allow_html=True)
+        st.caption("基本面判斷是依營收曝險與傳導順序的人工整理（v3.0 研究），不進選股模型；歷史同類事件樣本少（3～12 次），只看方向與量級。")
+    with tabs[4]:
+        bs = betas_cached(BID)
+        if len(bs):
+            bs = bs.dropna().sort_values()
+            rows = [[ui.esc(S.group_name(g)), f"{v:.2f}", f"<span class='cm-bar' style='width:{max(4, v * 160):.0f}px;background:var(--accent2)'></span>"]
+                    for g, v in bs.items()]
+            st.markdown(ui.section("對費半的敏感度（β）", "2023 年以來：前一晚費半漲跌 1%，隔天這個族群平均漲跌幾 %"), unsafe_allow_html=True)
+            st.markdown(cm.CSS + ui.table(["細族群", "β", ""], rows, left=(0, 2)), unsafe_allow_html=True)
+            st.caption("β 越高，美股半導體大跌時越容易被拖累（也越容易跟著反彈）。載板、先進封裝、ASIC 最敏感；通路、車用、PC 最不敏感。")
+        sets = [k for k in I.EVENT_SETS]
+        kk = st.selectbox("歷史事件組", sets, format_func=lambda x: I.EVENT_SETS[x][0], key="cm_es")
+        sm, evs = event_summary_cached(BID, kk)
+        if len(sm):
+            rows = [[ui.esc(S.group_name(g)), ui.pct(r["d0"], 1, color=True), ui.pct(r["d5"], 1, color=True), ui.pct(r["d20"], 1, color=True),
+                     f"{r['win5']:.0%}" if np.isfinite(r["win5"]) else "–"] for g, r in sm.iterrows()]
+            st.markdown(ui.table(["細族群", "當天", "5 日", "20 日", "5 日勝過大盤比例"], rows, left=(0,)), unsafe_allow_html=True)
+            st.caption(f"{I.EVENT_SETS[kk][0]}：{'、'.join(evs)}（{I.EVENT_SETS[kk][2]}）。相對成交金額前 800 名等權；依 5 日由弱到強排序。")
+
+
 # ================================================================== navigation
-pages = [st.Page(page_picks, title="今日選股", icon="📋", url_path="picks", default=True),
-         st.Page(page_live, title="盤中監控", icon="⏱️", url_path="live"),
-         st.Page(page_insight, title="盤勢儀表板", icon="🎛️", url_path="insight"),
-         st.Page(page_market, title="大盤", icon="📈", url_path="market"),
-         st.Page(page_etf, title="精選ETF", icon="💰", url_path="etf"),
-         st.Page(page_world, title="國際盤", icon="🌏", url_path="world"),
-         st.Page(page_stock, title="個股診斷", icon="🔍", url_path="stock"),
-         st.Page(page_alloc, title="資金配置", icon="⚖️", url_path="alloc"),
-         st.Page(page_guide, title="操作指南", icon="📖", url_path="guide"),
-         st.Page(page_lab, title="研究室", icon="🧪", url_path="lab")]
+pages = {"": [st.Page(page_picks, title="今日選股", icon="📋", url_path="picks", default=True),
+              st.Page(page_live, title="盤中監控", icon="⏱️", url_path="live"),
+              st.Page(page_insight, title="盤勢儀表板", icon="🎛️", url_path="insight"),
+              st.Page(page_chain, title="產業鏈地圖", icon="🗺️", url_path="chain"),
+              st.Page(page_stock, title="個股診斷", icon="🔍", url_path="stock")],
+         "更多": [st.Page(page_market, title="大盤", icon="📈", url_path="market"),
+                  st.Page(page_world, title="國際盤", icon="🌏", url_path="world"),
+                  st.Page(page_etf, title="精選ETF", icon="💰", url_path="etf"),
+                  st.Page(page_alloc, title="資金配置", icon="⚖️", url_path="alloc"),
+                  st.Page(page_guide, title="操作指南", icon="📖", url_path="guide"),
+                  st.Page(page_lab, title="研究室", icon="🧪", url_path="lab")]}
 _nav = st.navigation(pages, position="top")
 CUR_PAGE = getattr(_nav, "url_path", "") or "picks"
 _nav.run()

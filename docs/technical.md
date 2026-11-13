@@ -591,3 +591,53 @@ v1.9 改為每個交易日 **21:40 一次更新全部**（融資融券約 21:00�
 * `report.hints`：消融結果（關掉某條規則後開發期 CAGR 變高）改寫成「列入下次預先宣告研究的候選」。
 * App「盤勢儀表板 → 模型體檢」：新增「驗效與偏移檢查」（各期間母池與起始日、開發期／盲測期／2019–21 超額、盲測期勝母池等權、閘門；
   檢查結論；長線每次改良的超額與回撤；中線名單風格逐半年）；研究室「冠軍／挑戰者」顯示風險護欄擋下的候選與回撤差。
+
+## v2.5 消息面：急漲急跌事件研究、輝達事件、即時消息與更新狀態診斷（主模型不變）
+
+完整說明與結果：`docs/v2.5_protocol.md`（預先宣告，寫於看結果之前）。
+* `review.SHOCK_UP/SHOCK_DOWN/SHOCK_PEAK`：2019-07～2026-10 成交金額前 800 名的急漲（≥ +7% 且量 ≥ 前 20 日均量 3 倍）16,203 次、急跌 2,661 次，
+  依法人（外資＋投信÷當日量 ±5%）、融資（增加÷當日量 > 5%）、營收（近 3 月年增）、前 20 日漲幅、是否連續炒作分組，之後 1／5／20／60 日超額。
+* `review.shock_events(B)`：用每日看盤資料包（Q_C、Q_V、Q_RF、Q_FI、Q_TR、Q_MB、LATEST_RAW 的 f_rev_yoy3）找出近 10 個交易日的事件，
+  歸類（優先順序：法人買＋營收 > 20%、融資追＋法人賣、法人買、法人賣、營收、前 20 日漲幅、連續炒作）並附歷史同類事件的 20／60 日超額。
+  營收用最新值（事件後 10 日內若有新營收公布會用到新值；監控用，不進模型）。
+* `review.NV_CHAIN_SHOCK`、`review.nv_chain(labels)`（peers 的 AI 晶片與伺服器＋PCB 與載板主題＋核心 17 檔）、`review.NV_EVENT`。
+* `review.V25_TESTS`：N1（急漲＋法人買）、N2（急漲＋融資未追）85%／15% 混合，五種換股日；開發期中線 −2.6／−1.2pp、短長線也降 → 未通過；
+  N1 盲測期較好，列入觀察。`review.SCORE_IC`、`SCORE_IC_Q`、`SHOCK_IC`：模型分數與消息面因子的逐年／逐季 IC。
+* `kosto/news.py`（只用於 App 顯示）：`SOURCES` 可靠來源（官方優先）；`material_today()` 證交所 `t187ap04_L`、櫃買中心 `mopsfe_t187ap04_O`
+  每日重大訊息 OpenAPI；`google_news(query)` Google 新聞 RSS（台灣繁中、近 N 天）。都有逾時，抓不到回空值、不影響其他頁面；App 快取 10 分鐘。
+* `freshness.status(..., history)`：研究資料落後時顯示「研究資料只到 MM/DD（應到 MM/DD）」、「之前連續 N 次更新失敗」、執行中的觸發方式與開始時間；
+  連續失敗 ≥ 2 次且資料落後 → 紅燈。`freshness.run_rows`：頁首「最近幾次自動更新」表（開始時間、觸發、結果、耗時、GitHub 連結）。
+  `workflow_dispatch` 標「手動／自動續跑」（資料未完成時 workflow 會自己啟動下一輪）。
+* `quotes.Quotes`：證交所即時報價失敗時換新連線重試一次；冷卻 90 秒。大盤 `taiex_now` 先用證交所，失敗時用分時並標「延遲」。
+* App：儀表板「特別時期選股」新增近 10 日消息面急漲／急跌股（每檔留最近一次事件，前 15 檔＋展開其餘）、歷史研究、名單今天的重大訊息；
+  「觀察重點」新增輝達事件（歷史上費半重挫後供應鏈的走勢、名單曝險）、即時頭條、可靠消息來源；「模型體檢」新增 N1／N2 與模型時效；
+  個股診斷新增最新新聞與今天的重大訊息。
+
+## v3.0 產業鏈地圖、族群消息衝擊評估、短中線名次加權（docs/v3.0_protocol.md）
+
+* `kosto/supply.py`：9 個層級、38 個細族群（白話說明、比喻、AI 程度 0／1／2、代表個股與角色）、垂直關係 `EDGES`（供應商 → 客戶）、
+  國外終端客戶、13 個橫向主題（`stage`：成熟／成長／題材；`new`：新題材／轉型，例 FOPLP／CoPoS、CPO、玻璃基板、800V、人形機器人）。
+  `groups_of`、`themes_of`、`suppliers`、`customers`、`peers`；`primary_group(t, label)`：代表個股 → 產業鏈標籤關鍵字（`AUTO`）→ 產業鏈族群。
+* `kosto/impact.py`：`EVENT_SETS`（AI 資本支出疑慮／利多、升息、降息、美國選舉、蘋果發表會；台股反應日）、`SCENARIOS`（期中選舉資料中心暫停、
+  升息循環、SpaceX 上市、iPhone Duo、輝達執行長請辭：事實、傳導順序、各細族群 depth −3～+3／速度／理由、來源）、
+  `event_returns`（細族群代表股等權減全市場等權：當天、5 日、20 日）、`event_summary`、`path`（事件前後累積超額）、`betas`（對前一晚費半 β）。
+  事件日不在資料範圍 → 略過；之後的新事件資料進來自動納入。
+* `kosto/chainmap.py`：`metrics`（Q_C／Q_RF／Q_V → 今日、5／20／60 日、成交金額）、`group_stats`、`overview_html`（層級＋方塊熱度圖，
+  點方塊 `?g=` 開拆解）、`group_detail`、`rack_svg`（AI 伺服器整櫃＋晶片封裝剖面拆解圖）、`theme_cards`、`impact_rows`、`since_event`。
+* App 新頁「🗺️ 產業鏈地圖」（`url_path="chain"`）：全景圖・細族群、AI 伺服器拆解、題材地圖、消息衝擊評估（含模型名單曝險）、族群敏感度；
+  個股診斷新增「產業鏈位置」（細族群、上下游、同業、題材、重大消息曝險）。
+* 模型：`horizons.short/mid.weighting: rank`（W1；`backtest.run` 既有的名次加權 1.5→0.5，與長線相同）。`plan.stock_weights(n, h, weighting)`
+  預設 rank；今日選股卡片顯示每檔「資金 %」、資金配置頁下單明細依名次加權。改回 `equal` 即 v2.5 行為。
+* `review.V30_TESTS`、`W1_YEARS`；IDEAS 加入 v3.0。
+
+## v3.1 再檢視：模型維持 v3.0、資金分配選項、熱力圖、介面美化（docs/v3.1_protocol.md）
+
+* 研究：H1／H2 殘差動能 5%／10%、H3 策略自身趨勢濾網、H5 名次×波動倒數、H6 H5＋H2；全部未通過預先宣告門檻 → 主模型維持 v3.0。
+  `review.V31_TESTS`；IDEAS 加入 v3.1。
+* `backtest.Spec.weighting` 新增 `rank_invvol`（名次權重 1.5→0.5 ÷ VOL60，單檔上限 2/K）；預設不用。
+  `plan.stock_weights(..., "rank_invvol", vols)`：資金配置頁「每檔資金分配：名次×波動（回撤較小）」選項（用最新訊號日的 VOL60）；沒有波動資料時退回名次加權。
+* `chainmap.treemap_frame / treemap_figure`：台股熱力圖（plotly treemap；板塊＝電子產業鏈層級或「非電子」、族群＝細族群或官方產業、
+  面積＝近 20 日均成交金額、顏色＝今日／5／20／60 日漲跌，紅漲綠跌、cmid=0）。App：產業鏈地圖「🔥 熱力圖」分頁、大盤頁 K 線下方。
+* `ui.schip`（可點的股票籤 → 個股診斷）、`ui.action_board`（今日行動看板：買進／賣出／續抱三欄，買進顯示資金 %）；
+  CSS：卡片懸停、分頁底線漸層、區塊標題漸層字。
+* 導覽：`st.navigation` 改為兩組——常用（今日選股、盤中監控、盤勢儀表板、產業鏈地圖、個股診斷）直接顯示，其餘放「更多」下拉；手機快速切換列不變。

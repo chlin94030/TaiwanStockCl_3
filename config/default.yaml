@@ -122,7 +122,7 @@ horizons:
     # 想回到舊短線：刪掉 label_horizon，model 改 {mode: opt, lam: 0.40, exposure: soft}、hysteresis 1.5（不建議）。
     model: {mode: sparse, k: 5, tmin: 2.0, growth_blend: 0.3, exposure: none, hyp_blend: 0.5,
             hypothesis: PRICE_ALPHA_8_BALANCED, label_horizon: mid}
-    weighting: equal
+    weighting: rank          # v3.0：名次加權（第 1 名 1.5 倍 → 第 8 名 0.5 倍；長線自 v1.x 起使用）。開發期短線 +5.2pp、成本加倍仍 +2.5pp；改回 equal 即 v2.5
     residual: bench                    # v1.3 benchmark-first：沒買股票的資金放 0050（不是現金）
     family_prior: {T: 0.30, C: 0.30, F: 0.05, K: 0.35}
     hysteresis: 2.5          # 已持有個股排名仍在前 2.5×K 內就續抱（律3 耐心、戒6 不隨風吹草動；v1.5 由 1.5 改 2.5）
@@ -135,7 +135,7 @@ horizons:
     # v1.3：精簡5因子 70% ＋ 成長動能假說 30%（開發期 −1pp，盲測 +22pp、2019-20 未用期間 +1pp → 依「不退步原則」採用）
     # v1.4：v1.3 模型 50% ＋ V24 PRICE_ALPHA_8_BALANCED 50%（預先宣告的三窗口名次規則選出；見 docs）
     model: {mode: sparse, k: 5, tmin: 2.0, growth_blend: 0.3, exposure: none, hyp_blend: 0.5, hypothesis: PRICE_ALPHA_8_BALANCED}
-    weighting: equal
+    weighting: rank          # v3.0：名次加權（docs/v3.0_protocol.md）：中線三母池開發期 +4.6pp、資訊比率 +0.07，15 格全部為正；改回 equal 即 v2.5
     residual: bench
     family_prior: {T: 0.20, C: 0.25, F: 0.15, K: 0.40}
     hysteresis: 2.0

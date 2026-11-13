@@ -36,7 +36,7 @@ class Spec:
     capital: float = 1_000_000
     max_participation: float = 0.02
     equal_weight_all: bool = False   # benchmark mode: hold every pool member, no costs/gates
-    weighting: str = "equal"         # equal | sqrt_cap（依市值平方根加權，單檔上限 2/K） | rank（名次加權 1.5→0.5）
+    weighting: str = "equal"         # equal | sqrt_cap（依市值平方根加權，單檔上限 2/K） | rank（名次加權 1.5→0.5） | invvol | rank_invvol（v3.1 研究）
     max_per_sector: int | None = None  # 同產業最多幾檔（None = 不限）
     max_rsi: float | None = None     # 不追高閘門：RSI14 高於此值不買（V23.1 用 84）
     max_bias20: float | None = None  # 不追高閘門：股價高於 20 日均線超過此比例不買（V23.1 用 14%）
@@ -189,13 +189,18 @@ def run(B, view: PoolView, weights: list, spec: Spec, start_i: int = 0) -> Resul
             lin = np.linspace(1.5, 0.5, len(fs))
             budget = expo * len(filled) / max(n_slots, 1)
             new_w = {j: budget * float(x) / lin.sum() for j, x in zip(fs, lin)}
-        if spec.weighting in ("sqrt_cap", "invvol") and filled and not spec.equal_weight_all:
+        if spec.weighting in ("sqrt_cap", "invvol", "rank_invvol") and filled and not spec.equal_weight_all:
             if spec.weighting == "sqrt_cap" and "MCAP" in B.a:
                 m = np.sqrt(np.nan_to_num(B.a["MCAP"][i, filled].astype(float), nan=0.0))
-            elif spec.weighting == "invvol" and "VOL60" in B.a:
+            elif spec.weighting in ("invvol", "rank_invvol") and "VOL60" in B.a:
                 v = B.a["VOL60"][i, filled].astype(float)
                 v = np.where(np.isfinite(v) & (v > 0), v, np.nanmedian(v) if np.isfinite(v).any() else 0.03)
                 m = 1.0 / np.clip(v, 0.005, None)
+                if spec.weighting == "rank_invvol" and len(filled) > 1:     # v3.1 研究：名次加權 × 波動倒數
+                    _, _, smap = choose(B, view, i, weights[i], [], spec) if weights[i] is not None else ([], [], {})
+                    order = sorted(range(len(filled)), key=lambda k: -smap.get(filled[k], 0))
+                    lin = np.empty(len(filled)); lin[order] = np.linspace(1.5, 0.5, len(filled))
+                    m = m * lin
             else:
                 m = np.zeros(0)
             if m.sum() > 0:

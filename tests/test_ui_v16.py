@@ -135,7 +135,8 @@ def test_blend_nav_and_weights():
     assert 1.0 < nav.iloc[-1] < 2.0 and nav.iloc[0] == pytest.approx(1.0)
     w = plan.stock_weights(10, "long")
     assert w.sum() == pytest.approx(1) and w[0] == pytest.approx(3 * w[-1])
-    assert plan.stock_weights(10, "mid")[0] == pytest.approx(0.1)
+    assert plan.stock_weights(10, "mid", "equal")[0] == pytest.approx(0.1)
+    assert plan.stock_weights(8, "mid")[0] == pytest.approx(1.5 / 8)          # v3.0：短中線也用名次加權
     assert plan.lots(100000, 37.75) == (2, 649)
 
 
