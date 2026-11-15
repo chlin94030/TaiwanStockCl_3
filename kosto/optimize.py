@@ -47,7 +47,7 @@ def pool_view(U: np.ndarray, member_mask: np.ndarray, trade: np.ndarray) -> Pool
             Zs.append(np.zeros((len(idx), U.shape[2]), np.float32))
             continue
         u = U[i, idx, :].astype(np.float64)
-        miss = u == 0
+        miss = (u == 0) | ~np.isfinite(u)             # v3.5：NaN 也當缺值（正式 bundle 用 0；研究附加的原始因子可能有 NaN）
         # tie-aware rank among members (missing sorts last), centre to [-0.5, 0.5]; missing → 0
         rk = avg_rank_cols(np.where(miss, np.inf, u))
         n_ok = (~miss).sum(0)

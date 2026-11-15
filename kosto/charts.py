@@ -10,7 +10,7 @@ from .ta import MA_LINES
 
 UP, DOWN = "#f0464b", "#16a35f"
 THEME = {True: ("#0f1726", "#1e2a3f", "#d6deeb", "#8a97ad"), False: ("#ffffff", "#e5eaf1", "#1e293b", "#64748b")}
-MA_COLOR = {5: "#f5b942", 10: "#e879f9", 20: "#38bdf8", 60: "#a3e635", 120: "#fb923c", 240: "#c084fc"}
+MA_COLOR = {5: "#f5b942", 10: "#e879f9", 20: "#38bdf8", 50: "#a3e635", 60: "#a3e635", 120: "#fb923c", 200: "#c084fc", 240: "#c084fc"}
 PANELS = {"volume": "成交量", "kd": "KD", "macd": "MACD", "inst": "三大法人", "margin": "融資券", "holders": "大戶持股"}
 PANEL_H = {"volume": 0.13, "kd": 0.12, "macd": 0.12, "inst": 0.14, "margin": 0.12, "holders": 0.11}
 

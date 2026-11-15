@@ -294,6 +294,24 @@ a.kq-schip { display:inline-flex; align-items:baseline; gap:5px; padding:4px 9px
 a.kq-schip:hover { border-color:var(--accent); }
 a.kq-schip b { font-family:'Inter', sans-serif; font-variant-numeric: tabular-nums; color:var(--accent); font-weight:600; }
 a.kq-schip small { color:var(--muted); font-size:11px; }
+/* ---------- v3.6 推薦順序步驟卡、新手總覽 */
+.kq-steps { display:flex; flex-direction:column; gap:10px; margin:6px 0 14px; }
+.kq-step { display:flex; gap:14px; padding:12px 16px; border:1px solid var(--line); border-radius:14px; background:var(--panel);
+  box-shadow:var(--shadow); }
+.kq-step .no { font-size:24px; font-weight:800; color:var(--accent); min-width:30px; line-height:1.1; }
+.kq-step .bd { flex:1; min-width:0; }
+.kq-step .hd { font-size:15.5px; margin-bottom:4px; display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
+.kq-step .hd a { color:var(--strong); text-decoration:none; }
+.kq-step .why { font-size:13px; line-height:1.6; color:var(--text); }
+.kq-home { display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:12px; margin:8px 0 14px; }
+.kq-hcard { border:1px solid var(--line); border-radius:16px; padding:14px 16px; background:var(--panel); box-shadow:var(--shadow); }
+.kq-hcard .t { font-size:15px; font-weight:700; color:var(--strong); margin-bottom:6px; display:flex; gap:8px; align-items:center; }
+.kq-hcard .t .n { background:var(--accent); color:var(--panel); border-radius:999px; width:22px; height:22px; display:inline-flex;
+  align-items:center; justify-content:center; font-size:13px; }
+.kq-hcard .b { font-size:13px; line-height:1.65; }
+.kq-hcard .go { margin-top:8px; font-size:12.5px; }
+.kq-hcard .go a { color:var(--accent); text-decoration:none; }
+@media (max-width: 760px) { .kq-home { grid-template-columns: 1fr; } .kq-step { padding:10px 12px; gap:10px; } }
 @media (max-width: 760px) { .kq-act { grid-template-columns: 1fr; gap:8px; } .kq-act .col { padding:10px 11px; } a.kq-schip { font-size:12.5px; } }
 
 </style>

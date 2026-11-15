@@ -835,16 +835,16 @@ def header(world: bool = True):
                            "上傳新程式會觸發一次更新，Streamlit 也會重新啟動（所以打開時會看到 reboot）。")
 
 
-QNAV = [("picks", "📋", "選股"), ("insight", "🎛️", "儀表板"), ("live", "⏱️", "盤中"), ("stock", "🔍", "個股"), ("chain", "🗺️", "產業鏈"),
-        ("world", "🌏", "國際"),
+QNAV = [("home", "🏠", "總覽"), ("picks", "📋", "選股"), ("insight", "🎛️", "儀表板"), ("live", "⏱️", "盤中"), ("stock", "🔍", "個股"), ("chain", "🗺️", "產業鏈"),
+        ("us", "🗽", "美股"), ("world", "🌏", "國際"),
         ("market", "📈", "大盤"), ("etf", "💰", "ETF"), ("alloc", "⚖️", "配置"), ("guide", "📖", "指南")]
 
 
 def quick_nav() -> str:
     """v2.2.2 手機／平板快速切換頁面（寬度 ≤1100px 才顯示；電腦用上方選單）：可左右滑動，目前頁面反白。"""
-    cur = globals().get("CUR_PAGE", "picks") or "picks"
+    cur = globals().get("CUR_PAGE", "home") or "home"
     return ("<nav class='kq-qnav'>" + "".join(
-        f"<a class='{'on' if k == cur else ''}' href='./{k}' target='_self'>{ic} {nm}</a>" for k, ic, nm in QNAV) + "</nav>")
+        f"<a class='{'on' if k == cur else ''}' href='./{'' if k == 'home' else k}' target='_self'>{ic} {nm}</a>" for k, ic, nm in QNAV) + "</nav>")
 
 
 # ================================================================== stock view (chart + plan + chips)
@@ -3087,11 +3087,11 @@ def page_insight():
         rows = [[ui.esc(nm), rv.FAMILY_ZH[f], f"{a:+.3f}", f"<b style='color:{ui.UP if b_ > 0 else ui.DOWN}'>{b_:+.3f}</b>"] for nm, f, a, b_ in rv.PANIC_IC]
         st.markdown(ui.table(["因子", "家族", "一般時期", "急跌時"], rows, left=(0, 1)), unsafe_allow_html=True)
         st.caption("急跌時「接近新高、低波動、高殖利率」失效，「營收動能」更有效。這正是 B1（急跌時動能減半）想利用的現象，但開發期只多 0.6 個百分點、未達門檻。")
-        st.markdown(ui.section("預先宣告測試（docs/v2.2_crash_protocol.md、v2.3、v2.5、v3.0、v3.1_protocol.md）",
+        st.markdown(ui.section("預先宣告測試（docs/v2.2_crash_protocol.md、v2.3、v2.5、v3.0、v3.1、v3.5_protocol.md）",
                                "五種換股日、2021–2025 開發期；單位：百分點（資訊比率為差值）；與 v1.9 相同的採用門檻"), unsafe_allow_html=True)
         st.markdown(ui.table(["候選", "中線超額", "中線 IR", "中線回撤改善", "短線超額", "長線超額", "判定"],
                              [[f"<b>{a}</b>", b, c_, d, e, f, g] for a, b, c_, d, e, f, g in V22_TESTS + rv.V23_TESTS]
-                             + [[f"<b>{a}</b>", b, c_, d, e, f, f"{g_}（盲測期中線 {bl}，只報告）"] for a, b, c_, d, e, f, bl, g_ in rv.V25_TESTS + rv.V30_TESTS + rv.V31_TESTS],
+                             + [[f"<b>{a}</b>", b, c_, d, e, f, f"{g_}（盲測期中線 {bl}，只報告）"] for a, b, c_, d, e, f, bl, g_ in rv.V25_TESTS + rv.V30_TESTS + rv.V31_TESTS + rv.V35_TESTS],
                              left=(0, 6)),
                     unsafe_allow_html=True)
         st.markdown(ui.section("模型的時效（v2.5）", "中線分數與之後 60 日報酬的相關（IC，越高越準）；消息面因子逐年方向"), unsafe_allow_html=True)
@@ -3112,7 +3112,8 @@ def page_insight():
             n_user = sum(1 for x in rv.IDEAS if x[2] == "使用者提問")
             n_user_ok = sum(1 for x in rv.IDEAS if x[2] == "使用者提問" and x[5].startswith("✅"))
             st.caption(f"使用者提問引發的 {n_user} 組想法中，{n_user_ok} 組改變了主模型；其餘都轉為儀表板、燈號、提醒等資訊顯示。"
-                       "主模型最近一次調整是 v3.0（短中線改名次加權，docs/v3.0_protocol.md）；之前是 v1.9（營收優於同業 15%）。")
+                       "主模型最近一次調整是 v3.0（短中線改名次加權，docs/v3.0_protocol.md）；之前是 v1.9（營收優於同業 15%）。"
+                       "v3.5 從美股借來的「風險調整動能」開發期過門檻，但整段樣本外沒有進步，未採用。")
 
     with tabs["🥚 科斯托蘭尼"]:
         kostolany_tab()
@@ -4170,11 +4171,594 @@ def page_chain():
 
 
 # ================================================================== navigation
-pages = {"": [st.Page(page_picks, title="今日選股", icon="📋", url_path="picks", default=True),
+# ================================================================== v3.4 美股選股（與台股模型完全分開）
+from kosto.us import data as UD  # noqa: E402
+from kosto.us import engine as UE  # noqa: E402
+from kosto.us import model as UM  # noqa: E402
+from kosto.us import names as UN  # noqa: E402
+from kosto.us import view as UV  # noqa: E402
+
+US_ASSET = "us_bundle.pkl.gz"
+US_LOCAL = Path("artifacts/us_bundle.pkl.gz")
+
+
+@st.cache_data(ttl=180, show_spinner=False)
+def us_stamp(repo, token):
+    info = release_info(repo, RESEARCH_TAG, token)
+    return (info.get("assets", {}).get(US_ASSET) or {}).get("updated_at", "")
+
+
+@st.cache_resource(show_spinner="下載美股資料包…", max_entries=1)
+def us_load_github(repo, token, stamp):
+    return UE.loads(fetch_asset(repo, RESEARCH_TAG, US_ASSET, token))
+
+
+@st.cache_resource(show_spinner=False, max_entries=1)
+def us_load_local(mtime):
+    return UE.loads(US_LOCAL.read_bytes())
+
+
+@st.cache_resource(show_spinner="建立美股資料（抓標普 500＋熱門股約 580 檔日線，約 1～2 分鐘，每天只需一次）…", max_entries=1)
+def us_build_here(day: str):
+    return UE.build(log=None)
+
+
+def us_expected() -> str:
+    """最近一個應該已經收盤的美股交易日（只看平日；美國假日當天會顯示「落後一天」屬正常）。"""
+    et = UD.market_clock()["et"]
+    d = et.tz_localize(None).normalize()
+    if et.weekday() >= 5 or et.hour < 16:
+        d = d - pd.offsets.BDay(1)
+    return str(d.date())
+
+
+def us_source() -> tuple[dict | None, str, str]:
+    B, src, err = None, "", ""
+    if REPO:
+        try:
+            stamp = us_stamp(REPO, TOKEN)
+            if stamp:
+                B, src = us_load_github(REPO, TOKEN, stamp), "GitHub 每日美股資料包"
+        except Exception as e:  # noqa: BLE001
+            err = f"雲端美股資料包讀取失敗：{str(e)[:80]}"
+    if B is None and US_LOCAL.is_file():
+        B, src = us_load_local(US_LOCAL.stat().st_mtime), "本機美股資料包"
+    exp = us_expected()
+    want = st.session_state.get("us_build") or B is None
+    if want and not os.getenv("KOSTO_US_NOBUILD"):
+        try:
+            B2 = us_build_here(exp)
+            if B is None or B2["asof"] >= B["asof"]:
+                B, src = B2, "App 自行建立（Yahoo Finance）"
+        except Exception as e:  # noqa: BLE001
+            err = f"App 自行建立美股資料失敗：{str(e)[:100]}"
+    return B, src, err
+
+
+def us_slot(fast: bool) -> str:
+    now = pd.Timestamp.now(tz="Asia/Taipei")
+    return f"{now:%Y%m%d%H}{now.minute // 2}" if fast else f"{now:%Y%m%d%H}{now.minute // 30}"
+
+
+@st.cache_data(ttl=900, show_spinner=False, max_entries=48)
+def us_quotes(syms: tuple, slot: str):
+    try:
+        q, bars = UD.quotes(list(syms))
+    except Exception:  # noqa: BLE001
+        return pd.DataFrame(), {}
+    return (q.set_index("sym") if len(q) else q), bars
+
+
+@st.cache_data(ttl=1800, show_spinner=False, max_entries=96)
+def us_daily(sym: str, slot: str) -> pd.DataFrame:
+    try:
+        return UD.daily(sym, "2y")
+    except Exception:  # noqa: BLE001
+        return pd.DataFrame()
+
+
+def us_live_now(clk) -> bool:
+    return clk["phase"] in ("pre", "regular", "post")
+
+
+def us_strip(clk, iq) -> str:
+    ph = UD.PHASE_ZH[clk["phase"]]
+    col = {"pre": "#a16207", "regular": "#b4232a", "post": "#1e3a8a", "closed": "#334155"}[clk["phase"]]
+    html = [f"<div class='kq-bar'><span class='kq-pill' style='background:{col};color:#fff'>美股{ph} 台北 {clk['tpe']:%H:%M}</span>",
+            f"<span class='kq-item kq-hide-m'>盤前 {clk['pre_tpe']}｜開盤 {clk['open_tpe']}｜收盤 {clk['close_tpe']}"
+            f"（{'夏令' if clk['dst'] else '冬令'}）</span>"]
+    for s, lab in (("ES=F", "標普期"), ("NQ=F", "那指期"), ("^GSPC", "標普"), ("^IXIC", "那指"), ("^SOX", "費半"), ("^VIX", "VIX")):
+        if len(iq) and s in iq.index:
+            r = iq.loc[s]
+            html.append(f"<span class='kq-item{' kq-hide-m' if s in ('^IXIC', '^VIX') else ''}'>{lab}<b>"
+                        f"{ui.num(r.get('price'), 1) if s == '^VIX' else ui.chg(r.get('chg'))}</b></span>")
+    html.append("</div>")
+    return "".join(html)
+
+
+def us_validation_banner(R: dict) -> str:
+    return ("<div class='kq-panel' style='border-left:4px solid #e9a23b'><b>⚠ 美股個股模型沒有通過驗證，名單只供參考；美股先看「💰 ETF 推薦」。</b>"
+            "<div class='kq-muted' style='margin-top:4px'>用沒有倖存者偏差的標普 500 時點成分股（含下市公司）、2004–2021 共 18 年，"
+            "測了三輪：4 種母池 × 9 種模型，再加大盤濾網、熊市濾網、巨型股趨勢 4 種——<b>沒有一種長期贏 SPY 3 個百分點以上</b>。"
+            "動能類 2022 年後每年多 10～15 個百分點，但 2004–2021 每年少 3～10 個，另列「動能觀察名單」。"
+            "建議<b>核心放 VOO／IVV，名單只當少量衛星</b>。詳見「驗證與說明」。</div></div>")
+
+
+def us_pre_dict(bars: pd.DataFrame, base: float, clk) -> dict | None:
+    """盤前分時（台北時間）→ intraday_figure 格式，平盤＝昨收。"""
+    if bars is None or not len(bars) or not ui.ok(base):
+        return None
+    pre = bars[bars["session"] == "pre"]
+    if len(pre) < 2:
+        return None
+    t = pd.DatetimeIndex(pre["t"]).tz_convert("Asia/Taipei").tz_localize(None)
+    v = pre["price"].to_numpy(float)
+    d0 = t[0].normalize()
+    start = pd.Timestamp(f"{d0.date()} {clk['pre_tpe']}")
+    end = pd.Timestamp(f"{d0.date()} {clk['open_tpe']}")
+    return {"t": t, "v": v, "vol": pre["volume"].to_numpy(float), "prev": float(base), "last": float(v[-1]),
+            "high": float(v.max()), "low": float(v.min()), "open": float(v[0]), "start": start, "end": max(end, t[-1]),
+            "date": d0.date(), "time": t[-1], "tz": "Asia/Taipei", "live_point": False}
+
+
+def us_bundle_daily(B, t: str) -> pd.DataFrame:
+    """資料包內的日線（還原價換回實際成交價）。"""
+    raw, c = B["RAW"][t].astype(float), B["C"][t].astype(float)
+    ratio = (raw / c).where(c > 0)
+    df = pd.DataFrame({"open": B["O"][t] * ratio, "high": B["H"][t] * ratio, "low": B["L"][t] * ratio, "close": raw,
+                       "adj": c, "volume": B["V"][t].astype(float)})
+    df.index = pd.DatetimeIndex(df.index)
+    return df.dropna(subset=["close"])
+
+
+def us_name_options(B) -> list[str]:
+    info = B["info"]
+    return list(dict.fromkeys(list(B["tickers"]) + list(B.get("etfs", [])) + list(info.index)))
+
+
+def us_fmt(B, t: str) -> str:
+    nm = UV.label(B, t)
+    return f"{t}　{nm}" if nm != t else t
+
+
+def us_list_section(B, h: str, q, live=None, mode="pre"):
+    if h not in B["picks"]:
+        return
+    title = UV.list_title(B, h)
+    note = ("名單依 " + B["asof"] + " 收盤計算" if not live else "以目前價格即時重算（沒有報價的股票視同平盤）")
+    st.markdown(ui.section(title, note), unsafe_allow_html=True)
+    st.markdown(UV.pick_table(B, h, q, live, mode), unsafe_allow_html=True)
+
+
+def us_pre_tab(B, clk):
+    ph = clk["phase"]
+    cands = UE.candidates(B, 30)
+    q, bars = us_quotes(tuple(cands), us_slot(ph in ("pre", "regular")))
+    if ph == "pre":
+        st.caption(f"盤前報價（Yahoo Finance，可能延遲數分鐘）｜正式開盤 台北 {clk['open_tpe']}。名單依 {B['asof']} 收盤，開盤後再看「即時精選」。")
+    elif ph == "regular":
+        st.caption("美股已開盤：盤前數字為今天開盤前最後一筆；名單請看「即時精選」。")
+    else:
+        st.caption(f"目前不是盤前時段（盤前 台北 {clk['pre_tpe']}～{clk['open_tpe']}）；顯示最近收盤與盤後報價。")
+    st.markdown(ui.panel("盤前／盤後異動（候選股）", UV.movers(B, q)), unsafe_allow_html=True)
+    for h in UV.H_SHOW:
+        us_list_section(B, h, q)
+    us_watch_section(B, q)
+    st.caption("盤前提示：大型股很少盤前跳空 4% 以上，歷史樣本太少、沒有一致結論（v3.5 G1）——大漲別追價、大跌先看消息。")
+    us_browse_section(B, q, "pre")
+
+
+def us_watch_section(B, q, live=None):
+    if "watch" not in B["picks"]:
+        return
+    with st.expander("🚀 動能觀察名單（2022 年後大幅領先、但 2004–2021 長期輸 SPY——不是參考名單）", expanded=False):
+        us_list_section(B, "watch", q, live)
+        st.caption("風險調整動能＝一年漲幅（扣最近一個月）÷ 波動，標普動能指數（SPMO）的選股方法。"
+                   "回測：2022–2024 每年多 SPY 約 11 個百分點、2025 後約 20 個；但 2004–2021 每年少約 6 個、最大回撤 −62%（SPY −55%）。"
+                   "動能有效的年代可以很強，失效時（2009、2016 年）跌得比大盤兇。")
+
+
+def us_browse_section(B, q, key: str):
+    st.markdown(ui.section("其他母池排行", "那斯達克 100、費半等目前成分股，用同一套模型排名（瀏覽用，不是驗證過的名單）"),
+                unsafe_allow_html=True)
+    c1, c2 = st.columns([1.3, 1.6])
+    sk = c1.segmented_control("範圍", list(UV.SET_ZH), default="ndx", format_func=UV.SET_ZH.get, key=f"us_set_{key}") or "ndx"
+    mo = c2.segmented_control("排名方式", ["BAL_REV", "SPMO", "MINVOL", "QTREND"], default="BAL_REV",
+                              format_func={"BAL_REV": "平衡動能＋反轉", "SPMO": "風險調整動能", "MINVOL": "最小波動",
+                                           "QTREND": "品質趨勢"}.get, key=f"us_mod_{key}") or "BAL_REV"
+    st.markdown(UV.set_table(B, sk, mo, q), unsafe_allow_html=True)
+
+
+def us_live_tab(B, clk):
+    ph = clk["phase"]
+    auto = st.toggle("盤中每 90 秒自動更新", value=ph == "regular", key="us_auto")
+
+    @st.fragment(run_every=90 if auto and ph == "regular" else None)
+    def board():
+        cands = UE.candidates(B, 30)
+        q, bars = us_quotes(tuple(cands), us_slot(ph in ("pre", "regular")))
+        live = None
+        if ph == "regular" and len(q):
+            prices = {t: float(r["price"]) for t, r in q.iterrows() if ui.ok(r.get("price"))}
+            live = UE.live_picks(B, prices)
+            st.caption(f"即時重算：{len(prices)} 檔有報價（{pd.Timestamp.now(tz='Asia/Taipei'):%H:%M}）。"
+                       "短線（最小波動）與動能觀察名單看的是較長期的資料，盤中漲跌影響不大；中長線會隨今天漲跌小幅變動。")
+        else:
+            st.info(f"美股盤中（台北 {clk['open_tpe']}～{clk['close_tpe']}）才會即時重算；現在顯示 {B['asof']} 收盤名單與最新報價。")
+        if len(q):
+            up = q[q["chg"].notna()].sort_values("chg")
+            if len(up) >= 4 and ph in ("regular", "post"):
+                hot = "".join(UV.chip(B, t, f"{r['chg'] * 100:+.1f}%") for t, r in up.tail(5).iloc[::-1].iterrows())
+                cold = "".join(UV.chip(B, t, f"{r['chg'] * 100:+.1f}%") for t, r in up.head(5).iterrows())
+                st.markdown(ui.panel("盤中強弱（候選股）", f"<div class='kq-muted'>最強</div><div class='kq-chips'>{hot}</div>"
+                                     f"<div class='kq-muted' style='margin-top:6px'>最弱</div><div class='kq-chips'>{cold}</div>"),
+                            unsafe_allow_html=True)
+        for h in UV.H_SHOW:
+            us_list_section(B, h, q, live)
+            if live and h in live and (live[h]["new"] or live[h]["out"]):
+                st.caption(f"與收盤名單相比：新進 {'、'.join(live[h]['new']) or '無'}；掉出 {'、'.join(live[h]['out']) or '無'}"
+                           "（收盤前 30 分鐘的即時名單＝研究中的「當天收盤買進」版本）。")
+        us_watch_section(B, q, live)
+    board()
+    us_browse_section(B, us_quotes(tuple(UE.candidates(B, 30)), us_slot(ph in ("pre", "regular")))[0], "live")
+
+
+def us_stock_tab(B, clk):
+    opts = us_name_options(B)
+    q0 = (st.query_params.get("u", "") or "").upper()
+    c1, c2 = st.columns([2, 1], vertical_alignment="bottom")
+    sel = c1.selectbox("美股代號或公司名（可直接打字搜尋，例如 NVDA、輝達、Apple）", opts,
+                       index=opts.index(q0) if q0 in opts else None, format_func=lambda t: us_fmt(B, t), key="us_sel",
+                       placeholder="例：NVDA 或 輝達")
+    other = c2.text_input("其他代號（不在清單內）", value="" if (not q0 or q0 in opts) else q0, key="us_other",
+                          placeholder="例：BRK-B、SPY")
+    t = (other.strip().upper() or sel or "").replace(".", "-")
+    if not t:
+        st.markdown(ui.panel("使用方式", ui.bullets([
+            "輸入美股代號（AAPL）或中文名（蘋果），顯示即時報價、盤前盤後、分時走勢、日 K 與技術分析。",
+            "在模型母池內的股票會顯示 6 個候選模型的排名與各因子位置；和台股有關的，會列出台灣供應鏈。",
+            "報價來源 Yahoo Finance（美股多為即時或延遲數分鐘）。"])), unsafe_allow_html=True)
+        return
+    if q0 != t:
+        st.query_params["u"] = t
+    q, bars = us_quotes((t,), us_slot(us_live_now(clk)))
+    snap = q.loc[t] if len(q) and t in q.index else None
+    nm = UV.label(B, t)
+    desc = UN.zh_desc(t)
+    info = B["info"].loc[t] if t in B["info"].index else None
+    sub = " ｜ ".join(x for x in [desc, (info["sector"] + ("／" + info["sub"] if info["sub"] else "")) if info is not None else "",
+                                   info["name_en"] if info is not None and info["name_en"] else ""] if x)
+    if snap is not None:
+        ph = UD.PHASE_ZH.get(snap["phase"], "")
+        ext = (f"　<span class='kq-muted'>{snap['ext_label']}</span> <b>{UV.money(snap['ext'])}</b> {ui.chg(snap['ext_chg'])}"
+               if ui.ok(snap.get("ext")) else "")
+        tm = snap["time"].strftime("%m/%d %H:%M") if pd.notna(snap.get("time")) else ""
+        st.markdown(f"<div class='kq-panel'><div style='font-size:20px'><b>{ui.esc(t)}</b> {ui.esc(nm)}　"
+                    f"<b style='font-size:24px'>{UV.money(snap['price'])}</b> {ui.chg(snap['chg'])}{ext}</div>"
+                    f"<div class='kq-muted'>{ui.esc(sub)}｜{ph}｜台北 {tm}｜美元</div></div>", unsafe_allow_html=True)
+    else:
+        st.warning(f"抓不到 {t} 的即時報價（代號錯誤或 Yahoo 暫時無法連線）。")
+    # 分時
+    pre_d = us_pre_dict(bars.get(t), snap["base"], clk) if snap is not None and snap["phase"] == "pre" else None
+    reg = intraday_raw((t,), us_slot(us_live_now(clk)), "2m").get(t)
+    a, b = st.columns(2) if (pre_d is not None and reg is not None and not IS_MOBILE) else (st.container(), st.container())
+    if pre_d is not None:
+        a.markdown(ui.section("盤前分時", "平盤＝昨收"), unsafe_allow_html=True)
+        with a:
+            intraday_chart(pre_d, key=f"us_pre_{t}", height=260, volume=False)
+    if reg is not None and len(reg["v"]) >= 2:
+        b.markdown(ui.section("最近一個交易時段分時", f"{reg['date']}（美東）"), unsafe_allow_html=True)
+        b.markdown(intraday_stats(reg), unsafe_allow_html=True)
+        with b:
+            intraday_chart(reg, key=f"us_reg_{t}", height=300)
+    # 日 K（Yahoo 抓不到時改用資料包內最近 300 日）
+    df = us_daily(t, us_slot(False)[:10])
+    if (df is None or df.empty) and t in B["C"].columns:
+        df = us_bundle_daily(B, t)
+        st.caption("日線暫時抓不到，改用美股資料包內的資料（最近約 300 個交易日）。")
+    if df is None or df.empty:
+        st.info("抓不到日線資料。")
+        return
+    ind = UV.indicators(df)
+    spy = us_daily("SPY", us_slot(False)[:10])
+    if (spy is None or spy.empty) and "SPY" in B["C"].columns:
+        spy = us_bundle_daily(B, "SPY")
+    g1, g2 = st.columns([1.15, 1]) if not IS_MOBILE else (st.container(), st.container())
+    g1.markdown(ui.panel("技術面摘要", ui.kv(UV.analysis_rows(ind, spy["adj"] if len(spy) else None))), unsafe_allow_html=True)
+    g2.markdown(ui.panel("模型評分（今日母池）", UV.model_rows(B, t)), unsafe_allow_html=True)
+    tw = UV.tw_link_html(t, {c: NAMES[j] for c, j in TIDX.items()})
+    if tw:
+        st.markdown(ui.panel("和台股的關係（市場常見關聯）", tw), unsafe_allow_html=True)
+    rng_opts = {"3個月": 63, "6個月": 126, "1年": 252, "2年": 504}
+    r1, r2 = st.columns([1, 2], vertical_alignment="bottom")
+    rng = r1.selectbox("區間", list(rng_opts), index=1, key="us_rng")
+    pn = r2.multiselect("副圖", ["volume", "kd", "macd"], default=["volume"] if IS_MOBILE else ["volume", "macd"],
+                        format_func={"volume": "成交量", "kd": "KD", "macd": "MACD"}.get, key="us_pn")
+    from kosto.charts import kline
+    fig = kline(ind, dark=DARK, mas=(20, 50, 200), boll=True, panels=pn, bars=rng_opts[rng],
+                height=(300 + 95 * len(pn)) if IS_MOBILE else None, vol_label="成交量(股)")
+    if IS_MOBILE:
+        fig.update_layout(dragmode=False)
+    st.plotly_chart(fig, width="stretch", theme=None, key=f"us_k_{t}",
+                    config={"displaylogo": False, "scrollZoom": not IS_MOBILE, "displayModeBar": not IS_MOBILE})
+    st.caption("均線：20 日（藍）、50 日（綠）、200 日（紫）；價格為還原前的實際成交價。"
+               f"[Yahoo Finance](https://finance.yahoo.com/quote/{t})｜"
+               f"[Google 新聞](https://news.google.com/search?q={t}%20stock&hl=zh-TW&gl=TW&ceid=TW:zh-Hant)｜"
+               f"[SEC 財報](https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&ticker={t})")
+    news = news_headlines(f"{t} {nm if nm != t else ''} 美股".strip(), n=6, days=3)
+    st.markdown(ui.panel(f"最新新聞｜{t}", headlines_html(news)), unsafe_allow_html=True)
+
+
+def us_market_tab(B, clk):
+    iq, _ = us_quotes(tuple(UN.INDEXES), us_slot(us_live_now(clk)))
+    tiles = []
+    for s, lab in UN.INDEXES.items():
+        if len(iq) and s in iq.index:
+            r = iq.loc[s]
+            tiles.append(ui.tile(lab, ui.num(r["price"], 2), r.get("chg"), UD.PHASE_ZH.get(r.get("phase"), "")))
+    if tiles:
+        st.markdown(f"<div class='kq-tiles'>{''.join(tiles)}</div>", unsafe_allow_html=True)
+    else:
+        st.caption("指數報價暫時抓不到（Yahoo Finance 無法連線）。")
+    br = UV.breadth(B)
+    if br:
+        st.markdown(ui.cards([("母池檔數", f"{br['n']}", f"資料至 {B['asof']}"),
+                              ("站上 50 日線", f"{br['above50']:.0%}", "短期多空"),
+                              ("站上 200 日線", f"{br['above200']:.0%}", "長期多空"),
+                              ("接近一年新高（5% 內）", f"{br['near_high']:.0%}", "強勢股比例"),
+                              ("最近一日上漲家數", f"{br['up1']:.0%}", "")]), unsafe_allow_html=True)
+    per = st.segmented_control("熱力圖期間", ["r1", "r5", "r20", "r60"], default="r1",
+                               format_func={"r1": "最近一日", "r5": "5 日", "r20": "20 日", "r60": "60 日"}.get, key="us_heat") or "r1"
+    live = None
+    if per == "r1" and clk["phase"] == "regular":
+        cq, _ = us_quotes(tuple(UE.candidates(B, 30)), us_slot(True))
+        if len(cq):
+            live = cq["chg"]
+    st.plotly_chart(UV.treemap(B, per, DARK, 460 if IS_MOBILE else 600, live), width="stretch", theme=None, key="us_tree",
+                    config={"displaylogo": False, "displayModeBar": False})
+    st.caption("面積＝近 60 日平均成交金額（代替市值），顏色＝漲跌（紅漲綠跌）。盤中「最近一日」只有候選股換成即時漲跌，其他為前一日收盤。")
+    st.markdown(ui.section("類股 ETF", "標普 11 大類股"), unsafe_allow_html=True)
+    st.markdown(UV.sector_table(B), unsafe_allow_html=True)
+
+
+def us_etf_tab(B, clk):
+    """v3.6 美股 ETF 推薦順序（比照台股「精選 ETF」）：配置範例 → 推薦順序 → 各角色排行。"""
+    R = UE.research()
+    st.markdown(ui.section("美股 ETF 推薦順序", "先依角色排（核心 → 成長 → 避險 → 衛星），角色內依 2004 年起的風險調整報酬（Sharpe）；"
+                           "長期數字含息，目前趨勢用最新收盤"), unsafe_allow_html=True)
+    st.markdown("<div class='kq-panel' style='border-left:4px solid var(--accent)'><b>為什麼美股先看 ETF？</b>"
+                "<div class='kq-muted' style='margin-top:4px'>三輪研究、100 多種選股組合，2004–2021 年都沒有長期贏過 S&P 500（SPY）；"
+                "反而是「大盤 ETF＋一點債券或黃金」的組合，報酬接近、跌幅少很多。台灣投資人的台股部位已經重壓半導體，"
+                "美股用大盤 ETF 分散最有效（S&P 500 與 0050 的週報酬相關只有 0.50）。</div></div>", unsafe_allow_html=True)
+    prof = st.segmented_control("你的風險屬性", list(UN.MIX), default="穩健型", key="us_etf_prof") or "穩健型"
+    st.markdown(UV.mix_html(R, prof), unsafe_allow_html=True)
+    st.markdown(ui.section("推薦順序：第一次買美股，照這個順序", "點代號可看即時報價與 K 線"), unsafe_allow_html=True)
+    st.markdown(UV.etf_starter_html(R, B), unsafe_allow_html=True)
+    tabs = st.tabs([f"{['🏛️', '🚀', '🛡️', '🛰️'][k]} {UN.ROLE_ZH[r].split('（')[0]}" for k, r in enumerate(UN.ROLE_ORDER)] + ["⚖️ 配置比較"])
+    for k, r in enumerate(UN.ROLE_ORDER):
+        with tabs[k]:
+            st.markdown(f"<div class='kq-muted' style='margin-bottom:6px'><b>{ui.esc(UN.ROLE_ZH[r])}</b>：{ui.esc(UN.ROLE_WHY[r])}</div>",
+                        unsafe_allow_html=True)
+            st.markdown(UV.etf_role_table(R, B, r), unsafe_allow_html=True)
+    with tabs[-1]:
+        st.markdown(UV.mix_table(R), unsafe_allow_html=True)
+        st.caption("加債券、黃金的組合年化少 1～3 個百分點，但最大回撤從 −55% 降到 −19～−36%、Sharpe 反而最高；"
+                   "全押 QQQ 報酬最高，但 2008 年跌 42%、2022 年跌 33%。配置每年調回一次即可，不必擇時。")
+    st.caption(f"長期統計 {R.get('etf_asof', '')} 為止（Johnbrick123/sp500-data，含息）；費用率為 2025 年公開資料（約略，以發行商公告為準）；"
+               "與 0050 相關＝2019 年起週報酬（美元計價，未換匯）。台股掛牌的同類 ETF 用台幣買、不用複委託，但費用較高、有追蹤誤差。"
+               "以上為研究整理，不構成投資建議。")
+
+
+def us_doc_tab(B, clk):
+    R = UE.research()
+    st.markdown(ui.section("第二輪研究：標普 500 時點母池（含下市公司）× 9 個模型，對 SPY 的年化超額",
+                           "docs/v3.5_protocol.md｜⭐＝參考名單｜開發期 2004–2021"), unsafe_allow_html=True)
+    hz = st.segmented_control("期間", ["short", "mid", "long"], default="long",
+                              format_func={"short": "短線（5 日）", "mid": "中線（20 日）", "long": "長線（60 日）"}.get,
+                              key="us_doc_h") or "long"
+    st.markdown(UV.validation_html(R, hz), unsafe_allow_html=True)
+    st.caption("驗收規則（先寫好再跑，和台股一樣以「直接買大盤 ETF」為基準）：開發期與驗證期都要每年多 SPY 3 個百分點以上、資訊比率 ≥ 0.4、"
+               "回撤不比 SPY 深 10 個百分點、半年段落勝率 ≥ 50%、成本加倍仍為正。每次 10 檔、名次加權、看到名單後隔日開盤買、單邊成本 0.1%。"
+               "108 組沒有一組通過；同母池等權平均對 SPY 開發期 +0.4 個百分點（確認回測正確）。")
+    st.markdown(ui.section("第三輪：針對弱點再試 4 種（v3.6）", "docs/v3.6_protocol.md｜大盤濾網、熊市濾網、巨型股趨勢"), unsafe_allow_html=True)
+    st.markdown(UV.round3_html(R), unsafe_allow_html=True)
+    st.caption("仍然沒有通過。最接近的是「巨型股趨勢」（標普前 20 大中走多頭的才持有，其餘抱 SPY）：2014–2021 每年多約 5 個百分點、"
+               "2022–24 多 3～8 個，但 2004–2013 每年少約 2 個、2025 年後也落後，長期只比 SPY 多 0.5～0.7。大盤濾網減少了 2009 年的動能崩盤，"
+               "但 2014–2021 動能本身就輸 SPY。")
+    st.markdown(ui.section("ETF 策略：想簡單操作的人"), unsafe_allow_html=True)
+    st.markdown(UV.etf_html(R), unsafe_allow_html=True)
+    st.caption("沒有 ETF 策略通過。200 日線趨勢策略把 2008 年的最大回撤從 −55% 降到 −17%，但 2022 年後常常來回被巴；"
+               "一直抱 QQQ 在 2004–2021 每年多 SPY 4.6 個百分點，但那是科技股的黃金年代，2022 年後只多 0.6。")
+    with st.expander("動能為什麼不穩？持股檔數的影響"):
+        rows = [[x["model"], f"{x['k']} 檔", ui.pct(x["dev"], color=True), ui.pct(x["dev2"], color=True), ui.pct(x["val"], color=True)]
+                for x in R.get("concentration", [])]
+        st.markdown(ui.table(["模型（長線、標普 500）", "持股", "開發期 2004–21", "其中 2014–21", "驗證期 2022–24"], rows), unsafe_allow_html=True)
+        st.caption("持股越分散，落後越少，但仍然輸 SPY；動能的超額集中在 2022 年後的 AI 行情。")
+    with st.expander("盤前跳空研究（G1）"):
+        st.markdown(UV.gap_html(R), unsafe_allow_html=True)
+        st.caption("大型股很少盤前跳空 4% 以上，樣本太少，沒有一致結論 → 只提醒，不給方向。")
+    with st.expander("第一輪研究（v3.4，舊資料）與因子 IC"):
+        st.markdown(UV.round1_html(R), unsafe_allow_html=True)
+        st.markdown(UV.ic_html(R.get("round1") or {}), unsafe_allow_html=True)
+        st.caption("第一輪資料只有現在還在掛牌的股票（倖存者偏差）、缺 NYSE 大型股，而且是和「等權平均」比；第二輪資料完整、改和 SPY 比，結論更可靠。")
+    st.markdown(ui.section("美股經驗 → 台股"), unsafe_allow_html=True)
+    st.markdown(ui.bullets([
+        "<b>風險調整動能</b>（一年漲幅扣最近一個月 ÷ 波動，標普動能指數的方法）：台股開發期（2021–2025）中線每年多 4.7 個百分點、短線 +4.1、"
+        "長線 +2.0，過了門檻；但最近 12 個月 25 種組合<b>全部大幅落後</b>（中線 −27.5），2021–2026 整段平均反而 −0.6 → <b>不採用</b>，台股模型維持 v3.4。",
+        "<b>避開暴漲暴跌的投機股</b>：美股最一致的訊號，在台股卻相反（中線 −16.5 個百分點）——台股的強勢飆股之後常續強，不採用。",
+        "<b>縮小母池</b>：台股研究每天都在 5 種母池規則 × 6 種大小裡挑，本來就是「精選母池」；美股縮到前 100／200 大比全部好一點，但仍輸 SPY。",
+        "<b>測試程式更正</b>：附加新因子的測試把「缺值」（上市未滿一年的新股）排在最前面；更正後重跑 v3.1 殘差動能，結論不變（仍未通過）。"]),
+        unsafe_allow_html=True)
+    st.markdown(ui.section("模型怎麼選股（白話）"), unsafe_allow_html=True)
+    st.markdown(ui.bullets([
+        f"<b>{ui.esc(UM.MODEL_ZH[m])}</b>：" + "、".join(f"{UM.FACTOR_ZH[k]} {w:.0%}" for k, w in UM.MODELS[m].items())
+        for m in UM.MODELS]), unsafe_allow_html=True)
+    st.markdown(ui.section("母池與名單"), unsafe_allow_html=True)
+    st.markdown(ui.bullets([
+        "參考名單：短線＝標普 500 成交金額前 100 大裡波動最低的 10 檔；中長線＝前 200 大裡「平衡動能＋短期反轉」前 10 檔（各期間開發期第一名）。"
+        "股價 ≥ 5 美元、上市滿一年；已入選的股票排名掉到 25 名以外才換掉（中線 20 名）；名次加權（第 1 名 1.5 倍 → 第 10 名 0.5 倍）。",
+        "那斯達克 100、費半：沒有可靠的歷史成分股資料，不能做無偏差的回測 → 只提供「目前成分股」排行瀏覽。",
+        "每天美股收盤後（台北清晨）由 GitHub 自動更新；資料來源 Yahoo Finance。"]), unsafe_allow_html=True)
+    tr = UE.track(B, "long")
+    if len(tr):
+        rows = [[r["date"], r["model"], ui.pct(r["ret"], color=True), ui.pct(r.get("spy"), color=True),
+                 ui.pct(r["ret"] - r.get("spy", np.nan), color=True), f"{r['days']}"] for _, r in tr.iloc[::-1].iterrows()]
+        st.markdown(ui.section("名單追蹤（中長線，每天的名單到今天）"), unsafe_allow_html=True)
+        st.markdown(ui.table(["名單日", "模型", "名單報酬", "SPY", "差距", "經過交易日"], rows), unsafe_allow_html=True)
+    st.markdown(ui.section("台灣投資人買美股：基本知識"), unsafe_allow_html=True)
+    st.markdown(UV.basics_html(clk), unsafe_allow_html=True)
+
+
+def page_us():
+    header(world=False)
+    clk = UD.market_clock()
+    B, src, err = us_source()
+    iq, _ = us_quotes(tuple(UN.INDEXES), us_slot(us_live_now(clk)))
+    st.markdown(us_strip(clk, iq), unsafe_allow_html=True)
+    if B is None:
+        st.error(err or "還沒有美股資料。")
+        st.markdown(ui.panel("怎麼開始", ui.bullets([
+            "把更新包上傳到 GitHub，並新增 .github/workflows/us.yml（內容同 us_workflow_COPY.txt），Actions 會在美股收盤後自動產生美股資料包。",
+            "也可以按下面的按鈕，讓 App 直接從 Yahoo Finance 建立（約 1～2 分鐘）。"])), unsafe_allow_html=True)
+        if st.button("在 App 直接建立美股資料", key="us_build_btn"):
+            st.session_state["us_build"] = True
+            st.rerun()
+        return
+    exp = us_expected()
+    st.markdown(ui.section("美股選股", f"名單資料至 {B['asof']}（美東收盤）｜{src}｜建立 {B.get('built', '')}"),
+                unsafe_allow_html=True)
+    if err:
+        st.caption(f"⚠ {err}")
+    if B["asof"] < exp:
+        c1, c2 = st.columns([3, 1], vertical_alignment="center")
+        c1.warning(f"美股資料停在 {B['asof']}，最近一個收盤日應為 {exp}（美國假日時屬正常）。")
+        if c2.button("在 App 直接更新", key="us_rebuild"):
+            st.session_state["us_build"] = True
+            st.rerun()
+    st.markdown(us_validation_banner(UE.research()), unsafe_allow_html=True)
+    names = {"etf": "💰 ETF 推薦（先看這裡）", "pre": "🌅 盤前精選", "live": "⚡ 即時精選", "stock": "🔍 個股查詢", "mkt": "🗺️ 美股大盤",
+             "doc": "📘 驗證與說明"}
+    order = ["etf"] + (["live", "pre"] if clk["phase"] == "regular" else ["pre", "live"]) + ["stock", "mkt", "doc"]
+    if st.query_params.get("u"):
+        order = ["stock"] + [k for k in order if k != "stock"]
+    tabs = dict(zip(order, st.tabs([names[k] for k in order])))
+    with tabs["etf"]:
+        us_etf_tab(B, clk)
+    with tabs["pre"]:
+        us_pre_tab(B, clk)
+    with tabs["live"]:
+        us_live_tab(B, clk)
+    with tabs["stock"]:
+        us_stock_tab(B, clk)
+    with tabs["mkt"]:
+        us_market_tab(B, clk)
+    with tabs["doc"]:
+        us_doc_tab(B, clk)
+    st.caption("美股報價：Yahoo Finance（多為即時或延遲數分鐘）。名單為研究參考，不構成投資建議。")
+
+
+# ================================================================== v3.6 總覽（第一次使用的人從這裡開始）
+def us_bundle_quick():
+    """總覽頁用：只讀現成的美股資料包（GitHub／本機），不在這裡花 1～2 分鐘自己建。"""
+    try:
+        if REPO:
+            stamp = us_stamp(REPO, TOKEN)
+            if stamp:
+                return us_load_github(REPO, TOKEN, stamp)
+        if US_LOCAL.is_file():
+            return us_load_local(US_LOCAL.stat().st_mtime)
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
+def hcard(n: int, title: str, body: str, go: str = "") -> str:
+    return (f"<div class='kq-hcard'><div class='t'><span class='n'>{n}</span>{ui.esc(title)}</div><div class='b'>{body}</div>"
+            + (f"<div class='go'>{go}</div>" if go else "") + "</div>")
+
+
+def page_home():
+    from kosto import market as mklib
+    header()
+    st.markdown(ui.section("總覽：第一次使用，照 ①→④ 的順序看", "這個 App 在做什麼、今天該怎麼做；每張卡片都可以點進去看細節"),
+                unsafe_allow_html=True)
+    prof = st.segmented_control("你的風險屬性（決定 ETF 和個股的比例）", list(mklib.PROFILES), default="穩健型", key="home_prof") or "穩健型"
+    _, _, sto = insight_frame(BID)
+    al = mklib.allocation(prof, sto or {})
+    # ① 市場
+    tone = {"green": "#16a35f", "amber": "#e9a23b", "red": "#f0464b"}.get((sto or {}).get("tone"), "#94a3b8")
+    lvl, rtxt, risks = risk_light()
+    b1 = (f"<b style='color:{tone};font-size:15px'>台股：{ui.esc((sto or {}).get('view', '資料不足'))}</b>"
+          + (f"<br><span class='kq-muted'>加權距半年高點 {ui.pct(sto.get('dd'), 1)}｜止穩訊號 {sto.get('score', '–')}/8｜"
+             f"市場階段 {ui.esc(STAGE_ZH.get(latest('mid').get('market_stage'), '').split(' ')[0] or '–')}</span>" if sto else "")
+          + f"<br>{ui.light(lvl, '美股：' + rtxt)}" + (f"<span class='kq-muted'>（{ui.esc('、'.join(risks))}）</span>" if risks else ""))
+    c1 = hcard(1, "今天市場：能不能進場？", b1, "<a href='./insight' target='_self'>→ 盤勢儀表板（燈號、急跌應變、科斯托蘭尼階段）</a>")
+    # ② 資金
+    mx = (UE.research().get("mix") or {}).get(prof, {})
+    us_mix = "、".join(f"{UV.etf_label(t)} {x:.0%}" for t, x in (mx.get("w") or {}).items())
+    b2 = (f"<b>台股</b>：ETF（0050 等大盤型）<b>{al['etf']:.0%}</b>＋模型個股 <b>{al['stock']:.0%}</b>"
+          + (f"<br><span class='kq-muted'>{ui.esc(al['why'])}</span>" if al.get("tilt") else "")
+          + f"<br><b>美股</b>：{ui.esc(us_mix)}<br><span class='kq-muted'>美股個股模型沒有通過驗證 → 以 ETF 為主；"
+          "台股模型驗證過，可以配個股。</span>")
+    c2 = hcard(2, f"資金怎麼分（{prof}）", b2,
+               "<a href='./alloc' target='_self'>→ 資金配置</a>　<a href='./etf' target='_self'>→ 台股精選 ETF</a>")
+    # ③ 台股
+    h = "mid"
+    lt = latest(h)
+    its = pick_items(h, lt)[:8]
+    chips = "".join(ui.schip(it["t"], NAMES[it["j"]], f"{it['w'] * 100:.0f}%") for it in its)
+    ph = phase_stats(h)
+    val = (f"<span class='kq-muted'>驗證：2021 起回測年化 {ui.pct(ph['樣本外年化_平均'], 1)}（0050 {ui.pct(ph['0050樣本外'], 1)}）、"
+           f"近一年 {ui.pct(ph['近一年_平均'], 1)}（0050 {ui.pct(ph['0050近一年'], 1)}）</span>" if ph else
+           "<span class='kq-muted'>驗證成績見「今日選股」上方。</span>")
+    b3 = (f"中線名單（{lt.get('date', '')} 收盤）依名次給資金：<div class='kq-chips' style='margin:6px 0'>{chips}</div>{val}"
+          "<br><span class='kq-muted'>下一個交易日開盤照「買進／賣出／續抱」執行；短線、長線名單在今日選股切換。</span>")
+    c3 = hcard(3, "台股買什麼：模型個股（衛星）", b3, "<a href='./picks' target='_self'>→ 今日選股（明天要做的事）</a>　"
+                                                    "<a href='./live' target='_self'>→ 盤中監控</a>")
+    # ④ 美股
+    R = UE.research()
+    rk = UV.etf_rank(R)
+    BU = us_bundle_quick()
+    order = [(1, rk["core"][0], "核心"), (2, rk["growth"][0], "成長"), (3, rk["hedge"][0], "避險"), (3, rk["hedge"][1], "避險"),
+             (4, rk["sat"][0], "衛星")] if rk.get("core") else []
+    lines = []
+    for no, t, role in order:
+        i = UN.ETF_INFO[t]
+        tr = UV.etf_trend(BU, t) if BU else {}
+        lines.append(f"<div class='kq-kv'><span>{'①②③④'[no - 1]} <a href='./us?u={t}' target='_self'><b>{ui.esc(UV.etf_label(t))}</b></a> "
+                     f"{ui.esc(i['zh'])}<small class='kq-muted'>（{role}）</small></span><span class='kq-mono'>"
+                     + (f"{'站上' if tr['above200'] else '跌破'} 200 日線" if tr else f"費用 {i['er']:.2f}%") + "</span></div>")
+    b4 = "".join(lines) + ("<span class='kq-muted'>個股名單（盤前／即時精選）只供參考：三輪研究都沒有長期贏 SPY。</span>")
+    c4 = hcard(4, "美股買什麼：ETF 推薦順序", b4, "<a href='./us' target='_self'>→ 美股選股（ETF 推薦、盤前／即時、個股查詢）</a>")
+    st.markdown(f"<div class='kq-home'>{c1}{c2}{c3}{c4}</div>", unsafe_allow_html=True)
+    st.markdown(ui.section("投資建議的脈絡（為什麼是這個順序）"), unsafe_allow_html=True)
+    st.markdown(ui.bullets([
+        "<b>先看市場、再決定買多少</b>：修正期且止穩訊號少時，ETF 比例自動提高 20 個百分點（回測 2021–2026 年化多約 1.5～2 個百分點、回撤略小）。",
+        "<b>ETF 是核心</b>：不用選股、長期持有；台股用 0050 等大盤型，美股用 VOO／IVV。",
+        "<b>台股個股是衛星</b>：模型 2021 年起的回測與最近一年都贏 0050，但個股波動大、要照名單換股；份量依風險屬性。",
+        "<b>美股個股只當參考</b>：用沒有偏差的 18 年資料測了三輪，都沒有長期贏 SPY，所以美股以 ETF 為主。",
+        "<b>何時賣</b>：照「今日選股 → 持股追蹤」的賣出訊號；跌破警戒價時重新檢視理由（不自動停損，回測顯示機械式停損會拖累報酬）。"]),
+        unsafe_allow_html=True)
+    st.markdown(ui.section("每一頁在做什麼"), unsafe_allow_html=True)
+    rows = [["📋 今日選股", "台股明天開盤要買／賣／續抱什麼（短、中、長線）", "每個交易日晚上（17:23 初版、21:40 完整版）"],
+            ["⏱️ 盤中監控", "台股即時價、能不能進場、價位提醒", "台股 9:00–13:30"],
+            ["🎛️ 盤勢儀表板", "大盤燈號、急跌應變、止穩檢查、科斯托蘭尼階段、模型體檢", "開盤前、大盤急跌時"],
+            ["🗺️ 產業鏈地圖", "電子產業上下游、題材、消息衝擊評估", "想了解產業或消息影響時"],
+            ["🔍 個股診斷", "任一台股的模型評分、K 線、買進區與警戒價", "想查某一檔時"],
+            ["🗽 美股選股", "美股 ETF 推薦順序、盤前／即時名單、美股個股查詢", "晚上（美股盤前 17:00 起）"],
+            ["更多 → 精選ETF／資金配置", "台股 ETF 排行、核心＋衛星的比例", "決定資金分配時"],
+            ["更多 → 操作指南／研究室", "使用說明、研究方法與完整驗證", "想深入了解時"]]
+    st.markdown(ui.table(["頁面", "用途", "什麼時候看"], rows, left=(0, 1, 2)), unsafe_allow_html=True)
+    st.caption("僅供研究參考，非投資建議；系統不會自動下單。")
+
+
+pages = {"": [st.Page(page_home, title="總覽", icon="🏠", url_path="home", default=True),
+              st.Page(page_picks, title="今日選股", icon="📋", url_path="picks"),
               st.Page(page_live, title="盤中監控", icon="⏱️", url_path="live"),
               st.Page(page_insight, title="盤勢儀表板", icon="🎛️", url_path="insight"),
               st.Page(page_chain, title="產業鏈地圖", icon="🗺️", url_path="chain"),
-              st.Page(page_stock, title="個股診斷", icon="🔍", url_path="stock")],
+              st.Page(page_stock, title="個股診斷", icon="🔍", url_path="stock"),
+              st.Page(page_us, title="美股選股", icon="🗽", url_path="us")],
          "更多": [st.Page(page_market, title="大盤", icon="📈", url_path="market"),
                   st.Page(page_world, title="國際盤", icon="🌏", url_path="world"),
                   st.Page(page_etf, title="精選ETF", icon="💰", url_path="etf"),
@@ -4182,5 +4766,5 @@ pages = {"": [st.Page(page_picks, title="今日選股", icon="📋", url_path="p
                   st.Page(page_guide, title="操作指南", icon="📖", url_path="guide"),
                   st.Page(page_lab, title="研究室", icon="🧪", url_path="lab")]}
 _nav = st.navigation(pages, position="top")
-CUR_PAGE = getattr(_nav, "url_path", "") or "picks"
+CUR_PAGE = getattr(_nav, "url_path", "") or "home"
 _nav.run()

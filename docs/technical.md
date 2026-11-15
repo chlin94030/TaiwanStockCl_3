@@ -657,3 +657,43 @@ v1.9 改為每個交易日 **21:40 一次更新全部**（融資融券約 21:00�
 * `sources/world.RATES`（TNX、IRX、DXY）加入每日國際資料（`build.world` 的 keys）。
 * App：盤勢儀表板新增「🥚 科斯托蘭尼」分頁；個股診斷「科斯托蘭尼雞蛋階段」（STAGE 最後一個換股日）；熱力圖今日漲跌在交易日改用 MIS 即時報價；
   `research_stamp` TTL 180 秒、`load_github`／`load_local` max_entries=1；長線持股水位說明改為「其餘放 0050」。
+
+
+## v3.4 美股選股（docs/v3.4_us_protocol.md；與台股模型完全分開）
+* `kosto/us/model.py`：價量因子（RS120、MOM120x20、HIGH252、LOWIDIO、MOM12_1、TREND、REV5、LOWVOL、MAX21）、母池
+  （股價 ≥10、資料滿 260 日、60 日成交金額前 700）、6 個固定權重候選模型 `MODELS`、`score`（母池內百分位加權）、`pick`（續抱）、`rank_weights`。
+* `kosto/us/backtest.py`：每 5 日一批、重疊持有、隔日開盤換股（`entry="close"` 為收盤換股）、名次加權、單邊成本；`stats` 對等權母池。
+* `kosto/us/data.py`：Yahoo chart API 日線（還原價）、分時（含盤前盤後，依 `currentTradingPeriod` 分段）、`snapshot`（盤前漲跌以昨收為基準）、
+  `quotes`（多檔）、`market_clock`（不靠網路的美股時鐘，夏令自動）。環境變數 `KOSTO_YAHOO_HOST` 只供測試。
+* `kosto/us/engine.py`：`universe_table`（標普 500 每日更新＋`names.EXTRAS`）、`build`（盤中建立時去掉未收完的日線）→ 資料包
+  （最近 300 日 C/O/H/L/V/RAW、因子值與百分位、6 模型分數、參考名單＋續抱、名單紀錄）；`live_scores`／`live_picks`（以即時價當作今日收盤重算）、
+  `candidates`、`track`。參考模型 `REFERENCE`：短線 MOM、中線與長線 BAL_REV（開發期第一名，皆未通過驗收）。
+* `kosto/us/names.py`：GICS 中文、常見公司中文名與說明、熱門股／ADR、類股 ETF、指數、和台股的關係（`tw_links`：supply 的陣營與題材＋少數公開關係）。
+* `kosto/us/view.py`：美股頁 HTML／熱力圖／技術面摘要。`kosto/data/us_research.json`：研究摘要（App 顯示）；`kosto/data/us_sp500.csv`：標普 500 快照。
+* `cli.py us-build`、`.github/workflows/us.yml`（台北 05:47／07:17，上傳 `us_bundle.pkl.gz` 到 kosto-research）。App：`page_us`（url `us`，`?u=代號` 直接開個股）。
+
+## v3.5 美股第二輪＋台股風險調整動能（docs/v3.5_protocol.md）
+* 美股研究資料：Johnbrick123/sp500-data（`prices.parquet`、`membership_intervals.parquet`、`no_trade_days.csv`），標普 500 時點成分股、含下市公司。
+  重現：`python scripts/us_research.py`（下載約 240 MB）。
+* `kosto/us/model.py`：`sp_universe`（當天成分股 ∩ 股價 ≥5 ∩ 資料滿 260 日 ∩ 近 5 日沒停牌；`top`＝成分股中 60 日成交金額前 N）、
+  因子 `MOMVOL`（12-1 動能 ÷ 一年日報酬波動）、模型 `SPMO`、`MINVOL`、`QTREND`。
+* `kosto/us/engine.py`（資料包 VERSION 2）：`REFERENCE`＝{short: (MINVOL, 100), mid/long: (BAL_REV, 200)}、`WATCH`＝(SPMO, 200)；
+  `umask`（all／sp500／100／200／300）、`mask`（含 ndx／sox 目前成分股）、`set_rank`（集合內排名）、`live_picks` 依各名單母池重算、`ref` 相容 v3.4 資料包。
+* `kosto/us/names.py`：`NDX_NOW`、`SOX_NOW`（2026 年中公開 ETF 持股，瀏覽用）、`SETS`。
+* `kosto/us/view.py`：`validation_html(R, h)`（9 模型 × 4 母池）、`etf_html`、`set_table`、`round1_html`、`list_title`；G1 提示改為中性提醒。
+* 台股：新增 `factors.t_rmom240`（240 日扣近 20 日報酬 ÷ 240 日波動），測試未採用 → 列入 inactive_factors，`research.overlay` 不變。
+  `review.V35_TESTS`（T1、T2、H1／H2 更正重跑）、`IDEAS` 補 v3.3～v3.5。
+* 研究程式注意：附加因子做 `pool_view` 前要把缺值設成 0（bundle 的 U 以 0 表示缺值）；NaN 直接傳入會被排到最前面。
+
+## v3.6 美股第三輪＋ETF 推薦順序＋總覽首頁（docs/v3.6_protocol.md）
+* 美股第三輪（V1 動能＋大盤濾網、V2＋熊市濾網、V3 巨型股趨勢、V4 平衡動能＋濾網）：都沒有通過，`REFERENCE` 不變。
+  `kosto/us/backtest.run(..., chooser=)`：自訂選股函式 `chooser(s, held) → (名單, 權重)`（可回傳 SPY 等非母池欄位）。
+  結果寫在 `us_research.json` 的 `round3`／`round3_zh`。
+* ETF 推薦（描述性，不是選股模型）：`names.ETF_INFO`（22 檔：角色、中文名、追蹤指數、費用率、同類替代、台股同類 ETF）、
+  `ROLE_ORDER`＝核心→成長→避險→衛星、`MIX`（保守／穩健／積極）；統計在 `us_research.json` 的 `etf_stats`、`mix`
+  （Johnbrick123/sp500-data 含息還原價，2004 年起；與 0050 相關＝2019 年起週報酬）。
+  `view.etf_rank`（角色順序 → Sharpe 由高到低 → 費用率）、`etf_starter_html`（第一次買美股照順序：①核心 ②成長 ③避險 ④衛星）、
+  `etf_role_table`、`mix_html`／`mix_table`、`round3_html`；App：`us_etf_tab`（美股頁第一個分頁）。
+* App 新首頁 `page_home`（🏠 總覽，預設頁）：①市場在哪個階段 → ②股票／ETF／現金怎麼分 → ③台股中線名單 → ④美股 ETF 順序，
+  加上「投資建議脈絡」與「每一頁在做什麼」。快速切換列「總覽」連結用 `./`（st.navigation 的預設頁在根網址）。
+* 台股模型維持 v3.4（v3.5 測試的 H2 殘差動能最接近，但回撤護欄未過）。

@@ -60,7 +60,7 @@ def test_research_constants_consistent():
     assert sum(n for _, n, *_ in rv.LEAD_BUCKETS) <= 1870
     assert len(rv.V23_TESTS) == 4 and all("未通過" in t[-1] for t in rv.V23_TESTS)
     assert all(len(x) == 7 for x in rv.IDEAS)
-    # v2.0 以後使用者提問引發的想法都沒有改變主模型
+    # v2.0 以後使用者提問引發的想法都沒有改變主模型（v3.5 風險調整動能開發期過門檻，但整段樣本外沒有進步 → 不採用）
     assert not any(x[2] == "使用者提問" and x[5].startswith("✅") for x in rv.IDEAS)
 
 

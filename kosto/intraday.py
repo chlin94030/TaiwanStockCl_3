@@ -11,13 +11,14 @@
 """
 from __future__ import annotations
 
+import os
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import pandas as pd
 import requests
 
-YAHOO = "https://query1.finance.yahoo.com/v8/finance/chart/"
+YAHOO = os.getenv("KOSTO_YAHOO_HOST") or "https://query1.finance.yahoo.com/v8/finance/chart/"   # 環境變數只供測試
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"}
 TZ = "Asia/Taipei"
 TAIEX = "^TWII"                      # Yahoo 沒有櫃買指數的分時（^TWOII 不存在）→ 櫃買只顯示 MIS 即時數字

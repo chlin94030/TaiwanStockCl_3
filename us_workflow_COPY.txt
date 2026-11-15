@@ -1,0 +1,53 @@
+name: Kosto 美股每日名單
+
+# v3.4 美股選股（與台股流程完全分開，互不影響）：
+#  * 每個美股交易日收盤後（台北清晨 05:47，夏令 04:47 收盤後一小時內）抓標普 500＋熱門股日線（Yahoo Finance）
+#  * 算因子與三個期間的參考名單 → 上傳 us_bundle.pkl.gz 到 kosto-research（App 自動讀取）
+#  * 07:17 再跑一次備援；也可以在 Actions 頁面手動執行
+#  * 抓取失敗（成功檔數 < 300）就不發布，App 繼續用前一份
+
+on:
+  schedule:
+    - cron: "47 21 * * 1-5"   # 台北 05:47（週二～週六）
+    - cron: "17 23 * * 1-5"   # 台北 07:17 備援
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+    paths: ["kosto/us/**", ".github/workflows/us.yml"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: kosto-us
+  cancel-in-progress: false
+
+env:
+  PYTHONUNBUFFERED: "1"
+  RESEARCH_TAG: kosto-research
+
+jobs:
+  us:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-pipeline.txt
+      - run: pip install -r requirements-pipeline.txt
+      - name: 取回前一份美股資料包（名單續抱用）
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$RESEARCH_TAG" >/dev/null 2>&1 || gh release create "$RESEARCH_TAG" --title "Kosto research" \
+            --notes "最新研究結果與完整報告（每日自動更新）" --latest=false || true
+          gh release download "$RESEARCH_TAG" -p "us_bundle.pkl.gz" -D prev --clobber || echo "第一次執行：尚無美股資料包"
+      - name: 建立美股資料包
+        run: python cli.py us-build --prev prev/us_bundle.pkl.gz
+      - name: 發布到 App
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$RESEARCH_TAG" artifacts/us_bundle.pkl.gz --clobber

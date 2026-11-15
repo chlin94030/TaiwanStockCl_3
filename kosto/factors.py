@@ -444,6 +444,15 @@ def _group_rel(c, x: pd.DataFrame) -> pd.DataFrame:
 def _t_max20(c): return -_ret(c).rolling(20, min_periods=15).max()
 
 
+@factor("t_rmom240", "T", 1, ("mid", "long"), "風險調整動能(240日扣近20日÷波動)")
+def _t_rmom240(c):
+    """v3.5（docs/v3.5_protocol.md T1）：美股 SPMO／MTUM 的選股法——一年動能扣最近一個月，除以一年日報酬波動。
+    15% 疊加測試：開發期通過門檻，但最近 12 個月全部落後、整段樣本外 −0.6pp → 不採用；列在 inactive_factors 照常計算。"""
+    r = _ret(c)
+    lc = np.log1p(r.fillna(0)).cumsum()
+    return (np.exp(lc.shift(20) - lc.shift(240)) - 1) / r.rolling(240, min_periods=180).std()
+
+
 @factor("t_skew60", "T", 1, ("mid", "long"), "報酬偏態低(非彩券股)")
 def _t_skew60(c): return -_ret(c).rolling(60, min_periods=40).skew()
 

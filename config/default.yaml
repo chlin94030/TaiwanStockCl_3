@@ -75,9 +75,13 @@ research:
                      t_max20, t_skew60, t_limitup20, t_high60, t_bbw, f_rev_surprise, f_rev_rel, c_trust60,
                      c_fr_high, f_pe_self, f_dy_rel,
                      # v2.1 同族群連動候選（docs/v2.1_linkage_protocol.md）：研究結果決定是否啟用
-                     g_seg_mom20, g_seg_lag5, g_seg_breadth5]
+                     g_seg_mom20, g_seg_lag5, g_seg_breadth5,
+                     # v3.5 風險調整動能：測試未採用（照常計算供觀察）
+                     t_rmom240]
   overlay:                             # v1.9 研究唯一通過門檻者：以固定 15% 權重加入三個期間的分數（其餘 85% 為原模型）
     f_rev_rel: 0.15                    #   營收年增相對同業：中線 +1.6pp／資訊比率 +0.02、長線 +8.0pp、短線 −0.8pp（容許 1pp 內）
+                                       # v3.5 測過「風險調整動能 t_rmom240」15%：開發期過門檻，但最近 12 個月 25 格全部落後、
+                                       #   2021–2026 整段樣本外平均 −0.6pp → 不採用（docs/v3.5_protocol.md）；因子照常計算、列在 inactive_factors
   momentum_guard:                      # v2.2 研究候選（docs/v2.2_crash_protocol.md）：急跌時動能因子權重減半；未通過門檻 → 關閉
     enabled: false
     factors: [t_rs120, t_mom120x20, t_high252]

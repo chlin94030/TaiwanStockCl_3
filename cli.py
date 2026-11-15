@@ -9,6 +9,7 @@
   python cli.py progress [--write status/status.json]     資料庫完成度（GitHub 自動續跑用）
   python cli.py pack --group price --out x.tar.gz         打包某資料群組（Actions 用）
   python cli.py unpack x.tar.gz                           解開資料群組
+  python cli.py us-build [--prev us_bundle.pkl.gz]        v3.4 美股：抓日線→因子→參考名單（輸出 artifacts/us_bundle.pkl.gz）
 """
 from __future__ import annotations
 
@@ -312,6 +313,28 @@ def cmd_auto(a, cfg):
     write_status(cfg, status, {"stage": "done"})
 
 
+def cmd_us_build(a, cfg):
+    """v3.4 美股資料包（與台股流程完全分開）。"""
+    from kosto.us import engine as UE
+    prev = None
+    if a.prev and Path(a.prev).is_file():
+        try:
+            prev = UE.loads(Path(a.prev).read_bytes())
+            log(f"讀到前一份美股資料包（{prev.get('asof')}），名單續抱用")
+        except Exception as e:  # noqa: BLE001
+            log(f"前一份美股資料包無法讀取（{e}），不續抱")
+    B = UE.build(prev=prev, log=log)
+    ART.mkdir(exist_ok=True)
+    out = ART / "us_bundle.pkl.gz"
+    out.write_bytes(UE.dumps(B))
+    log(f"美股資料包 {B['asof']}：{len(B['tickers'])} 檔、母池 {int(B['universe'].sum())} 檔、"
+        f"失敗 {len(B['fail'])} 檔 → {out}（{out.stat().st_size / 1e6:.1f} MB）")
+    for h, p in B["picks"].items():
+        log(f"  {h}（{p['model']}）：{'、'.join(p['names'])}")
+    if len(B["tickers"]) < 300:
+        raise SystemExit("美股日線成功檔數太少（< 300），不發布，保留前一份")
+
+
 def cmd_status(a, cfg):
     from kosto.store import Store
     print(Store(cfg["data"]["dir"]).summary().to_string())
@@ -339,6 +362,7 @@ def main(argv=None):
     au.add_argument("--quick", action="store_true"); au.add_argument("--force-research", action="store_true")
     pk = sub.add_parser("pack"); pk.add_argument("--group", required=True); pk.add_argument("--out", required=True)
     up = sub.add_parser("unpack"); up.add_argument("archive", nargs="+")
+    ub = sub.add_parser("us-build"); ub.add_argument("--prev", default=None)
     a = p.parse_args(argv)
     over = {"data": {"dir": a.data_dir}} if a.data_dir else None
     if a.cmd == "demo" and not a.data_dir:
@@ -356,7 +380,8 @@ def main(argv=None):
                 log(f"解開 {x}")
         return
     {"update": cmd_update, "bundle": cmd_bundle, "research": cmd_research, "demo": cmd_demo,
-     "status": cmd_status, "summary": cmd_summary, "progress": cmd_progress, "auto": cmd_auto}[a.cmd](a, cfg)
+     "status": cmd_status, "summary": cmd_summary, "progress": cmd_progress, "auto": cmd_auto,
+     "us-build": cmd_us_build}[a.cmd](a, cfg)
 
 
 if __name__ == "__main__":
