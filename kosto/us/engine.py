@@ -59,6 +59,8 @@ def universe_table(fetch: bool = True, log=print) -> pd.DataFrame:
     u = u.drop_duplicates("sym")
     u["ndx"] = u["sym"].isin(NM.NDX_NOW)
     u["sox"] = u["sym"].isin(NM.SOX_NOW)
+    u["cyber"] = u["sym"].isin(NM.CYBER_NOW)
+    u["power"] = u["sym"].isin(NM.POWER_NOW)
     u["sector"] = [NM.sector_zh(s) if s else NM.EXTRA_SECTOR.get(t, "其他") for t, s in zip(u["sym"], u["sector_en"])]
     u["sub"] = [NM.subind_zh(s) for s in u["sub_en"]]
     u["zh"] = u["sym"].map(NM.zh_name)
@@ -145,7 +147,7 @@ def build(P: dict | None = None, info: pd.DataFrame | None = None, prev: dict | 
                          "r252": r(252), "hi52": Cs.iloc[-1] / Cs.iloc[-252:].max(), "ma50": Cs.iloc[-1] / Cs.iloc[-50:].mean() - 1,
                          "ma200": Cs.iloc[-1] / Cs.iloc[-200:].mean() - 1, "vol60": vol60,
                          "adv60": DV.iloc[-60:].mean(), "in_u": u_all})
-    summ = summ.join(info[["sector", "sub", "zh", "desc", "name_en", "sp500", "ndx", "sox"]], how="left")
+    summ = summ.join(info[[c for c in ["sector", "sub", "zh", "desc", "name_en", "sp500", "ndx", "sox", "cyber", "power"] if c in info]], how="left")
     log_hist = list((prev or {}).get("picks_log", []))
     for h, p in picks.items():
         if not any(x["date"] == p["date"] and x["h"] == h for x in log_hist):
@@ -177,14 +179,18 @@ def loads(b: bytes) -> dict:
 
 
 def mask(B: dict, key: str) -> pd.Series:
-    """資料包內某個母池（all／sp500／100／200／300）或成分股集合（ndx／sox）的遮罩。"""
+    """資料包內某個母池（all／sp500／100／200／300）或成分股集合（ndx／sox／cyber）的遮罩。"""
     tk = B["tickers"]
     um = B.get("umask") or {}
     base = um.get("all", B["universe"]).reindex(tk).fillna(False).astype(bool)
     if key in um:
         return um[key].reindex(tk).fillna(False).astype(bool)
-    if key in ("ndx", "sox"):
-        flag = B["info"][key].reindex(tk).fillna(False).astype(bool) if key in B["info"] else pd.Series(False, tk)
+    if key in ("ndx", "sox", "cyber", "power"):
+        if key in B["info"]:
+            flag = B["info"][key].reindex(tk).fillna(False).astype(bool)
+        else:   # 舊資料包沒有這個欄位 → 直接用名單
+            lst = {"ndx": NM.NDX_NOW, "sox": NM.SOX_NOW, "cyber": NM.CYBER_NOW, "power": NM.POWER_NOW}[key]
+            flag = pd.Series([t in lst for t in tk], index=tk)
         return base & flag
     return base
 

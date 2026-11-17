@@ -576,3 +576,37 @@ def compute(P: Panel, names=None, sample_idx=None, log=None) -> tuple[dict, Ctx]
         if log:
             log(f"  factor {name}: coverage {np.isfinite(arr).mean():.0%}")
     return out, ctx
+
+
+# ------------------------------------------------------------------ v3.9 前瞻基本面候選（docs/v3.9_protocol.md）：測試未採用，照常計算供觀察
+def _net_margin(c):
+    """近四季淨利率＝近四季 EPS（收盤 ÷ 本益比）× 股數 ÷ 近 12 個月營收（往前錯開 2 個月，對齊財報期間）；虧損＝缺值。"""
+    def calc():
+        rev12 = revenue_daily(c.P, lambda r: r.rolling(12, min_periods=12).sum().shift(2)).astype(float)
+        ni = eps_ttm(c) * c.P["shares"].astype(float)
+        return (ni / rev12.where(rev12 > 0)).clip(-1, 1)
+    return c.get("net_margin", calc)
+
+
+@factor("f_margin_chg", "F", 1, ("mid", "long"), "淨利率年增(三率三升代理)")
+def _f_margin_chg(c):
+    """Q1：近四季淨利率 − 一年前；15% 疊加開發期中線 −6.0pp → 未採用。"""
+    m = _net_margin(c)
+    return (m - m.shift(250)).clip(-0.5, 0.5)
+
+
+@factor("f_eps_rev", "F", 1, ("mid", "long"), "獲利上修(近四季EPS 60日變化÷股價)")
+def _f_eps_rev(c):
+    """Q2：新一季財報比去年同季好 → 近四季 EPS 上升；15% 疊加開發期中線 −1.3pp → 未採用（2024 年後 IC 轉正，持續觀察）。"""
+    e = eps_ttm(c)
+    return ((e - e.shift(60)) / c.P["close"].astype(float)).clip(-0.5, 0.5)
+
+
+@factor("f_garp", "F", 1, ("mid", "long"), "成長合理價(營收成長與本益比都好)")
+def _f_garp(c):
+    """Q3：min（近 3 月營收年增百分位, 盈餘殖利率百分位）；單獨 IC 最高（60 日 0.06），但與現有營收、本益比因子重疊，
+    15% 疊加開發期中線 −1.0pp、最近 12 個月 −72pp → 未採用。"""
+    trad = c.P["tradable"].astype(bool)
+    g = _rev(c, lambda r: _yoy(r, 3), "rev_yoy3").where(trad).rank(axis=1, pct=True)
+    v = _f_ep(c).where(trad).rank(axis=1, pct=True)
+    return np.minimum(g, v).where(g.notna() & v.notna())

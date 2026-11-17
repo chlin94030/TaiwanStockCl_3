@@ -172,3 +172,52 @@ def pack(px: pd.DataFrame, div: pd.DataFrame | None, keep_days: int = 1300) -> t
         d["cash"] = (d["before"] - d["ref"]).round(4)
         meta["etf_divs"] = [[str(x.date()), t, float(c)] for x, t, c in zip(d["date"], d["ticker"], d["cash"])]
     return {"ETF_TR": tr.to_numpy(np.float32)}, meta
+
+
+# ------------------------------------------------------------------ v3.10 修正期 1～3 個月：各 ETF 的歷史表現（docs/v3.10_protocol.md）
+CORR_CODES = ["0050", "006208", "00713", "00878", "00919", "0056", "00646", "00662"]
+
+
+def correction_events(base: pd.Series, dd: float = -0.10, look: int = 120, gap: int = 20) -> list[int]:
+    """base＝0050 含息淨值。距 look 日最高 ≥ |dd| 的修正期，每段第一天（兩段相隔 < gap 日視為同一段）。"""
+    b = base.astype(float).ffill()
+    inc = (b / b.rolling(look, min_periods=look // 2).max() - 1 <= dd).to_numpy()
+    ev, last = [], -10 ** 9
+    for i in range(1, len(inc)):
+        if inc[i] and not inc[i - 1] and i - last >= gap:
+            ev.append(i)
+        if inc[i]:
+            last = i
+    return ev
+
+
+def correction_perf(tr: pd.DataFrame, base: pd.Series, codes=None, dd: float = -0.10) -> tuple[pd.DataFrame, list[str]]:
+    """每個修正期第一天收盤買進：之後 20／60 日報酬、60 日內最大回落；只算資料足夠的事件。回傳（每檔平均, 事件日期）。"""
+    codes = [c for c in (codes or CORR_CODES) if c in tr.columns]
+    base = base.reindex(tr.index).ffill()
+    ev = correction_events(base, dd)
+    rows, dates = [], []
+    for i in ev:
+        if i + 20 >= len(tr):
+            continue
+        dates.append(str(tr.index[i].date()))
+        for c in codes:
+            w = tr[c].iloc[i:i + 61].to_numpy(dtype=float)
+            if not np.isfinite(w[0]) or w[0] <= 0:
+                continue
+            w = w / w[0]
+            rows.append({"ticker": c, "date": dates[-1], "r20": w[20] - 1 if np.isfinite(w[20]) else np.nan,
+                         "r60": (w[60] - 1) if len(w) > 60 and np.isfinite(w[60]) else np.nan,
+                         "mdd": float(np.nanmin(w / np.fmax.accumulate(np.nan_to_num(w, nan=0.0)) - 1))})
+    if not rows:
+        return pd.DataFrame(), dates
+    d = pd.DataFrame(rows)
+    out = d.groupby("ticker").agg(n=("date", "nunique"), r20=("r20", "mean"), r60=("r60", "mean"),
+                                 up60=("r60", lambda x: float((x.dropna() > 0).mean()) if x.notna().any() else np.nan),
+                                 mdd=("mdd", "mean"), worst=("mdd", "min"))
+    ref = d[d.ticker == codes[0]].set_index("date")["r60"] if codes else None
+    if ref is not None and len(ref):
+        beat = d.assign(b=d["r60"] - d["date"].map(ref)).groupby("ticker")["b"].apply(lambda x: float((x.dropna() > 0).mean()) if x.notna().any() else np.nan)
+        out["beat"] = beat
+    return out.reindex([c for c in codes if c in out.index]).reset_index(), dates
+

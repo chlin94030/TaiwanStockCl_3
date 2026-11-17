@@ -697,3 +697,32 @@ v1.9 改為每個交易日 **21:40 一次更新全部**（融資融券約 21:00�
 * App 新首頁 `page_home`（🏠 總覽，預設頁）：①市場在哪個階段 → ②股票／ETF／現金怎麼分 → ③台股中線名單 → ④美股 ETF 順序，
   加上「投資建議脈絡」與「每一頁在做什麼」。快速切換列「總覽」連結用 `./`（st.navigation 的預設頁在根網址）。
 * 台股模型維持 v3.4（v3.5 測試的 H2 殘差動能最接近，但回撤護欄未過）。
+
+## v3.7 週刊觀點驗證＋資安題材＋那斯達克夜盤（docs/v3.7_protocol.md）
+* `review.V37_CYBER`／`V37_IPO`／`V37_REBOUND`（＋各 `_NOTE`）：資安事件、巨型 IPO、搶反彈三條件的結果；App `v37_html()` 顯示在模型體檢。
+  三項都不改主模型；反彈候選（`market.rebound_candidates`）不變。
+* `supply.THEMES` 新增 `cyber`（資安・AI 網攻與金融資安），題材地圖自動顯示。
+* 美股：`names.CYBER_NOW`、`SETS["cyber"]`、`view.SET_ZH["cyber"]`；`engine.universe_table` 加 `cyber` 欄位，
+  `engine.mask("cyber")` 在舊資料包沒有該欄位時直接用名單。`EXTRAS` 加 OKTA、S、CHKP、QLYS、TENB、RPD、VRNS；`ETFS` 加 HACK、CIBR、BUG。
+* `us.data.OVERNIGHT_START`＝2026-12-06、`overnight_on()`、`market_clock()` 新增 `overnight` 時段與 `night_tpe`、`overnight_live`；
+  `PHASE_ZH["overnight"]`＝夜盤；App `us_strip` 顯示夜盤時間。
+
+## v3.8 多檔對照＋核能／綠電題材＋選舉研究（docs/v3.8_protocol.md）
+* App `parse_codes(txt)`（代號或公司名，最多 40 檔）、`multi_check_html(txt)`（三個期間 `verdict_for`、族群、`supply.themes_of`、反彈候選名次）；
+  個股診斷頁頂端的 expander。
+* `supply.THEMES` 新增 `smr`、`green`。美股 `names.POWER_NOW`、`SETS["power"]`、`view.SET_ZH["power"]`；`engine` 的 `power` 欄位與 `mask` 後備名單；
+  `EXTRAS` 加 BWXT、LEU、NNE、FLNC。
+* `review.V38_ELECT`／`V38_ELECT_NOTE`，顯示在模型體檢 `v37_html()` 的 D 表。
+
+## v3.9 前瞻基本面候選（docs/v3.9_protocol.md）
+* `factors.py` 新增 `f_margin_chg`（近四季淨利率一年變化：本益比反推 EPS × 股數 ÷ 近 12 月營收〔錯開 2 個月〕）、
+  `f_eps_rev`（近四季 EPS 60 日變化 ÷ 股價）、`f_garp`（min〔近 3 月營收年增百分位, 盈餘殖利率百分位〕）；放在檔案最後註冊，
+  並列入 `inactive_factors`（照常計算、不加權）。已驗證：加入後三個期間的最新排名、分數、開發期與樣本外績效與原本完全相同。
+* 15% 疊加測試三個都未通過；IC 逐年表在 `review.V39_IC`，App 模型體檢 E 表。
+* App：`fwd_fund(t)` 讀資料包 U 最後一天三個因子的全市場百分位（舊資料包沒有就不顯示）；顯示在多檔對照與個股診斷（只供參考）。
+
+## v3.10 修正期 ETF 比較（docs/v3.10_protocol.md）
+* `etf.correction_events(base)`（0050 含息淨值距 120 日高 ≥10% 的每段第一天）、`etf.correction_perf(tr, base, codes)`
+  （之後 20／60 日報酬、上漲比例、期間最大回落、贏 0050 比例）；`CORR_CODES` 預設 0050、006208、00713、00878、00919、0056、00646、00662。
+* App：精選 ETF 頁「📉 修正期怎麼選」（`etf_correction_section`），用資料包 ETF_TR 每天重算；長期間代理結果在 `review.V310_ETF`、實際行情檢查 `V310_REAL`。
+

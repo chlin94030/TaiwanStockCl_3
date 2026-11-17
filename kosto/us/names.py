@@ -90,6 +90,11 @@ ZH: dict[str, tuple[str, str]] = {
     # ---- 軟體、網路、資安
     "CRWD": ("CrowdStrike", "資安"), "PANW": ("Palo Alto", "資安"), "FTNT": ("Fortinet", "資安防火牆"),
     "ZS": ("Zscaler", "雲端資安"), "NET": ("Cloudflare", "網路加速與資安"), "DDOG": ("Datadog", "雲端監控軟體"),
+    "OKTA": ("Okta", "身分驗證資安"), "S": ("SentinelOne", "AI 端點資安"), "CHKP": ("Check Point", "防火牆（以色列）"),
+    "QLYS": ("Qualys", "弱點掃描"), "TENB": ("Tenable", "弱點管理"), "RPD": ("Rapid7", "資安維運"), "VRNS": ("Varonis", "資料安全"),
+    "GEN": ("Gen Digital", "消費者防毒（Norton）"), "AKAM": ("Akamai", "CDN 與資安"), "FFIV": ("F5", "應用程式安全與負載平衡"),
+    "HACK": ("Amplify 網路安全 ETF", "資安 ETF"), "CIBR": ("First Trust 那斯達克網路安全 ETF", "資安 ETF"),
+    "BUG": ("Global X 網路安全 ETF", "資安 ETF"),
     "SNOW": ("Snowflake", "雲端資料倉儲"), "MDB": ("MongoDB", "資料庫"), "WDAY": ("Workday", "人資財務軟體"),
     "TEAM": ("Atlassian", "協作軟體"), "ADSK": ("Autodesk", "設計軟體"), "TTD": ("The Trade Desk", "程式化廣告"),
     "DASH": ("DoorDash", "外送平台"), "ABNB": ("Airbnb", "民宿平台"), "BKNG": ("Booking", "訂房平台"),
@@ -130,7 +135,9 @@ ZH: dict[str, tuple[str, str]] = {
     "PWR": ("廣達服務", "電網工程（非台灣廣達）"), "EME": ("Emcor", "機電工程"), "AXON": ("Axon", "警用電擊槍與攝影機"),
     "CEG": ("星座能源", "核能發電"), "VST": ("Vistra", "發電（資料中心用電）"), "NRG": ("NRG", "發電"), "TLN": ("Talen", "核能發電"),
     "OKLO": ("Oklo", "小型核反應爐"), "SMR": ("NuScale", "小型模組化核電"), "CCJ": ("Cameco", "鈾礦"), "BE": ("Bloom Energy", "燃料電池發電"),
-    "NEE": ("新紀元能源", "電力、再生能源"), "XOM": ("埃克森美孚", "石油"), "CVX": ("雪佛龍", "石油"), "LIN": ("林德", "工業氣體"),
+    "NEE": ("新紀元能源", "電力、再生能源"), "FSLR": ("第一太陽能", "太陽能模組（美國製造）"), "ENPH": ("Enphase", "太陽能微逆變器"),
+    "AES": ("AES", "發電、儲能"), "BWXT": ("BWX Technologies", "核反應爐元件、核燃料"), "LEU": ("Centrus Energy", "濃縮鈾（HALEU）"),
+    "NNE": ("Nano Nuclear", "微型核反應爐"), "FLNC": ("Fluence", "儲能系統"), "XOM": ("埃克森美孚", "石油"), "CVX": ("雪佛龍", "石油"), "LIN": ("林德", "工業氣體"),
     "FCX": ("自由港", "銅礦"), "NEM": ("紐蒙特", "金礦"), "RKLB": ("Rocket Lab", "小型火箭、衛星"), "ASTS": ("AST SpaceMobile", "衛星直連手機"),
     "SPCX": ("SpaceX", "火箭、Starlink 衛星網路"), "JOBY": ("Joby", "電動飛行計程車"), "ACHR": ("Archer", "電動飛行計程車"),
     "GRMN": ("Garmin", "GPS 穿戴裝置（台灣生產）"), "NVMI": ("Nova", "半導體量測設備（以色列）"), "MTSI": ("MACOM", "射頻與光通訊晶片"),
@@ -158,7 +165,11 @@ EXTRAS = ["ASML", "ARM", "TSM", "SHOP", "SPOT", "MELI", "SE", "PDD", "BABA", "JD
           "UMC", "ASX", "HIMX", "SIMO", "IMOS", "CRWV", "NBIS", "IONQ", "RGTI", "QBTS", "OKLO", "SMR", "CCJ", "BE", "TLN", "RKLB",
           "ASTS", "SPCX", "JOBY", "ACHR", "NVT", "POWL", "MOD", "TEL",
           # v3.5 那斯達克 100、費半中不在標普 500 的成分股
-          "CCEP", "TRI", "FER", "NVMI", "MTSI", "RMBS", "QRVO", "SWKS"]
+          "CCEP", "TRI", "FER", "NVMI", "MTSI", "RMBS", "QRVO", "SWKS",
+          # v3.7 資安股（不在標普 500 的）
+          "OKTA", "S", "CHKP", "QLYS", "TENB", "RPD", "VRNS",
+          # v3.8 核能・儲能（不在標普 500 的）
+          "BWXT", "LEU", "NNE", "FLNC"]
 
 # v3.5 目前成分股（瀏覽篩選用；依 2026 年中公開的 ETF 持股整理，約略，以官方為準）。歷史成分股沒有可靠資料 → 不當模型母池
 NDX_NOW = ["AAPL", "NVDA", "MSFT", "GOOGL", "GOOG", "AMZN", "MU", "AMD", "TSLA", "META", "WMT", "AVGO", "COST", "PLTR", "CSCO", "INTC",
@@ -170,10 +181,16 @@ NDX_NOW = ["AAPL", "NVDA", "MSFT", "GOOGL", "GOOG", "AMZN", "MU", "AMD", "TSLA",
            "CRWV", "WBD", "EA", "FER"]
 SOX_NOW = ["NVDA", "AVGO", "MU", "AMD", "TXN", "ADI", "TSM", "ASML", "AMAT", "KLAC", "MRVL", "LRCX", "QCOM", "MPWR", "NXPI", "INTC",
            "COHR", "TER", "ALAB", "MCHP", "ON", "ARM", "CRDO", "GFS", "ENTG", "MTSI", "SWKS", "NVMI", "RMBS", "QRVO"]
-SETS = {"sp500": "標普 500", "ndx": "那斯達克 100", "sox": "費城半導體 30", "all": "全部（含熱門股、ADR）"}
+# v3.7 資安股（瀏覽用；平台、防火牆、身分、弱點管理、CDN；不是驗證過的母池）
+CYBER_NOW = ["CRWD", "PANW", "FTNT", "ZS", "NET", "OKTA", "S", "CHKP", "QLYS", "TENB", "RPD", "VRNS", "GEN", "AKAM", "FFIV"]
+# v3.8 電力・核能・綠能（AI 缺電、民主黨能源政策；瀏覽用）
+POWER_NOW = ["CEG", "VST", "TLN", "NRG", "NEE", "AES", "GEV", "ETN", "PWR", "FSLR", "ENPH", "FLNC", "BE", "OKLO", "SMR", "NNE",
+             "CCJ", "BWXT", "LEU"]
+SETS = {"sp500": "標普 500", "ndx": "那斯達克 100", "sox": "費城半導體 30", "cyber": "資安股", "power": "電力・核能・綠能",
+        "all": "全部（含熱門股、ADR）"}
 ETFS = ["SPY", "VOO", "IVV", "VTI", "DIA", "RSP", "QQQ", "QQQM", "XLK", "IVW", "IWF", "VUG", "SOXX", "SMH", "IJH", "IWD", "IVE",
         "DVY", "SCHD", "IWM", "VNQ", "EEM", "EFA", "VWO", "VEU", "GLD", "IAU", "IEF", "TLT", "AGG", "BND", "TIP",
-        "XLF", "XLE", "XLV", "XLY", "XLP", "XLI", "XLU", "XLB", "XLRE", "XLC"]
+        "XLF", "XLE", "XLV", "XLY", "XLP", "XLI", "XLU", "XLB", "XLRE", "XLC", "HACK", "CIBR", "BUG"]
 SECTOR_ETF = {"XLK": "資訊科技", "XLC": "通訊服務", "XLY": "非必需消費", "XLP": "必需消費", "XLV": "醫療保健", "XLF": "金融",
               "XLI": "工業", "XLE": "能源", "XLB": "原物料", "XLU": "公用事業", "XLRE": "不動產"}
 INDEXES = {"^GSPC": "標普 500", "^IXIC": "那斯達克", "^DJI": "道瓊", "^SOX": "費城半導體", "^RUT": "羅素 2000", "^VIX": "VIX 恐慌指數",
@@ -184,6 +201,8 @@ EXTRA_SECTOR = {
     "ASML": "資訊科技", "ARM": "資訊科技", "TSM": "資訊科技", "SHOP": "資訊科技", "SPOT": "通訊服務", "MELI": "非必需消費",
     "SE": "非必需消費", "PDD": "非必需消費", "BABA": "非必需消費", "JD": "非必需消費", "BIDU": "通訊服務", "CPNG": "非必需消費",
     "GRAB": "工業", "NU": "金融", "AZN": "醫療保健", "NVO": "醫療保健", "MRVL": "資訊科技", "MSTR": "資訊科技", "SNOW": "資訊科技",
+    "OKTA": "資訊科技", "S": "資訊科技", "CHKP": "資訊科技", "QLYS": "資訊科技", "TENB": "資訊科技", "RPD": "資訊科技",
+    "VRNS": "資訊科技", "BWXT": "工業", "LEU": "能源", "NNE": "工業", "FLNC": "工業",
     "NET": "資訊科技", "ZS": "資訊科技", "MDB": "資訊科技", "TEAM": "資訊科技", "RBLX": "通訊服務", "U": "資訊科技",
     "PINS": "通訊服務", "SNAP": "通訊服務", "SOFI": "金融", "AFRM": "金融", "DUOL": "非必需消費", "TOST": "金融", "CAVA": "非必需消費",
     "HIMS": "醫療保健", "TEM": "醫療保健", "CELH": "必需消費", "ROKU": "通訊服務", "RIVN": "非必需消費", "DKNG": "非必需消費",

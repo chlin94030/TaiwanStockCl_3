@@ -1680,9 +1680,93 @@ def verdict_for(t, h, live_px=np.nan, bq=None):
     return "no", f"不建議（第 {rank}/{n} 名）", f"分數位於股票池{top}；持有者可在下次檢查日換股"
 
 
+VCOLOR = {"buy": "#1d4ed8", "hold": "#5b21b6", "watch": "#d97706", "no": "#475569", "na": "#475569"}
+
+
+def parse_codes(txt: str) -> tuple[list[str], list[str]]:
+    """v3.8 多檔對照：從一段文字找出股票（代號或公司名），回傳（找到的代號, 找不到的字）。"""
+    import re
+    found, miss = [], []
+    name_idx = {str(n): t for t, n in zip(B.tickers, NAMES)}
+    for tok in [x for x in re.split(r"[\s,，、;；/（）()]+", txt) if x]:
+        code = re.match(r"^(\d{4,6}[A-Z]?)", tok)
+        t = code.group(1) if code and code.group(1) in TIDX else name_idx.get(tok)
+        if t is None and len(tok) >= 2 and not tok.isdigit():
+            t = next((tt for nm, tt in name_idx.items() if tok in nm), None)
+        if t and t not in found:
+            found.append(t)
+        elif not t and tok not in miss:
+            miss.append(tok)
+    return found[:40], miss
+
+
+def fwd_fund(t: str) -> str:
+    """v3.9 季報反推的前瞻基本面（只供參考、不在模型裡）：淨利率一年變化、最新一季獲利上修、成長合理價——
+    資料包存的是在全市場（可交易股票）中的百分位；舊資料包沒有這三個因子就空白。"""
+    fs = list(B.factors)
+    if "f_margin_chg" not in fs or t not in TIDX:
+        return ""
+    U = B.a["U"][-1, TIDX[t]]
+    out = []
+    for k, lab in (("f_margin_chg", "淨利率改善"), ("f_eps_rev", "獲利上修"), ("f_garp", "成長合理價")):
+        u = int(U[fs.index(k)])
+        if u > 0:
+            out.append(f"{lab} 前 {max(1, round(100 - (u - 1) / 65534 * 100))}%")
+    return "｜".join(out)
+
+
+def multi_check_html(txt: str) -> str:
+    """v3.8 多檔對照：貼上雜誌或別人的名單 → 每檔在三個模型的判斷、題材、是否在反彈候選。"""
+    from kosto import supply as S
+    ts, miss = parse_codes(txt)
+    if not ts:
+        return "<div class='kq-muted'>沒有找到股票代號或名稱。</div>"
+    rb = {x["ticker"]: k for k, x in enumerate(B.meta.get("rebound") or [], 1)}
+    order = ["buy", "watch", "hold", "low", "risk", "na"]
+    rows, mrows, cnt = [], [], {k: 0 for k in order}
+    for t in ts:
+        j = TIDX[t]
+        vs = {h: verdict_for(t, h) for h in HZ}
+        cat = [("risk" if v[1].startswith("暫不建議") else "low") if v[0] == "no" else v[0] for v in vs.values()]
+        cnt[min(cat, key=order.index)] += 1
+        lab = CH.get(t) or chainlib.label(t, SECTORS[j])
+        grp = lab.get("segment") or lab.get("group") or ""
+        th = "、".join(S.themes_of(t)[:2])
+        px, chg = last_close(j)
+        why = lambda v: (v[2].split("｜")[0].replace("原因：", "") if v[1].startswith("暫不建議") else "")   # noqa: E731
+        cells = [ui.badge(vs[h][1], VCOLOR[vs[h][0]]) + (f"<div class='kq-muted' style='font-size:11px'>{ui.esc(why(vs[h]))}</div>"
+                                                          if why(vs[h]) else "") for h in HZ]
+        reb = f"第 {rb[t]} 名" if t in rb else "–"
+        ff = fwd_fund(t)
+        rows.append([stock_cell(t), ui.esc(grp) + (f"<div class='kq-muted' style='font-size:12px'>{ui.esc(th)}</div>" if th else "")
+                     + (f"<div class='kq-muted' style='font-size:12px'>{ui.esc(ff)}</div>" if ff else ""),
+                     *cells, reb, ui.num(px) + f"<div style='font-size:12px'>{ui.pct(chg, 1, color=True)}</div>"])
+        mrows.append(ui.mcard(f"<span class='nm'>{t} {ui.esc(NAMES[j])}</span>", ui.num(px),
+                              "".join(f"<div style='margin:2px 0'>{HZ[h]} {ui.badge(vs[h][1], VCOLOR[vs[h][0]])}"
+                                      + (f" <span class='kq-muted' style='font-size:11px'>{ui.esc(why(vs[h]))}</span>" if why(vs[h]) else "")
+                                      + "</div>" for h in HZ),
+                              ui.esc(grp) + (f"｜{ui.esc(th)}" if th else "") + (f"｜反彈候選 {reb}" if t in rb else "")
+                              + (f"<br>{ui.esc(ff)}" if ff else "")))
+    head = (f"<div class='kq-verdict'>{len(ts)} 檔（取三個期間中最好的判斷）：<b>{cnt['buy']}</b> 檔模型現在推薦、"
+            f"{cnt['watch']} 檔推薦但先等價位、{cnt['hold']} 檔持有可續抱、{cnt['low']} 檔排名不夠前面、{cnt['risk']} 檔被風控排除、"
+            f"{cnt['na']} 檔不在選股範圍。雜誌名單和模型重疊的，才是兩邊都看好的。</div>")
+    tail = (f"<div class='kq-muted'>找不到：{ui.esc('、'.join(miss[:20]))}</div>" if miss else "")
+    return head + ui.resp(ui.table(["股票", "族群／題材", "短線", "中線", "長線", "反彈候選", "收盤"], rows, left=(0, 1)),
+                          "".join(mrows)) + tail + (
+        f"<div class='kq-muted'>依研究資料 {RDAY:%m/%d} 收盤；點代號可看完整診斷。判斷說明：推薦＝在名單或排名前段；"
+        "風控排除＝M 頭、過熱、乖離過大等；不在選股範圍＝模型不評分。"
+        "族群欄下方的「淨利率改善／獲利上修／成長合理價」是全市場排名（前 x%，越小越好），由交易所本益比與月營收反推（v3.9），用來檢查雜誌說的三率三升、獲利成長是否屬實；"
+        "歷史驗證顯示這些季報訊號公布時股價多半已反映，所以只供參考、不在模型裡。</div>")
+
+
 def page_stock():
     header()
     st.markdown(ui.section("個股診斷", "輸入代號或名稱，三個模型同時評分"), unsafe_allow_html=True)
+    with st.expander("📋 多檔對照：貼上雜誌、投顧或朋友的名單，一次看模型怎麼評", expanded=bool(st.session_state.get("multi_q"))):
+        mq = st.text_area("股票代號或名稱（空白、逗號或換行分隔，最多 40 檔）", key="multi_q", height=80,
+                          placeholder="例：6669 2382 2317 2330 3017 2059 2308（理財周刊 AI 供應鏈估值表）")
+        if mq.strip():
+            st.markdown(multi_check_html(mq), unsafe_allow_html=True)
     opts = sorted(B.tickers)
     q0 = st.query_params.get("s", "")
     idx = opts.index(q0) if q0 in TIDX else None
@@ -1730,6 +1814,9 @@ def page_stock():
                                             else "三個模型都沒有把它排進續抱門檻內。"))
     st.markdown(f"<div class='kq-verdict'>{msg}</div>", unsafe_allow_html=True)
     st.markdown(ui.cards(items), unsafe_allow_html=True)
+    ff = fwd_fund(t)
+    if ff:
+        st.markdown(f"<div class='kq-muted'>季報反推（v3.9，只供參考、不在模型裡）：{ui.esc(ff)}</div>", unsafe_allow_html=True)
     try:
         rk = ranks(BID, best or "mid")
         if t in rk.index and rk.loc[t, "reasons"]:
@@ -2800,6 +2887,35 @@ def insight_focus(df, sto, f5, t5, mchg, sox_dd) -> str:
     return ui.panel("今天的重點", ui.bullets(lines))
 
 
+def v37_html() -> str:
+    """v3.7 週刊觀點的歷史驗證（資安事件、巨型 IPO、搶反彈三條件）。"""
+    from kosto import review as rv
+    f = lambda v: "–" if v is None else f"{v:+.1f}%"          # noqa: E731
+    h = ui.section("週刊觀點的歷史驗證（v3.7～v3.9）", "先寫規則再跑；只報告，主模型不變")
+    h += "<div class='kq-muted' style='margin:6px 0 2px'><b>A. 重大駭客事件後，資安股有沒有超額報酬？</b></div>"
+    h += ui.table(["市場", "事件數", "事件後", "平均多大盤", "平常同期", "上漲比例 事件／平常"],
+                  [[ui.esc(a), str(n), b, c, d, e] for a, n, b, c, d, e in rv.V37_CYBER], left=(0,))
+    h += f"<div class='kq-muted'>{ui.esc(rv.V37_CYBER_NOTE)}</div>"
+    h += "<div class='kq-muted' style='margin:10px 0 2px'><b>B. 巨型 IPO 掛牌後，大盤會不會回檔？</b></div>"
+    h += ui.table(["掛牌日", "IPO（募資，美元）", "標普 20 日", "60 日", "60 日內最大回落", "加權 20 日", "60 日", "最大回落"],
+                  [[f"<b>{a}</b>", ui.esc(b), f(c), f(d), f(e), f(g), f(i), f(j)] for a, b, c, d, e, g, i, j in rv.V37_IPO], left=(0, 1))
+    h += f"<div class='kq-muted'>{ui.esc(rv.V37_IPO_NOTE)}</div>"
+    h += "<div class='kq-muted' style='margin:10px 0 2px'><b>C. 搶反彈「跌深＋融資減＋低本益比」（台灣 50 成分股，修正期）</b></div>"
+    h += ui.table(["選法（各取前 5 名）", "開發期 20 日", "開發期 60 日", "驗證期 20 日", "驗證期 60 日"],
+                  [[ui.esc(a), f(b), f(c), f(d), f(e)] for a, b, c, d, e in rv.V37_REBOUND], left=(0,))
+    h += f"<div class='kq-muted'>{ui.esc(rv.V37_REBOUND_NOTE)}</div>"
+    h += "<div class='kq-muted' style='margin:10px 0 2px'><b>D. 美國選舉後，電力／綠能股會不會比較強？（v3.8）</b></div>"
+    h += ui.table(["勝選", "次數", "5 日", "20 日", "60 日", "公用事業 XLU 60 日", "60 日贏 SPY"],
+                  [[ui.esc(a), "–" if n is None else str(n), f(b), f(c), f(d), f(e), w] for a, n, b, c, d, e, w in rv.V38_ELECT], left=(0,))
+    h += f"<div class='kq-muted'>{ui.esc(rv.V38_ELECT_NOTE)}</div>"
+    h += "<div class='kq-muted' style='margin:10px 0 2px'><b>E. 週刊的「前瞻」選股理由，歷史上準不準？（v3.9：三率三升、獲利上修、成長合理價）</b></div>"
+    g = lambda v: f"{v:+.3f}"          # noqa: E731
+    h += ui.table(["因子（之後 60 日報酬的 IC）", "2019–26", "2022", "2023", "2024", "2025", "2026", "模型"],
+                  [[ui.esc(a), f"<b>{g(b)}</b>", g(c), g(d), g(e), g(f_), g(i), ui.esc(j)] for a, b, c, d, e, f_, i, j in rv.V39_IC], left=(0, 7))
+    h += f"<div class='kq-muted'>{ui.esc(rv.V39_NOTE)}</div>"
+    return h
+
+
 def insight_rebound() -> str:
     rb = B.meta.get("rebound") or []
     head = ui.section("修正期反彈候選（與主模型分開）",
@@ -2826,7 +2942,8 @@ def insight_rebound() -> str:
                                     rows, left=(1, 2)), "".join(mrows))
             + "<div class='kq-muted'>研究（docs/v2.0_rebound_protocol.md）：2017–2026 共 6 次修正中，這個分數的前 20 名之後 20 日平均 +6%、"
               "勝過同期大型股平均約 3 個百分點（2024–2026 驗證期 +6.3% vs 平均 +3.3%、0050 +5.2%）；但 2024 年 8 月那次輸給 0050。"
-              "跌深股波動也大，請小量、分批，並設停損。兩份名單重疊的股票最值得優先看。</div>")
+              "跌深股波動也大，請小量、分批，並設停損。兩份名單重疊的股票最值得優先看。"
+              "v3.7 另測週刊常見的「跌深＋融資減＋低本益比」：低本益比在修正期最弱，60 日落後 0050，所以沒有改這份名單（見模型體檢）。</div>")
 
 
 def dash_today(cur):
@@ -3091,9 +3208,10 @@ def page_insight():
                                "五種換股日、2021–2025 開發期；單位：百分點（資訊比率為差值）；與 v1.9 相同的採用門檻"), unsafe_allow_html=True)
         st.markdown(ui.table(["候選", "中線超額", "中線 IR", "中線回撤改善", "短線超額", "長線超額", "判定"],
                              [[f"<b>{a}</b>", b, c_, d, e, f, g] for a, b, c_, d, e, f, g in V22_TESTS + rv.V23_TESTS]
-                             + [[f"<b>{a}</b>", b, c_, d, e, f, f"{g_}（盲測期中線 {bl}，只報告）"] for a, b, c_, d, e, f, bl, g_ in rv.V25_TESTS + rv.V30_TESTS + rv.V31_TESTS + rv.V35_TESTS],
+                             + [[f"<b>{a}</b>", b, c_, d, e, f, f"{g_}（盲測期中線 {bl}，只報告）"] for a, b, c_, d, e, f, bl, g_ in rv.V25_TESTS + rv.V30_TESTS + rv.V31_TESTS + rv.V35_TESTS + rv.V39_TESTS],
                              left=(0, 6)),
                     unsafe_allow_html=True)
+        st.markdown(v37_html(), unsafe_allow_html=True)
         st.markdown(ui.section("模型的時效（v2.5）", "中線分數與之後 60 日報酬的相關（IC，越高越準）；消息面因子逐年方向"), unsafe_allow_html=True)
         rows = [[f"<b>{y}</b>", f"{v:+.3f}"] for y, v in rv.SCORE_IC.items()] + [[f"<b>{q}</b>", f"{v:+.3f}"] for q, v in rv.SCORE_IC_Q.items()]
         rows2 = [[f"<b>{y}</b>", f"{rv.SHOCK_IC['t_limitup20'].get(y, np.nan):+.3f}", f"{rv.SHOCK_IC['t_max20'].get(y, np.nan):+.3f}"]
@@ -3177,7 +3295,10 @@ def page_etf():
         return
     st.markdown(f"<div class='kq-muted'>資料至 {B.meta.get('etf_asof', '')}｜上市＋上櫃 ETF {len(t)} 檔｜"
                 "排除：上市未滿 1 年、近 60 日平均成交金額 < 0.1 億；槓桿反向、期貨商品型另列（不列入建議）</div>", unsafe_allow_html=True)
-    tabs = st.tabs(["🏛️ 大盤型（核心）", "💰 配息", "📈 不配息", "🏦 債券", "⚠️ 槓桿反向", "🔍 全部／搜尋", "⚖️ 與選股模型比較"])
+    tabs = st.tabs(["🏛️ 大盤型（核心）", "💰 配息", "📈 不配息", "🏦 債券", "⚠️ 槓桿反向", "🔍 全部／搜尋", "⚖️ 與選股模型比較",
+                    "📉 修正期怎麼選"])
+    with tabs[7]:
+        etf_correction_section()
 
     def show(x: pd.DataFrame, key: str):
         if x.empty:
@@ -3247,6 +3368,48 @@ def page_etf():
         st.markdown(ui.table(["標的", "近一年", "年化", "最大回撤", "說明"], rows, left=(0, 4)), unsafe_allow_html=True)
         st.markdown("<div class='kq-muted'>模型的回測年化較高，但 2019–2020（研究沒用到的期間）輸 0050；ETF 不會有選錯股的風險。"
                     "這就是建議「ETF 核心＋個股衛星」而不是二選一的原因。</div>", unsafe_allow_html=True)
+
+
+def etf_correction_section():
+    """v3.10 修正期 1～3 個月：ETF 怎麼選、要不要留現金（docs/v3.10_protocol.md）。"""
+    from kosto import etf as etflib
+    from kosto import review as rv
+    st.markdown(ui.section("修正期 1～3 個月：ETF 怎麼選、要不要留現金", "歷史驗證（v3.10）；只報告，不是預測"), unsafe_allow_html=True)
+    tr = etf_tr(BID)
+    base = tr["0050"] if "0050" in tr else pd.Series(dtype=float)
+    if len(base.dropna()) > 130:
+        b = base.ffill()
+        dd = float(b.iloc[-1] / b.iloc[-120:].max() - 1)
+        st.markdown(f"<div class='kq-verdict'>目前 0050（含息）距 120 日高點 <b>{dd * 100:+.1f}%</b>："
+                    + ("<b>在修正期</b>（≥ 10%）。下表是過去每次修正第一天買進之後的表現。" if dd <= -0.10 else
+                       "不在修正期（< 10%）。下表供下一次修正時參考。") + "</div>", unsafe_allow_html=True)
+        perf, dates = etflib.correction_perf(tr, base)
+        if len(perf):
+            rows = [[f"<b>{r['ticker']}</b> {ui.esc(etf_name(r['ticker']))}", str(int(r["n"])), ui.pct(r["r20"], 1, color=True),
+                     ui.pct(r["r60"], 1, color=True), "–" if not ui.ok(r["up60"]) else f"{r['up60'] * 100:.0f}%", ui.pct(r["mdd"], 1),
+                     ui.pct(r["worst"], 1), "–" if r["ticker"] == "0050" or not ui.ok(r.get("beat")) else f"{r['beat'] * 100:.0f}%"]
+                    for _, r in perf.iterrows()]
+            st.markdown("<div class='kq-muted' style='margin:6px 0 2px'><b>實際 ETF（含息，資料包近 5 年）</b>：修正期第一天＝"
+                        + "、".join(dates) + "</div>", unsafe_allow_html=True)
+            st.markdown(ui.table(["ETF", "次數", "之後 20 日", "之後 60 日", "60 日上漲比例", "期間最大回落（平均）", "最差回落", "60 日贏 0050"],
+                                 rows, left=(0,)), unsafe_allow_html=True)
+    f = lambda v: f"{v:+.1f}%"          # noqa: E731
+    st.markdown("<div class='kq-muted' style='margin:10px 0 2px'><b>較長期間（2020–2026 共 7 次修正；台股 ETF 上市較晚的用成分股代理）</b></div>",
+                unsafe_allow_html=True)
+    st.markdown(ui.table(["對象", "之後 20 日", "之後 60 日", "60 日上漲", "期間最大回落（平均）", "最差回落", "60 日贏 0050"],
+                         [[ui.esc(a), f(b), f"<b>{f(c)}</b>", d, f(e), f(g), h] for a, b, c, d, e, g, h in rv.V310_ETF], left=(0,)),
+                unsafe_allow_html=True)
+    rows = []
+    for dt, xs in rv.V310_REAL:
+        rows.append([f"<b>{dt}</b>"] + [f"{r:+.1f}%／{m:.1f}%" for _, r, m in xs])
+    st.markdown("<div class='kq-muted' style='margin:10px 0 2px'><b>實際行情檢查</b>（之後 60 日報酬／期間最大回落；價格、不含配息）</div>",
+                unsafe_allow_html=True)
+    st.markdown(ui.table(["修正第一天"] + [c for c, _, _ in rv.V310_REAL[0][1]], rows, left=(0,)), unsafe_allow_html=True)
+    st.markdown(ui.panel("怎麼用", ui.bullets([
+        ui.esc(rv.V310_NOTE),
+        "分批節奏看「盤勢儀表板 → 止穩檢查」：0～2 分小量、3～4 分正常、5 分以上可以加快；急跌應變頁有一次買 vs 分批的歷史比較（差不多）。",
+        "反向 ETF（00632R 等）每天重設倍數，震盪時會耗損，不適合持有 1～3 個月；買賣價位（支撐、目標價）無法用歷史驗證，只當參考。"])),
+        unsafe_allow_html=True)
 
 
 @st.cache_data(show_spinner=False)
@@ -4258,14 +4421,16 @@ def us_daily(sym: str, slot: str) -> pd.DataFrame:
 
 
 def us_live_now(clk) -> bool:
-    return clk["phase"] in ("pre", "regular", "post")
+    return clk["phase"] in ("pre", "regular", "post", "overnight")
 
 
 def us_strip(clk, iq) -> str:
     ph = UD.PHASE_ZH[clk["phase"]]
-    col = {"pre": "#a16207", "regular": "#b4232a", "post": "#1e3a8a", "closed": "#334155"}[clk["phase"]]
+    col = {"pre": "#a16207", "regular": "#b4232a", "post": "#1e3a8a", "closed": "#334155", "overnight": "#6d28d9"}.get(clk["phase"], "#334155")
+    night = (f"｜夜盤 {clk['night_tpe']}～{clk['pre_tpe']}" if clk.get("overnight_live")
+             else f"｜那斯達克夜盤 12/7 起（台北 {clk.get('night_tpe', '10:00')}～{clk['pre_tpe']}）") if clk.get("night_tpe") else ""
     html = [f"<div class='kq-bar'><span class='kq-pill' style='background:{col};color:#fff'>美股{ph} 台北 {clk['tpe']:%H:%M}</span>",
-            f"<span class='kq-item kq-hide-m'>盤前 {clk['pre_tpe']}｜開盤 {clk['open_tpe']}｜收盤 {clk['close_tpe']}"
+            f"<span class='kq-item kq-hide-m'>盤前 {clk['pre_tpe']}｜開盤 {clk['open_tpe']}｜收盤 {clk['close_tpe']}{night}"
             f"（{'夏令' if clk['dst'] else '冬令'}）</span>"]
     for s, lab in (("ES=F", "標普期"), ("NQ=F", "那指期"), ("^GSPC", "標普"), ("^IXIC", "那指"), ("^SOX", "費半"), ("^VIX", "VIX")):
         if len(iq) and s in iq.index:

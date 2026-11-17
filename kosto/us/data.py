@@ -236,14 +236,32 @@ def quotes(symbols, interval: str = "5m", workers: int = 8, timeout: float = 8) 
     return pd.DataFrame(rows), bars
 
 
+OVERNIGHT_START = pd.Timestamp("2026-12-06")   # v3.7 那斯達克夜盤（美東 21:00～04:00，週日～週四晚上）預定啟用日（仍待主管機關核准）
+
+
+def overnight_on(now_et: pd.Timestamp) -> bool:
+    """美東時間 now_et 是否在那斯達克夜盤時段（啟用日之後、週日～週四晚上 21:00 到隔天 04:00）。"""
+    h = now_et.hour
+    if h >= 21:
+        night = now_et.tz_localize(None).normalize()
+    elif h < 4:
+        night = now_et.tz_localize(None).normalize() - pd.Timedelta(days=1)
+    else:
+        return False
+    return night >= OVERNIGHT_START and night.weekday() in (6, 0, 1, 2, 3)
+
+
 def market_clock(now: pd.Timestamp | None = None) -> dict:
-    """不靠網路的美股時鐘（夏令自動）：今天各時段的台北時間、目前時段（假日無法判斷，只看平日）。"""
+    """不靠網路的美股時鐘（夏令自動）：今天各時段的台北時間、目前時段（假日無法判斷，只看平日）。
+    v3.7：那斯達克夜盤（台北冬令 10:00～17:00、夏令 09:00～16:00）啟用後顯示「夜盤」。"""
     now = (now or pd.Timestamp.now(tz="UTC")).tz_convert(ET)
     d = now.normalize()
     t = {k: d + pd.Timedelta(hours=h, minutes=m) for k, (h, m) in
-         {"pre": (4, 0), "open": (9, 30), "close": (16, 0), "post_end": (20, 0)}.items()}
+         {"pre": (4, 0), "open": (9, 30), "close": (16, 0), "post_end": (20, 0), "night": (21, 0)}.items()}
     wk = now.weekday() < 5
-    if not wk:
+    if overnight_on(now):
+        ph = "overnight"
+    elif not wk:
         ph = "closed"
     elif t["pre"] <= now < t["open"]:
         ph = "pre"
@@ -257,7 +275,8 @@ def market_clock(now: pd.Timestamp | None = None) -> dict:
     dst = bool(now.dst() and now.dst().total_seconds() > 0)
     return {"phase": ph, "dst": dst, "et": now, "tpe": now.tz_convert(TPE),
             "pre_tpe": tp["pre"].strftime("%H:%M"), "open_tpe": tp["open"].strftime("%H:%M"),
-            "close_tpe": tp["close"].strftime("%H:%M"), "post_end_tpe": tp["post_end"].strftime("%H:%M")}
+            "close_tpe": tp["close"].strftime("%H:%M"), "post_end_tpe": tp["post_end"].strftime("%H:%M"),
+            "night_tpe": tp["night"].strftime("%H:%M"), "overnight_live": now.tz_localize(None) >= OVERNIGHT_START}
 
 
-PHASE_ZH = {"pre": "盤前", "regular": "盤中", "post": "盤後", "closed": "休市"}
+PHASE_ZH = {"pre": "盤前", "regular": "盤中", "post": "盤後", "closed": "休市", "overnight": "夜盤"}
