@@ -127,7 +127,9 @@ MKT_COLS = ["open", "high", "low", "close", "amount", "foreign", "trust", "deale
             # v2.0 市場解讀：融資張數、站上 20／60 日線比例、20 日新高／新低家數、大盤本益比／殖利率、國際市場
             "mlots", "ab20", "ab60", "hi20", "lo20", "pe_mkt", "dy_mkt", "sox", "vix", "nasdaq", "tsm", "twd",
             # v2.0 上市官方合計（億元／張；回補完成前為空）
-            "o_foreign", "o_trust", "o_dealer", "o_margin", "o_mlots"]
+            "o_foreign", "o_trust", "o_dealer", "o_margin", "o_mlots",
+            # v3.13 站上 5／10／120／240 日線比例（環境與估值）
+            "ab5", "ab10", "ab120", "ab240"]
 
 
 def market_pack(P: Panel, qdays, series: pd.DataFrame | None = None) -> tuple[np.ndarray, list]:
@@ -159,7 +161,7 @@ def market_pack(P: Panel, qdays, series: pd.DataFrame | None = None) -> tuple[np
     out["up"] = (r > 0).sum(axis=1).reindex(qdays)
     out["down"] = (r < 0).sum(axis=1).reindex(qdays)
     ms = series if series is not None else _market_series(P)
-    for c in ("mlots", "ab20", "ab60", "hi20", "lo20", "pe_mkt", "dy_mkt", "sox", "vix", "nasdaq", "tsm", "twd"):
+    for c in ("mlots", "ab20", "ab60", "hi20", "lo20", "pe_mkt", "dy_mkt", "sox", "vix", "nasdaq", "tsm", "twd", "ab5", "ab10", "ab120", "ab240"):
         if c in ms:
             out[c] = ms[c].reindex(qdays)
     mo = getattr(P, "mkt_off", None)
@@ -346,6 +348,11 @@ def build_bundle(P: Panel, cfg: dict, log=print) -> Bundle:
     from . import market as mklib
     ms = mklib.market_series(P)
     a["Q_MKT"], meta["q_mkt_cols"] = market_pack(P, qdays, ms)             # v1.9 大盤 K 線＋市場籌碼（億元）
+    try:
+        from .env import valuation
+        meta["valuation"] = valuation(ms["pe_mkt"]) if "pe_mkt" in ms else {}     # v3.13 估值溫度（2017 年起的歷史百分位）
+    except Exception:  # noqa: BLE001
+        meta["valuation"] = {}
     try:
         meta["mkt_stats"] = mklib.history_stats(ms)
         meta["crash_stats"] = mklib.crash_stats(ms["close"], ms.get("sox"))          # v2.2 急跌後的歷史基準

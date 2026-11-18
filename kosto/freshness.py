@@ -99,6 +99,12 @@ def status(now: pd.Timestamp, last: pd.Timestamp, run: dict | None, history: lis
     due = (exp + pd.Timedelta(hours=17)).tz_localize(TZ)                  # 17:23 初版排程之後
     late_today = (pd.Timestamp(now.date()) == exp and 19 * 60 <= hm < 23 * 60 + 30 and last >= _prev_weekday(exp))
     if late_today and not (run and t is not None and t >= due and run.get("conclusion") == "success"):
+        cancelled = bool(run and t is not None and t >= due and run.get("conclusion") == "cancelled")
+        if hm >= 22 * 60 + 50:                     # v3.11：完整版約 23:00 完成；過了還沒有就明講並給「立即更新」
+            return "red", ("今天 17:23、21:40 的自動更新都還沒完成（" + ("被取消" if cancelled else "GitHub 排程延遲或被略過")
+                           + "）；23:17、00:47、06:23 的備援排程會再試，也可以按「立即更新」"), url
+        if hm >= 21 * 60 + 40:
+            return "amber", "今日初版沒有完成；21:40 完整版排隊或執行中（約 23:00 完成）", url
         return "amber", "今日初版尚未完成（GitHub 排程延遲），21:40 完整版會補上", url
     if run and t is not None and t >= due:
         if run.get("conclusion") == "success":            # 之後已成功跑過但沒有新資料 → 多半是休市（或資料源延遲）

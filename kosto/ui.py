@@ -454,6 +454,25 @@ def spark(vals, w: int = 92, h: int = 26, color: str | None = None, fill: bool =
             f"<circle cx='{xs[-1]:.1f}' cy='{ys[-1]:.1f}' r='2' fill='{c}'/></svg>")
 
 
+def steps(vals, nmax: int = 3, w: int = 150, h: int = 30) -> str:
+    """v3.13 環境判定卡的小階梯線：縱軸固定 0～nmax（站上幾條均線），中線＝拉扯；最後一點紅＝偏多、綠＝偏空。"""
+    v = [float(x) for x in (vals if vals is not None else []) if ok(x)]
+    if len(v) < 2:
+        return ""
+    n = len(v)
+    xs = np.linspace(2, w - 6, n)
+    y = lambda k: h - 3 - k / max(nmax, 1) * (h - 6)          # noqa: E731
+    pts = [f"{xs[0]:.1f},{y(v[0]):.1f}"]
+    for i in range(1, n):
+        pts += [f"{xs[i]:.1f},{y(v[i - 1]):.1f}", f"{xs[i]:.1f},{y(v[i]):.1f}"]
+    c = UP if v[-1] >= nmax / 2 + 0.01 else DOWN
+    mid = y(nmax / 2)
+    return (f"<svg width='{w}' height='{h}' viewBox='0 0 {w} {h}' style='vertical-align:middle'>"
+            f"<line x1='2' x2='{w - 6}' y1='{mid:.1f}' y2='{mid:.1f}' stroke='{FLAT}' stroke-dasharray='3 3' stroke-width='1'/>"
+            f"<polyline points='{' '.join(pts)}' fill='none' stroke='{c}' stroke-width='1.6'/>"
+            f"<circle cx='{xs[-1]:.1f}' cy='{y(v[-1]):.1f}' r='2.6' fill='{c}'/></svg>")
+
+
 _CHART_IDS = itertools.count(1)
 
 

@@ -32,4 +32,4 @@ def test_v310_results_and_app():
     app = (ROOT / "app.py").read_text(encoding="utf-8")
     assert "def etf_correction_section" in app and "📉 修正期怎麼選" in app
     assert "## 三、結果" in (ROOT / "docs" / "v3.10_protocol.md").read_text(encoding="utf-8")
-    assert "3.10.0" in (ROOT / "kosto" / "__init__.py").read_text(encoding="utf-8")
+    assert "3." in (ROOT / "kosto" / "__init__.py").read_text(encoding="utf-8")

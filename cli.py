@@ -32,9 +32,18 @@ def log(msg):
 
 
 def cmd_update(a, cfg):
-    from kosto.build import build
+    from kosto.build import build, progress
     token = os.getenv("FINMIND_TOKEN", "")
-    rep = build(cfg, a.group, token, a.budget, log=log)
+    budget = a.budget
+    try:   # v3.11：資料庫已完整＝每日增量更新 → 時間上限縮短，避免資料源卡住（重試、配額等待）拖到整晚、讓研究排不上
+        pg = float(progress(cfg)["groups"].get(a.group, 0.0))
+        cap = float(cfg["data"].get("daily_budget_min", 80))
+        if pg >= 0.97 and budget > cap:
+            log(f"{a.group} 資料庫已完整（{pg:.1%}）→ 每日增量更新，時間上限 {cap:.0f} 分鐘")
+            budget = cap
+    except Exception as e:  # noqa: BLE001
+        log(f"讀不到資料完成度（{e}），用原本的時間上限 {budget:.0f} 分鐘")
+    rep = build(cfg, a.group, token, budget, log=log)
     log(f"完成：{rep}")
 
 
@@ -125,6 +134,13 @@ def cmd_research(a, cfg):
         res["linkage_ic"] = linkage_ic(R, res)                       # v2.1 連動因子逐年有效性（監控用，不進模型）
     except Exception as e:  # noqa: BLE001
         log(f"連動因子監控略過：{e}")
+    try:
+        from kosto import watch
+        res["watch"] = watch.evaluate(R, res)                        # v3.12 觀察名單前瞻追蹤（影子模型；不影響選股）
+        for x in res["watch"]["errors"]:
+            log(f"觀察名單：{x}")
+    except Exception as e:  # noqa: BLE001
+        log(f"觀察名單前瞻追蹤略過：{e}")
     log("資料狀態：" + res["data_status"]["text"])
     comparison = None
     if a.compare:

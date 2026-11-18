@@ -301,3 +301,65 @@ def lots(amount: float, price: float) -> tuple[int, int]:
         return 0, 0
     sh = int(amount // price)
     return sh // 1000, sh % 1000
+
+
+# ------------------------------------------------------------------ v3.11 個股診斷：空手／持有的處理建議
+HOLD_STYLE = {"add": "#2563eb", "hold": "#5b21b6", "trim": "#d97706", "sell": "#dc2626", "own": "#6b7280"}
+
+
+def entry_advice(code: str, plan: Plan | None) -> str:
+    """空手者：依 live_status 代碼給一句具體做法（價位取自交易計畫）。"""
+    if plan is None:
+        return "沒有報價或技術資料，先不動作。"
+    p = lambda x: f"{x:,.2f}".rstrip("0").rstrip(".")          # noqa: E731
+    return {"buy": f"可分批進場：買進區 {p(plan.buy_low)}～{p(plan.buy_high)}，高於 {p(plan.chase)} 不追。",
+            "dip": f"回到拉回買點（{p(plan.buy_low)} 以下）：可以承接，分 2～3 批。",
+            "wait": f"已高於追價上限 {p(plan.chase)}：不追，等拉回 {p(plan.buy_low)}～{p(plan.buy_high)}。",
+            "warn": f"跌破警戒價 {p(plan.alert)}：空手先不買，等站回警戒價之上、或止跌訊號出現。",
+            "lock": "漲停鎖住：買不到不追，明天再看。",
+            "hold": "模型在續抱門檻內但不是推薦名單：空手不新買，等它進入推薦名單。",
+            "none": "模型沒有推薦：空手不建議新買。"}.get(code, "先觀察。")
+
+
+def holding_advice(px: float, cost: float, plan: Plan | None, model: str, entry_code: str = "") -> tuple[str, str, list[str]]:
+    """持有者：model＝pick（推薦中）／keep（續抱門檻內）／out（跌出門檻或風控排除）／na（不在選股範圍）。
+    第一層照模型規則（回測驗證過：排名在門檻內續抱、跌出門檻在檢查日換股；機械式停損在 v1.1 測試中拖累績效）；
+    第二層是資金控管提醒（成本、損益、警戒價；未經回測，只是紀律）。回傳（代碼, 標題, 說明）。"""
+    p = lambda x: f"{x:,.2f}".rstrip("0").rstrip(".")          # noqa: E731
+    pnl = px / cost - 1 if (np.isfinite(_f(cost)) and cost > 0 and np.isfinite(_f(px))) else np.nan
+    below = plan is not None and np.isfinite(_f(px)) and px <= plan.alert
+    notes = []
+    if model in ("pick", "keep"):
+        code, head = "hold", "續抱"
+        notes.append("模型排名仍在續抱門檻內 → 照模型規則續抱，等下次檢查日再看排名。")
+        if model == "pick" and entry_code in ("buy", "dip") and not below:
+            code, head = "add", "續抱，可在買進區小量加碼"
+            notes.append(f"模型推薦中、現價在買進區：要加碼就在 {p(plan.buy_low)}～{p(plan.buy_high)} 分批，單檔不要超過資金的 15%。")
+    elif model == "out":
+        code, head = "sell", "下次檢查日換股"
+        notes.append("模型排名已跌出續抱門檻（或被風控排除）→ 照模型規則在下次檢查日賣出、換成名單內的股票；不要攤平。")
+    else:
+        code, head = "own", "非模型標的，照自己的紀律"
+        notes.append("成交量或規模不在模型選股範圍，模型不評分；建議依自己的停損停利紀律處理，或換成名單內的股票。")
+    if below:
+        notes.append(f"已跌破警戒價 {p(plan.alert)}：短期轉弱。模型回測不設停損（停損反而拖累績效），"
+                     + ("仍在門檻內可續抱，但不要加碼；部位比計畫重的，先減回正常比例。" if model in ("pick", "keep")
+                        else "已跌出門檻的這檔優先處理。"))
+        if code == "hold":
+            code, head = "trim", "續抱但不加碼（跌破警戒）"
+    if np.isfinite(pnl):
+        if pnl >= 0.295:
+            notes.append(f"目前獲利 {pnl:+.0%}：" + ("模型轉弱，可先賣一半鎖住獲利。" if model in ("out", "na")
+                                                   else f"續抱，可把心理停利線設在 {p(max(cost, plan.alert) if plan else cost)}（不讓大賺變小賺）。"))
+            if model in ("out", "na"):
+                code, head = "trim", "分批停利"
+        elif pnl <= -0.195:
+            notes.append(f"目前虧損 {pnl:+.0%}：" + ("模型也轉弱 → 停損換股，不要攤平。" if model in ("out", "na")
+                                                   else "模型仍看好，但虧損已大：不加碼，確認單檔部位在資金的 10%～15% 以內。"))
+            if model in ("out", "na"):
+                code, head = "sell", "停損換股"
+        elif pnl <= -0.095:
+            notes.append(f"目前虧損 {pnl:+.0%}：" + ("模型轉弱，換股時一併處理，不攤平。" if model in ("out", "na") else "模型仍看好，續抱但不要攤平。"))
+        else:
+            notes.append(f"目前損益 {pnl:+.0%}：在正常波動範圍內。")
+    return code, head, notes

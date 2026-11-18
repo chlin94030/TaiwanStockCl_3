@@ -187,7 +187,8 @@ class Research:
         hz = v.label_h or h
         key = (rule, size, h, hz, v.mode, round(v.lam, 4), tuple(sorted(self.cfg["horizons"][hz]["family_prior"].items())),
                r0["n0_shrink"], r0["max_factor_weight"], self._excl(v), v.k, v.tmin, v.kK, v.lamK, v.anchor, v.growth_blend,
-               v.hyp_blend, v.hypothesis, repr(sorted((r0.get("momentum_guard") or {}).items())))
+               v.hyp_blend, v.hypothesis, repr(sorted((r0.get("momentum_guard") or {}).items())),
+               repr(sorted((r0.get("overlay") or {}).items())))      # v3.12：快取鍵加入固定疊加設定（同一次執行改疊加比例時不會拿到舊權重）
         if key in self._sched:
             return self._sched[key]
         if len(self._sched) > 64:

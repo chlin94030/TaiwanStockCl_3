@@ -50,6 +50,8 @@ def market_series(P) -> pd.DataFrame:
     ma60 = px.rolling(60, min_periods=40).mean()
     out["ab20"] = ((px > ma20) & valid).sum(axis=1) / n
     out["ab60"] = ((px > ma60) & valid).sum(axis=1) / n
+    from .env import ma_breadth                                   # v3.13 站上 5／10／120／240 日線比例（20、60 日沿用上面）
+    out = out.join(ma_breadth(px, valid, (5, 10, 120, 240)))
     out["hi20"] = ((px >= px.rolling(20, min_periods=15).max()) & valid).sum(axis=1)
     out["lo20"] = ((px <= px.rolling(20, min_periods=15).min()) & valid).sum(axis=1)
     if "mcap" in P.m and "pe" in P.m:

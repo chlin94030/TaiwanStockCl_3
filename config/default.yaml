@@ -20,6 +20,7 @@ data:
     shares: [official, finmind]
     revenue: [official, finmind]
   finmind_hourly_quota: 550   # 免費 token 每小時 600 次，保留緩衝
+  daily_budget_min: 80        # v3.11：資料庫完整後，每天每組資料的更新時間上限（分鐘）；21:40 等融資券最多到 22:45
   # v2.0 ETF 與上市官方大盤合計（misc 群組；只用在 ETF 頁與市場解讀頁，不進選股模型）
   etf_years: 6               # ETF 行情回補年數（最新日優先）
   etf_minutes: 25            # 每晚 ETF 回補最多分鐘數（約 4 個晚上補滿）
@@ -84,6 +85,8 @@ research:
     f_rev_rel: 0.15                    #   營收年增相對同業：中線 +1.6pp／資訊比率 +0.02、長線 +8.0pp、短線 −0.8pp（容許 1pp 內）
                                        # v3.5 測過「風險調整動能 t_rmom240」15%：開發期過門檻，但最近 12 個月 25 格全部落後、
                                        #   2021–2026 整段樣本外平均 −0.6pp → 不採用（docs/v3.5_protocol.md）；因子照常計算、列在 inactive_factors
+                                       # v3.12 重測 v1.9 的「營收驚喜 f_rev_surprise」15%（三期間／中長線）：中線 +1.2pp、回撤深 2.6 → 不採用；
+                                       #   長線單獨很一致（+3.9pp、回撤淺 3.3）→ 列入觀察名單前瞻追蹤（kosto/watch.py，docs/v3.12_protocol.md）
   momentum_guard:                      # v2.2 研究候選（docs/v2.2_crash_protocol.md）：急跌時動能因子權重減半；未通過門檻 → 關閉
     enabled: false
     factors: [t_rs120, t_mom120x20, t_high252]
@@ -123,7 +126,7 @@ horizons:
     label: 短線(5日)
     # v1.5 短線重建「快調慢α」：舊短線用 5 日籌碼/反轉訊號，扣成本前其實有 +6%/年，但每週換 55% 持股、成本吃掉 20%/年。
     # 5 日 IC 最高的其實是慢變因子（殖利率、本益比、營收創新高、低波動）；5 日籌碼/技術因子的 IC 多為負或不顯著。
-    # 作法：用中線標籤估計的慢α權重（label_horizon: mid）每 5 日重新檢視、只換掉跌出前 25 名的股票（續抱 2.5 倍）
+    # 作法：用中線標籤估計的慢α權重（label_horizon: mid）每 5 日重新檢視、只換掉跌出前 20 名的股票（續抱 2.5 × 8 檔）
     # → 每次換手 55%→22%、成本拖累約 20%→7%/年。代價：與中線名單平均重疊約 8 成（兩者擇一操作）。
     # 想回到舊短線：刪掉 label_horizon，model 改 {mode: opt, lam: 0.40, exposure: soft}、hysteresis 1.5（不建議）。
     model: {mode: sparse, k: 5, tmin: 2.0, growth_blend: 0.3, exposure: none, hyp_blend: 0.5,
@@ -153,8 +156,9 @@ horizons:
     label: 長線(60日)
     # v1.3：精簡6因子＋30% 趨勢錨（5 個母池 IR 全進步）；成長動能假說在 2019-20 未用期間退步 → 未採用（報告列為對照）
     # v1.4：v1.3 模型 50% ＋ V24 PRICE_ALPHA_5_LEADERS 50%（報酬較高但回撤較深；保守者可把 hyp_blend 改 0 回到 v1.3）
+    # v3.12 重測 hyp_blend 0：開發期最大回撤 −45%→約 −26%，但年化超額少 8 個百分點、盲測期少約 50 個百分點 → 以獲利為目標維持 0.5
     model: {mode: sparse, k: 6, tmin: 1.0, anchor: 0.3, exposure: soft, hyp_blend: 0.5, hypothesis: PRICE_ALPHA_5_LEADERS}
-    weighting: rank                    # 名次加權（第1名 1.5 倍 → 第10名 0.5 倍），4 個參考母池前後半段都進步
+    weighting: rank                    # 名次加權（第1名 1.5 倍 → 最後一名（第 8 名）0.5 倍；v1.2 採用：4 個參考母池前後半段都進步）
     residual: bench                    # 市場階段減碼的資金改放 0050
     family_prior: {T: 0.15, C: 0.20, F: 0.25, K: 0.40}
     hysteresis: 2.5
