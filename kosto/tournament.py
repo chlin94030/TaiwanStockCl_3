@@ -9,6 +9,9 @@
     理由：v1.4→v1.7→v1.9 每一步都「多一點報酬、深一點回撤」，長線開發期最大回撤由 −39% 累積到 −45%，
     已超過「最大回撤比 0050 多不超過 10pp」的驗收閘門；自動晉級不能再單向往高風險方向走。
   * 同一個挑戰者連續 streak 個交易日都是第一名才換上；兩次換上至少間隔 cooldown 個交易日。
+  * v3.15 三級晉級（第二、三份評審）：連續領先 streak 天只代表「在同一份開發資料上比較好」，所以先進「前瞻觀察」；
+    標記日之後的新資料上，挑戰者累積報酬不低於冠軍、且滿 research.auto_forward_days（60）個交易日才換上，落後就退回。
+    research.auto_forward_days: 0 ＝回到舊規則（直接換上）；research.auto_reset: true ＝一鍵回到設定檔模型。
 """
 from __future__ import annotations
 
@@ -75,18 +78,38 @@ def variant_of(R, h: str, p: dict):
     return v
 
 
-def evaluate(R, res: dict, cfg_eff: dict, phase: int, presample: bool = False) -> list[dict]:
-    """在一個研究資料包（一種換股日）上評估每個期間的冠軍與挑戰者（母池用當天每日研究選定的母池）。"""
+def forward_since(nav: pd.Series, since) -> tuple[float, int]:
+    """標記日（含）之後的累積報酬與交易日數（以標記日前一個交易日收盤為基準）。"""
+    if nav is None or not len(nav) or not since:
+        return np.nan, 0
+    k = int(nav.index.searchsorted(pd.Timestamp(since)))
+    if k >= len(nav):
+        return np.nan, 0
+    base = nav.iloc[k - 1] if k > 0 else nav.iloc[0]
+    return float(nav.iloc[-1] / base - 1), int(len(nav) - k)
+
+
+def evaluate(R, res: dict, cfg_eff: dict, phase: int, presample: bool = False, observe: dict | None = None) -> list[dict]:
+    """在一個研究資料包（一種換股日）上評估每個期間的冠軍與挑戰者（母池用當天每日研究選定的母池）。
+    observe＝前瞻觀察中的挑戰者 {h: {"key", "since"}}：冠軍與該挑戰者另外記下標記日之後的累積報酬（v3.15）。"""
     rows = []
     for h, hb in res["horizons"].items():
         rule, size = hb["chosen_pool"]["rule"], int(hb["chosen_pool"]["size"])
         champ = base_params(cfg_eff, h)
+        ob = (observe or {}).get(h) or {}
         for p in [champ] + challengers(champ):
             v = variant_of(R, h, p)
-            e = R.evaluate(rule, size, h, v)
+            track = bool(ob) and key(p) in (ob.get("key"), key(champ))
+            e = R.evaluate(rule, size, h, v, keep=track)
+            fwd = (np.nan, 0)
+            if track:
+                r_ = e.pop("_res", None)
+                e.pop("_hist", None)
+                e.pop("_W", None)
+                fwd = forward_since(getattr(r_, "nav", None), ob.get("since"))
             row = {"phase": phase, "h": h, "key": key(p), "params": p, "champion": key(p) == key(champ),
                    "dev_excess": e.get("dev_excess_cagr"), "dev_ir": e.get("dev_info_ratio"), "dev_cagr": e.get("dev_cagr"),
-                   "dev_mdd": e.get("dev_mdd"), "hold_cagr": e.get("hold_cagr")}
+                   "dev_mdd": e.get("dev_mdd"), "hold_cagr": e.get("hold_cagr"), "fwd_ret": fwd[0], "fwd_days": fwd[1]}
             if presample:
                 try:
                     ps = R.presample(h, rule, size, v)
@@ -110,6 +133,8 @@ def update(prev: dict | None, rows: list[dict], res: dict, cfg: dict, cfg_eff: d
     need = int(rcfg.get("auto_streak", 10))
     cool = int(rcfg.get("auto_cooldown", 20))
     mdd_tol = rcfg.get("auto_max_mdd_worse", 0.02)               # None＝不檢查回撤（v1.9 原規則）
+    fwd_need = int(rcfg.get("auto_forward_days", 0) or 0)          # v3.15 前瞻觀察天數（0＝直接換上）
+    st.setdefault("observe", {})
     today = res["protocol"]["last_date"]
     same_day = (prev or {}).get("updated") == today          # 同一資料日重跑（備援排程、上傳程式觸發）→ 連續天數不重複累加
     t = pd.DataFrame(rows)
@@ -164,15 +189,43 @@ def update(prev: dict | None, rows: list[dict], res: dict, cfg: dict, cfg_eff: d
         days_since = int(np.busday_count(pd.Timestamp(last).date(), pd.Timestamp(today).date())) if last else 10 ** 6
         ld = st["leader"].get(h) or {}
         if on and ld and ld["streak"] >= need and days_since >= cool:
-            st["log"].append({"date": today, "h": h, "from": champ, "to": ld["params"], "d_excess": ld["d_excess"],
-                              "text": describe(ld["params"], champ)})
-            st["champions"][h] = ld["params"]
-            st["last_switch"][h] = today
-            st["leader"][h] = {}
+            if fwd_need > 0:                                       # v3.15：先進前瞻觀察，不直接換上
+                ob = st["observe"].get(h) or {}
+                if ob.get("key") != ld["key"]:
+                    st["observe"][h] = {"key": ld["key"], "params": ld["params"], "since": today, "d_excess": ld["d_excess"],
+                                        "fwd_diff": None, "fwd_days": 0}
+                    st["log"].append({"date": today, "h": h, "event": "observe", "from": champ, "to": ld["params"],
+                                      "d_excess": ld["d_excess"], "text": "進入前瞻觀察：" + describe(ld["params"], champ)})
+                st["leader"][h] = {}
+            else:
+                st["log"].append({"date": today, "h": h, "event": "promote", "from": champ, "to": ld["params"], "d_excess": ld["d_excess"],
+                                  "text": describe(ld["params"], champ)})
+                st["champions"][h] = ld["params"]
+                st["last_switch"][h] = today
+                st["leader"][h] = {}
+        ob = st["observe"].get(h)
+        if ob and "fwd_ret" in tt:
+            fw = tt[tt["key"].isin([ob["key"], ck]) & tt["fwd_ret"].notna()]
+            gk = fw.groupby("key").agg(fwd_ret=("fwd_ret", "mean"), fwd_days=("fwd_days", "max")) if len(fw) else None
+            if gk is not None and ob["key"] in gk.index and ck in gk.index:
+                ob["fwd_diff"] = float(gk.loc[ob["key"], "fwd_ret"] - gk.loc[ck, "fwd_ret"])
+                ob["fwd_days"] = int(gk.loc[ob["key"], "fwd_days"])
+                if on and ob["fwd_days"] >= fwd_need:
+                    if ob["fwd_diff"] >= 0:
+                        st["log"].append({"date": today, "h": h, "event": "promote", "from": champ, "to": ob["params"],
+                                          "d_excess": ob["d_excess"], "text": f"前瞻 {ob['fwd_days']} 天領先 {ob['fwd_diff']:+.1%} → 換上："
+                                          + describe(ob["params"], champ)})
+                        st["champions"][h] = ob["params"]
+                        st["last_switch"][h] = today
+                    else:
+                        st["log"].append({"date": today, "h": h, "event": "drop", "from": champ, "to": ob["params"],
+                                          "d_excess": ob["d_excess"], "text": f"前瞻 {ob['fwd_days']} 天落後 {ob['fwd_diff']:+.1%} → 不換："
+                                          + describe(ob["params"], champ)})
+                    st["observe"].pop(h, None)
         table[h] = g.drop(columns=["params"]).assign(desc=[describe(p_, champ) for p_ in g["params"]]).reset_index()
     st["table"] = table
     st["enabled"] = on
-    st["rule"] = {"min_gain": min_gain, "streak": need, "cooldown": cool, "max_mdd_worse": mdd_tol}
+    st["rule"] = {"min_gain": min_gain, "streak": need, "cooldown": cool, "max_mdd_worse": mdd_tol, "forward_days": fwd_need}
     st["updated"] = today
     return st
 

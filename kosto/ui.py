@@ -421,6 +421,16 @@ def kv(rows) -> str:
     return "".join(f"<div class='kq-kv'><span class='kq-muted'>{esc(a)}</span><span class='kq-mono'>{b}</span></div>" for a, b in rows)
 
 
+EVIDENCE = {"tested": ("已回測", "#15803d"), "ref": ("僅供參考・未回測", "#64748b"), "observe": ("前瞻觀察中", "#a16207")}
+
+
+def evidence(kind: str) -> str:
+    """v3.15 證據等級徽章（第三份評審）：tested＝已回測的核心訊號；ref＝僅供參考、未經回測；observe＝前瞻觀察中。"""
+    lab, col = EVIDENCE.get(kind, EVIDENCE["ref"])
+    return (f"<span class='kq-ev' style='display:inline-block;border:1px solid {col};color:{col};border-radius:4px;"
+            f"padding:0 4px;font-size:10.5px;line-height:1.5;margin-left:4px;vertical-align:middle;font-weight:500'>{lab}</span>")
+
+
 def section(title, sub="") -> str:
     return f"<div class='kq-h'><span class='t'>{esc(title)}</span><span class='s'>{sub}</span></div>"
 

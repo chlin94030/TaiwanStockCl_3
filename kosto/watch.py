@@ -29,7 +29,10 @@ ITEMS = [
      "why": "v2.2 C3；v3.12 回撤淺 1～4，長線整段樣本外 −1.02（門檻 −1.0）"},
     {"key": "W4", "hz": ("mid",), "kind": "balanced", "name": "急跌時中線加券資比 15%",
      "why": "v2.3 S2：回撤淺 4.7、超額 −0.3；需要新的急跌事件"},
+    {"key": "W5", "hz": ("short", "mid", "long"), "kind": "return", "name": "產業調整後動能（動能權重一半）",
+     "why": "v3.15 N3（第二份評審策略 B）：歷史門檻全過（中線 +2.1、5/5 換股日、三期間回撤都較淺），多重檢定 q=0.31 未過"},
 ]
+SPLIT = {"enabled": True, "to": "t_mom_secrel", "from": ["t_rs120", "t_mom120x20"], "share": 0.5}
 KIND_ZH = {"return": "報酬型", "balanced": "平衡型"}
 RULE = {"return": "累積報酬高於現行，且最大回撤不深於 2 個百分點",
         "balanced": "最大回撤淺 ≥ 2 個百分點，且累積報酬少不超過 2 個百分點"}
@@ -81,6 +84,10 @@ def variant(R, key: str, h: str, rule: str, size: int, v, W: list, spec):
         return [None if w is None else (0.85 * _norm(w) + 0.15 * chips).astype(np.float32) for w in W], spec
     if key == "W3":
         return W, dataclasses.replace(spec, max_per_sector=3)
+    if key == "W5":
+        if "t_mom_secrel" not in F:
+            return None
+        return [R.split_momentum(w, SPLIT) for w in W], spec
     if key == "W4":
         if "c_short_ratio" not in F:
             return None

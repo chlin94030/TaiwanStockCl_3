@@ -192,8 +192,11 @@ def test_v19_tournament_rules():
         st = T.update(st, rows(0.03), res, cfg, T.apply(cfg, st.get("champions")))
     assert st["leader"]["mid"]["streak"] == 9 and T.key(st["champions"]["mid"]) == T.key(champ)
     res["protocol"]["last_date"] = "2026-11-13"
+    old_rule = {**cfg, "research": {**cfg["research"], "auto_forward_days": 0}}
+    st_old = T.update(st, rows(0.03), res, old_rule, T.apply(cfg, st.get("champions")))
+    assert T.key(st_old["champions"]["mid"]) == T.key(better) and st_old["log"][-1]["h"] == "mid"   # 舊規則：第 10 天換上
     st = T.update(st, rows(0.03), res, cfg, T.apply(cfg, st.get("champions")))
-    assert T.key(st["champions"]["mid"]) == T.key(better) and st["log"][-1]["h"] == "mid"       # 第 10 天換上
+    assert T.key(st["champions"]["mid"]) == T.key(champ) and st["observe"]["mid"]["key"] == T.key(better)   # v3.15：先前瞻觀察
     st2 = T.update({}, rows(0.01), res, cfg, cfg)                                                # 差距不足 → 不算領先
     assert not st2["leader"]["mid"]
 

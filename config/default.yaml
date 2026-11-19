@@ -68,6 +68,8 @@ research:
   auto_min_gain: 0.02                  # 開發期五種換股日平均超額至少多 2 個百分點
   auto_streak: 10                      # 連續 10 個交易日都是第一名
   auto_cooldown: 20                    # 兩次換模型至少間隔 20 個交易日
+  auto_forward_days: 60                # v3.15 三級晉級：連續領先後先「前瞻觀察」60 個交易日，新資料上不輸冠軍才換上（0＝舊規則直接換）
+  auto_reset: false                    # v3.15 一鍵回復：true＝清除自動晉級的冠軍，回到本設定檔的模型
   auto_max_mdd_worse: 0.02             # v2.4 風險護欄：挑戰者開發期最大回撤不可比冠軍深超過 2 個百分點（null＝不檢查）
   lock_model: true                     # v1.3：使用設定檔指定的模型（多窗口「不退步原則」決定），不再只看開發期自動挑
   sparse_exclude: [t_lowidio]          # 只給成長動能假說使用、不讓精簡模型自己挑的因子
@@ -81,7 +83,9 @@ research:
                      # v3.5 風險調整動能：測試未採用（照常計算供觀察）
                      t_rmom240,
                      # v3.9 前瞻基本面（三率三升代理、獲利上修、成長合理價）：測試未採用（照常計算，研究室因子表可看 IC）
-                     f_margin_chg, f_eps_rev, f_garp]
+                     f_margin_chg, f_eps_rev, f_garp,
+                     # v3.15 產業調整後動能：只透過 momentum_split 使用（目前前瞻觀察中）
+                     t_mom_secrel]
   overlay:                             # v1.9 研究唯一通過門檻者：以固定 15% 權重加入三個期間的分數（其餘 85% 為原模型）
     f_rev_rel: 0.15                    #   營收年增相對同業：中線 +1.6pp／資訊比率 +0.02、長線 +8.0pp、短線 −0.8pp（容許 1pp 內）
                                        # v3.14（同儕評審 3.1）：「同業」改用官方產業別（原為 2026 年整理的產業鏈族群，有前視風險）；
@@ -90,6 +94,11 @@ research:
                                        #   2021–2026 整段樣本外平均 −0.6pp → 不採用（docs/v3.5_protocol.md）；因子照常計算、列在 inactive_factors
                                        # v3.12 重測 v1.9 的「營收驚喜 f_rev_surprise」15%（三期間／中長線）：中線 +1.2pp、回撤深 2.6 → 不採用；
                                        #   長線單獨很一致（+3.9pp、回撤淺 3.3）→ 列入觀察名單前瞻追蹤（kosto/watch.py，docs/v3.12_protocol.md）
+  momentum_split:                      # v3.15 N3（第二份評審策略 B，docs/v3.15_protocol.md）：相對強度與中期動能各一半權重改放「產業調整後動能」
+    enabled: false                     #   歷史門檻全過（中線 +2.1pp、IR +0.06、5/5 換股日與 3/3 母池為正、三期間回撤都較淺、整段都較好），
+    to: t_mom_secrel                   #   但多重檢定 q=0.31 > 0.10 → 依預先宣告先進「前瞻觀察」（觀察名單 W5），滿 120 個交易日前瞻支持才改 true
+    from: [t_rs120, t_mom120x20]
+    share: 0.5
   momentum_guard:                      # v2.2 研究候選（docs/v2.2_crash_protocol.md）：急跌時動能因子權重減半；未通過門檻 → 關閉
     enabled: false
     factors: [t_rs120, t_mom120x20, t_high252]

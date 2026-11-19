@@ -101,6 +101,9 @@ def cmd_research(a, cfg):
     from kosto.research import Research
     B = Bundle.load(a.bundle)
     prev = {} if a.quick else load_prev_auto()
+    if cfg["research"].get("auto_reset") and (prev.get("champions") or prev.get("observe")):
+        log("research.auto_reset：回到設定檔模型（清除自動晉級的冠軍與前瞻觀察）")   # v3.15 一鍵回復
+        prev = {**prev, "champions": {}, "observe": {}, "leader": {}}
     cfg_eff = T.apply(cfg, prev.get("champions"))
     if prev.get("champions"):
         log("使用自動晉級後的模型：" + "；".join(f"{h} {T.describe(p)}" for h, p in prev["champions"].items()))
@@ -114,11 +117,11 @@ def cmd_research(a, cfg):
         rows = []
         log("冠軍／挑戰者比較：目前資料包…")
         try:
-            rows += T.evaluate(R, res, cfg_eff, 0, presample=True)
+            rows += T.evaluate(R, res, cfg_eff, 0, presample=True, observe=prev.get("observe"))
         except Exception as e:  # noqa: BLE001
             log(f"冠軍／挑戰者比較失敗：{e}")
         log("換股日敏感度＋冠軍／挑戰者：重建 4 個平移起點的研究資料包（約 10～20 分鐘）…")
-        res["phases"] = phase_check(cfg_eff, res, log=log, on_bundle=lambda Rk, k: rows.extend(T.evaluate(Rk, res, cfg_eff, k)))
+        res["phases"] = phase_check(cfg_eff, res, log=log, on_bundle=lambda Rk, k: rows.extend(T.evaluate(Rk, res, cfg_eff, k, observe=prev.get("observe"))))
         if rows:
             auto = T.update(prev, rows, res, cfg, cfg_eff)
             for h, ld in (auto.get("leader") or {}).items():
@@ -126,7 +129,8 @@ def cmd_research(a, cfg):
                     log(f"{h} 領先挑戰者：{T.describe(ld['params'], T.base_params(cfg_eff, h))}（+{ld['d_excess']:.1%}，連續 {ld['streak']} 天）")
             for x in auto.get("log", []):
                 if x["date"] == res["protocol"]["last_date"]:
-                    log(f"★ {x['h']} 自動換上新模型（明天起生效）：{x['text']}")
+                    ev = x.get("event", "promote")
+                    log((f"★ {x['h']} 自動換上新模型（明天起生效）：" if ev == "promote" else f"☆ {x['h']} ") + x["text"])
     res["auto"] = T.log_picks(auto, res)
     res["auto"]["pools"] = T.pool_state(prev.get("pools"), res)        # v2.4 母池沿用狀態（隔天讀回）
     res["data_status"] = data_status(B, res)
@@ -138,6 +142,14 @@ def cmd_research(a, cfg):
         log(f"快照 {res['snapshot']['id']}（第 {res['auto']['snapshots'][-1]['seq']} 版）" + ("" if ok else f"｜⚠ 雜湊鏈在第 {bad} 筆斷開"))
     except Exception as e:  # noqa: BLE001
         log(f"快照略過：{e}")
+    try:                                                              # v3.15 更新後自動異常診斷（只警告，不改名單）
+        from kosto import diagnose, forward
+        res["diagnostics"] = diagnose.run(res, res["auto"].get("picks_log"), prev.get("pools"),
+                                          forward.summary(B, res["auto"].get("picks_log") or []))
+        for x in res["diagnostics"]:
+            log(("⚠ " if x["level"] == "warn" else "") + "診斷：" + x["text"])
+    except Exception as e:  # noqa: BLE001
+        log(f"異常診斷略過：{e}")
     try:
         res["linkage_ic"] = linkage_ic(R, res)                       # v2.1 連動因子逐年有效性（監控用，不進模型）
     except Exception as e:  # noqa: BLE001

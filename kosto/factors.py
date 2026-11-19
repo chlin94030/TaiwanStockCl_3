@@ -501,6 +501,13 @@ def _sector_rel(c, x: pd.DataFrame) -> pd.DataFrame:
 def _f_rev_rel(c): return _sector_rel(c, _rev(c, lambda r: _yoy(r, 3), "rev_yoy3"))
 
 
+@factor("t_mom_secrel", "T", 1, ("mid", "long"), "產業調整後動能(120日扣近20日，減同產業中位數)")
+def _t_mom_secrel(c):
+    """v3.15 N3（第二份評審策略 B）：中期動能減去同官方產業別（≥5 檔）的當日中位數；不進稀疏模型，
+    由 research.momentum_split 把相對強度與中期動能的一部分權重移過來（docs/v3.15_protocol.md）。"""
+    return _sector_rel(c, c.mom(120, 20).astype(float))
+
+
 @factor("c_trust60", "C", 1, ("mid", "long"), "投信60日累計買超(占股本)")
 def _c_trust60(c): return c.rsum("trust", 60) / c.shares
 

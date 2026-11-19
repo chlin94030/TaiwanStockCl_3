@@ -188,7 +188,8 @@ class Research:
         key = (rule, size, h, hz, v.mode, round(v.lam, 4), tuple(sorted(self.cfg["horizons"][hz]["family_prior"].items())),
                r0["n0_shrink"], r0["max_factor_weight"], self._excl(v), v.k, v.tmin, v.kK, v.lamK, v.anchor, v.growth_blend,
                v.hyp_blend, v.hypothesis, repr(sorted((r0.get("momentum_guard") or {}).items())),
-               repr(sorted((r0.get("overlay") or {}).items())))      # v3.12：快取鍵加入固定疊加設定（同一次執行改疊加比例時不會拿到舊權重）
+               repr(sorted((r0.get("overlay") or {}).items())),      # v3.12：快取鍵加入固定疊加設定（同一次執行改疊加比例時不會拿到舊權重）
+               repr(sorted((r0.get("momentum_split") or {}).items())))   # v3.15：產業調整後動能
         if key in self._sched:
             return self._sched[key]
         if len(self._sched) > 64:
@@ -255,8 +256,12 @@ class Research:
         新權重 = (1 − Σs) × 原權重(|w| 總和歸一) + Σ s_f × 方向_f；消融時被排除的因子不疊加。"""
         ov = {f: float(s_) for f, s_ in (self.cfg["research"].get("overlay") or {}).items()
               if f in self.B.factors and f not in v.exclude and s_}
-        if not ov or fit.weights is None:
+        if fit.weights is None:
             return fit
+        if not ov:
+            if not (self.cfg["research"].get("momentum_split") or {}).get("enabled"):
+                return fit
+            return replace(fit, weights=self.split_momentum(np.asarray(fit.weights, dtype=float)).astype(np.asarray(fit.weights).dtype))
         w = np.asarray(fit.weights, dtype=float)
         tot = sum(ov.values())
         w = (1 - tot) * w / max(np.abs(w).sum(), 1e-12)
@@ -269,7 +274,29 @@ class Research:
         fam = {k: float(a[[i for i, f_ in enumerate(fams) if f_ == k]].sum() / max(a.sum(), 1e-12))
                for k in ("T", "C", "F", "K") if k in fams} if len(fams) == len(w) else fit.family
         fam = {k: v_ for k, v_ in fam.items() if v_ > 1e-9} if isinstance(fam, dict) else fam
+        w = self.split_momentum(w)
+        a = np.abs(w)
+        if len(fams) == len(w):
+            fam = {k: float(a[[i for i, f_ in enumerate(fams) if f_ == k]].sum() / max(a.sum(), 1e-12)) for k in ("T", "C", "F", "K") if k in fams}
+            fam = {k: v_ for k, v_ in fam.items() if v_ > 1e-9}
         return replace(fit, weights=w.astype(np.asarray(fit.weights).dtype), family=fam)
+
+    def split_momentum(self, w, ms: dict | None = None):
+        """v3.15 N3（第二份評審策略 B）：把 from 因子（相對強度、中期動能）權重的 share 比例移到產業調整後動能 to。
+        設定 research.momentum_split（enabled 才生效；觀察名單 W5 直接傳入 ms 做影子模型）。"""
+        ms = ms if ms is not None else (self.cfg["research"].get("momentum_split") or {})
+        if w is None or not ms.get("enabled") or ms.get("to") not in self.B.factors:
+            return w
+        F = list(self.B.factors)
+        w2 = np.array(w, dtype=float, copy=True)
+        sh = float(ms.get("share", 0.5))
+        moved = 0.0
+        for f in ms.get("from") or ["t_rs120", "t_mom120x20"]:
+            if f in F:
+                moved += sh * w2[F.index(f)]
+                w2[F.index(f)] *= (1 - sh)
+        w2[F.index(ms["to"])] += moved
+        return w2.astype(np.asarray(w).dtype)
 
     def _sp(self, v: Variant) -> dict:
         return {"k": v.k, "tmin": v.tmin, "kK": v.kK, "lamK": v.lamK, "anchor": v.anchor,
@@ -516,7 +543,10 @@ class Research:
                     "kept": j in prev, "w_support": bool(B.a["WSUP"][i, j]),
                     "reasons": [f"{factor_phrase(B, f, Z[k][f])}(+{contrib[f]:.3f})" for f in top if contrib[f] > 0],
                     "risk": [f"{factor_phrase(B, f, Z[k][f])}({contrib[f]:.3f})" for f in neg if contrib[f] < 0],
-                    "stop_price": alert if alert is not None else (_tick_down(close * (1 - stop)) if stop else None)}
+                    "stop_price": alert if alert is not None else (_tick_down(close * (1 - stop)) if stop else None),
+                    # v3.15（評審二 2.8）：有權重（≥3%）卻缺值的因子——缺值在排名裡被當成中性，要讓使用者看得到
+                    "missing": [fz[f] for f in np.argsort(-np.abs(fit.weights))[:12]
+                                if abs(fit.weights[f]) >= 0.03 and Z[k][f] == 0]}
 
         blocked = []
         top_all = idx[np.argsort(-(Z @ fit.weights))][:30] if len(idx) else []

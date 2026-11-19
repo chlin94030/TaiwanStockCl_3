@@ -1207,7 +1207,7 @@ def pick_items(h, lt) -> list[dict]:
         j = TIDX[t]
         close, ch = last_close(j)
         out.append({"n": n, "t": t, "j": j, "close": close, "ch": ch, "pl": plan_of(j, h), "cs": chips(BID, j) if HAS_Q else {},
-                    "kept": bool(p.get("kept") or (t in prev)),
+                    "kept": bool(p.get("kept") or (t in prev)), "missing": list(p.get("missing") or []),
                     "reasons": "、".join(clean_reason(x) for x in p.get("reasons", [])[:3])})
     ws = planlib.stock_weights(len(out), h, CFG0["horizons"][h].get("weighting"))        # v3.0 名次加權：與回測相同的資金比重
     for it, w_ in zip(out, ws):
@@ -1252,8 +1252,11 @@ def pick_card(it, mode: str = "m3", d=None, q=None) -> str:
     lad = ui.ladder(px, pl.buy_low, pl.buy_high, pl.chase, pl.alert, compact=True) if pl else ""
     # v3.14（同儕評審第 5 章）：「模型排名」（值不值得買）與「價格適合度」（現在這個價位適不適合進場）分開標示
     _, fit_txt, fit_col = planlib.price_fit(px, pl, px if bq.get("lock") == "up" else np.nan)
-    lad += (f"<div class='kq-fit' style='font-size:12px;margin:2px 0 4px'><span class='kq-sub'>模型排名</span> <b>第 {it['n']} 名</b>"
-            f"<span class='kq-sub'>｜價格適合度</span> <b style='color:{fit_col}'>{ui.esc(fit_txt)}</b></div>")
+    lad += (f"<div class='kq-fit' style='font-size:12px;margin:2px 0 4px'><span class='kq-sub'>模型排名</span> <b>第 {it['n']} 名</b>{ui.evidence('tested')}"
+            f"<span class='kq-sub'>｜價格適合度</span> <b style='color:{fit_col}'>{ui.esc(fit_txt)}</b>{ui.evidence('ref')}</div>")
+    if it.get("missing"):                                          # v3.15 缺值透明（評審二 2.8）
+        lad += (f"<div style='font-size:11px;color:#b45309;margin:0 0 4px'>缺值：{ui.esc('、'.join(it['missing'][:3]))}"
+                "（排名時當成中性）</div>")
     themes = "".join(ui.tag(x, "g") for x in c.get("themes", [])[:2])
     return (f"<div class='kq-pcard'><div class='hd'><div><span class='rk'>{it['n']}</span><span class='kq-cd'>{t}</span>"
             f"<span class='nm'>{ui.esc(NAMES[j])}</span><span class='kq-sub'> {BOARD_ZH.get(BOARDS[j], '')}</span></div>"
@@ -1718,7 +1721,7 @@ def position_section(t: str, j: int, vs: dict, bq, live_px):
     role = {"pick": "pick", "keep": "keep"}.get(model, "none")
     code, txt = planlib.live_status(px, pl, role, lu)
     st.markdown(ui.section("怎麼做：空手 vs 持有", f"依 {HZ[h_use]}模型與交易計畫；現價 {ui.price(px)}"
-                           + ("（即時）" if ui.ok(live_px) else f"（{RDAY:%m/%d} 收盤）")), unsafe_allow_html=True)
+                           + ("（即時）" if ui.ok(live_px) else f"（{RDAY:%m/%d} 收盤）") + ui.evidence("ref")), unsafe_allow_html=True)
     c1, c2, c3 = st.columns([1, 1, 1.2])
     cost = c1.number_input("我的平均成本（元，選填）", min_value=0.0, value=float(st.session_state.get(f"kq_cost_{t}", 0.0)),
                            step=0.05, format="%.2f", key=f"cost_in_{t}")
@@ -3016,7 +3019,8 @@ def env_panel_html() -> str:
         mrows.append(ui.mcard(f"<span class='nm'>{ui.esc(nm)}</span>", f"{c['close']:,.0f}",
                               f"<span style='font-size:13px'>短線 {chip(c['short'], c['short_zh'])} {ui.steps(c['short_hist'], 3, w=110)}</span>",
                               f"<span style='font-size:13px'>長線 {chip(c['long'], c['long_zh'])} {ui.steps(c['long_hist'], 3, w=110)}</span>"))
-    return (ui.section("環境判定卡（v3.13）", "收盤站上幾條均線：短線 5／10／20 日、長線 20／60／120 日；3 條＝順風、2＝偏強、1＝偏弱、0＝逆風")
+    return (ui.section("環境判定卡（v3.13）", "收盤站上幾條均線：短線 5／10／20 日、長線 20／60／120 日；3 條＝順風、2＝偏強、1＝偏弱、0＝逆風"
+                       + ui.evidence("ref"))
             + ui.resp(ui.table(["指數", "短線（近 60 天）", "長線（近 60 天）"], rows, left=(0, 1, 2)), "".join(mrows))
             + "<div class='kq-muted' style='margin-bottom:16px'>參考 Yoda Research 綜合報告的版面重建（對方另有「拉扯」一級）。歷史檢查（2017–2026）：各狀態之後 20 日的大盤報酬差不多"
               "（短線逆風 +1.4%、順風 +1.7%）→ 用來看<b>現在的趨勢位置</b>，不是買賣訊號；美股為前一晚收盤。</div>")
@@ -3148,7 +3152,7 @@ def stock_tags_html(t: str, j: int) -> str:
         rtxt = (f"<div class='kq-muted'>{ym // 100}/{ym % 100:02d} 營收公布反應：<b>{ui.esc(n)}</b>（歷史上之後 20 日比大盤 2019–23 {a:+.1f}%、2024–26 {c:+.1f}%）</div>")
     if not parts and not rtxt:
         return ""
-    head = ("<div class='kq-muted'>Yoda 式標籤（v3.13，只供參考）：" + (" ".join(parts) if parts else "無") + "</div>")
+    head = ("<div class='kq-muted'>Yoda 式標籤（v3.13）" + ui.evidence("ref") + "：" + (" ".join(parts) if parts else "無") + "</div>")
     tail = (f"<div class='kq-muted' style='font-size:12px'>{ui.esc(note)}。這些標籤加進模型三個期間都變差，"
             "代表「籌碼熱、剛創高」之後不一定比較好；模型名單與排名仍以上方為準。</div>" if note else "")
     return head + tail + rtxt
@@ -4068,7 +4072,9 @@ def auto_panel():
     st.markdown(ui.section("冠軍／挑戰者（每日自動比較）",
                            f"規則：開發期超額多 {au.get('rule', {}).get('min_gain', 0.02):.0%} 以上、資訊比率不降、2019–20 不退步、"
                            f"最大回撤不深於冠軍 {float(au.get('rule', {}).get('max_mdd_worse') or 0.02) * 100:.0f} 個百分點（v2.4），"
-                           f"連續 {au.get('rule', {}).get('streak', 10)} 個交易日第一名才換上"
+                           f"連續 {au.get('rule', {}).get('streak', 10)} 個交易日第一名"
+                           + (f"→ 先前瞻觀察 {CFG0['research'].get('auto_forward_days', 60)} 個交易日、新資料上不輸冠軍才換上（v3.15 三級晉級）"
+                              if int(CFG0["research"].get("auto_forward_days", 0) or 0) > 0 else "才換上")
                            + ("" if au.get("enabled", True) else "（目前設定為只比較、不自動換）")), unsafe_allow_html=True)
     if not au.get("table"):
         st.markdown("<div class='kq-muted'>下一次每日研究後開始記錄。</div>", unsafe_allow_html=True)
@@ -4080,6 +4086,11 @@ def auto_panel():
         need = au.get("rule", {}).get("streak", 10)
         lead = (f"{ui.esc(T.describe(ld['params'], champ))}（超額 +{ld['d_excess']:.1%}，已連續 {ld['streak']}/{need} 天）"
                 if ld else "沒有挑戰者明顯勝出")
+        ob = (au.get("observe") or {}).get(h) or {}
+        if ob:
+            fd = ob.get("fwd_diff")
+            lead += (f"<br><span class='kq-sub'>前瞻觀察中：{ui.esc(T.describe(ob['params'], champ))}（{ob.get('since', '')} 起 {ob.get('fwd_days', 0)} 天"
+                     + (f"，{'領先' if fd >= 0 else '落後'} {fd:+.1%}" if fd is not None else "") + "）</span>")
         last = (au.get("last_switch") or {}).get(h)
         rows.append([f"<b>{HZ[h]}</b>", ui.esc(T.describe(champ)), lead, last or "–"])
         mc.append(ui.mcard(f"<span class='nm'>{HZ[h]}</span>", "", "", f"冠軍：{ui.esc(T.describe(champ))}<br>挑戰者：{lead}"))
@@ -4237,11 +4248,77 @@ def validate_html() -> str:
     return h
 
 
+def v315_html() -> str:
+    """v3.15 綜合第二、三份獨立評審：兩份意見對照、10 個事先固定的候選、0050 核心＋衛星、PBO。"""
+    from kosto import review as rv
+    f2 = lambda v: "0" if abs(v) < 0.005 else f"{v:+.2f}"          # noqa: E731
+    f1 = lambda v: "0" if abs(v) < 0.05 else f"{v:+.1f}"           # noqa: E731
+    h = ui.section("v3.15 綜合第二、三份評審", "每個建議寫成一個事先固定的候選，同一套資料與門檻；預先宣告：docs/v3.15_protocol.md")
+    h += f"<div class='kq-panel' style='margin-bottom:10px'>{ui.esc(rv.V315_NOTE)}</div>"
+    h += ui.table(["議題", "評審二（KOSTO Next）", "評審三（架構重構藍圖）", "這次怎麼處理"],
+                  [[f"<b>{ui.esc(a)}</b>", ui.esc(b), ui.esc(c), ui.esc(d)] for a, b, c, d in rv.V315_COMPARE], left=(0, 1, 2, 3))
+    b = rv.V315_BASE
+    h += (f"<div class='kq-muted' style='margin:10px 0 2px'><b>候選與基準的差</b>（五種換股日平均，百分點；基準 v3.14 開發期超額 短 {b['dev'][0]:.1f}／中 {b['dev'][1]:.1f}／"
+          f"長 {b['dev'][2]:.1f}；回撤正＝較淺）</div>")
+    rows = []
+    for k, n, src, kind, dv, ir, md, oo, hd, cons, q, vd in rv.V315_CAND:
+        ok = vd.startswith("門檻全過")
+        rows.append([f"<b>{k}</b>", ui.esc(n) + (ui.evidence("observe") if ok else ""), ui.esc(src), ui.esc(kind),
+                     "／".join(f2(x) for x in dv), f"{ir:+.3f}" if ir else "–", "／".join(f1(x) for x in md), "／".join(f1(x) for x in oo),
+                     f1(hd) if hd else "–", ui.esc(cons), f"{q:.2f}", f"<b>{ui.esc(vd)}</b>" if ok else ui.esc(vd)])
+    h += ui.table(["", "候選", "來源", "類型", "開發期 短／中／長", "中線 IR", "回撤 短／中／長", "整段 短／中／長", "中線最近 12 月", "一致性", "q", "判定"],
+                  rows, left=(0, 1, 2, 11))
+    h += "<div class='kq-muted' style='margin:10px 0 2px'><b>兩種組合模式：0050 核心＋模型衛星</b>（第一種換股日；年化／最大回撤／夏普）</div>"
+    pc = lambda t3: f"{t3[0]:.1f}%／{t3[1]:.1f}%" + (f"／{t3[2]:.2f}" if len(t3) > 2 else "")      # noqa: E731
+    h += ui.table(["0050 比例", "中線 開發期", "中線 最近 12 個月", "長線 開發期", "長線 最近 12 個月"],
+                  [[f"<b>{c:.0%}</b>", pc(a), pc(b_), pc(d), pc(e)] for c, a, b_, d, e in rv.V315_CORE], left=(0,))
+    stt = rv.V315_STATS
+    h += (f"<div class='kq-muted'>0050 七成＋模型三成的回撤比只買 0050 還淺、年化多約 12 個百分點：怕回撤時調整組合比例，比改選股模型有效（報酬型候選都沒有過關）。"
+          f"短中線名單平均重疊 {stt['overlap']:.0%}（兩者擇一操作）。回測過度擬合機率 PBO {stt['pbo']:.2f}（{stt['pbo_cfg']} 個變體、CSCV 16 段）。</div>")
+    return h
+
+
+def diagnostics_html() -> str:
+    """v3.15 更新後自動異常診斷（第二份評審 9C；kosto/diagnose.py）：只警告、不改名單。"""
+    dg = (RES or {}).get("diagnostics")
+    h = ui.section("更新後異常診斷", "名單突變、缺值進榜、同產業過半、前瞻長期落後、資料未完整、母池更換；只警告，不改名單")
+    if dg is None:
+        return h + "<div class='kq-muted'>從 v3.15 的每日研究開始產生。</div>"
+    if not dg:
+        return h + f"<div>{ui.light('green', '今天沒有發現異常')}</div>"
+    return h + "".join(f"<div style='margin:2px 0'>{ui.light('amber' if x['level'] == 'warn' else 'green', x['text'])}</div>" for x in dg)
+
+
+def replay_section():
+    """v3.15 每日歷史名單重現（第二份評審 9B）：當天實際公布的名單，不是用現在的模型回頭重算。"""
+    au = (RES or {}).get("auto") or {}
+    log = au.get("picks_log") or []
+    st.markdown(ui.section("每日歷史名單重現", "選日期，看當天實際公布的名單（前瞻紀錄＋快照；不是用現在的模型回頭重算）"), unsafe_allow_html=True)
+    dates = sorted({x["date"] for x in log}, reverse=True)
+    if not dates:
+        st.markdown("<div class='kq-muted'>還沒有紀錄。</div>", unsafe_allow_html=True)
+        return
+    d = st.selectbox("公布日期", dates, key="kq_replay")
+    rows = [[f"<b>{HZ.get(x['h'], x['h'])}</b>", " ".join(f"{t} {ui.esc(NAMES[TIDX[t]]) if t in TIDX else ''}" for t in x["picks"])]
+            for x in log if x["date"] == d]
+    snaps = [x for x in (au.get("snapshots") or []) if x.get("data_asof") == d]
+    st.markdown(ui.table(["期間", "當天公布的名單"], rows, left=(0, 1))
+                + ("<div class='kq-muted'>快照：" + "；".join(f"{ui.esc(x['id'])} 第 {x['seq']} 版（{ui.esc(str(x.get('published_at', ''))[:16].replace('T', ' '))}）"
+                                                         for x in snaps) + "</div>" if snaps else
+                   "<div class='kq-muted'>這一天沒有快照（v3.14 以前只保存名單）。</div>"), unsafe_allow_html=True)
+
+
 def page_validate():
     header()
-    st.markdown(ui.section("🧪 模型驗證", "這份名單是哪一版、模型到底有沒有用、哪些證據還不夠（v3.14 回應獨立同儕評審）"), unsafe_allow_html=True)
+    st.markdown(ui.section("🧪 模型驗證", "這份名單是哪一版、模型到底有沒有用、哪些證據還不夠（v3.14～v3.15 回應三份獨立評審）"), unsafe_allow_html=True)
     st.markdown(snapshot_html(), unsafe_allow_html=True)
+    st.markdown(f"<div class='kq-muted' style='margin:4px 0'>證據徽章：{ui.evidence('tested')} 經過歷史回測與門檻的核心訊號（選股排名）；"
+                f"{ui.evidence('ref')} 輔助資訊（價位尺、價格適合度、環境卡、標籤、持股建議）；{ui.evidence('observe')} 影子模型每天追蹤、尚未進模型</div>",
+                unsafe_allow_html=True)
+    st.markdown(diagnostics_html(), unsafe_allow_html=True)
     forward_panel()
+    replay_section()
+    st.markdown(v315_html(), unsafe_allow_html=True)
     st.markdown(validate_html(), unsafe_allow_html=True)
 
 
@@ -5324,7 +5401,8 @@ def page_home():
         "<b>先看市場、再決定買多少</b>：修正期且止穩訊號少時，ETF 比例自動提高 20 個百分點（回測 2021–2026 年化多約 1.5～2 個百分點、回撤略小）。",
         "<b>ETF 是核心</b>：不用選股、長期持有；台股用 0050 等大盤型，美股用 VOO／IVV。",
         "<b>台股個股是衛星</b>：模型 2021 年起的回測與最近一年都贏 0050，但個股波動大、要照名單換股；份量依風險屬性。"
-        "v3.14 獨立評審後的誠實結論：超額主要來自動能與小型股傾向、扣掉後仍有優勢，但考慮做過的試驗次數還不能算統計上確定，"
+        "三份獨立評審（v3.14～v3.15）後的誠實結論：超額主要來自動能與小型股傾向、扣掉後仍有優勢，但考慮做過的試驗次數還不能算統計上確定；"
+        "怕回撤可用 0050 七成＋模型三成（歷史回撤比只買 0050 淺），"
         "真正的檢驗是之後的前瞻紀錄（<a href='./validate' target='_self'>→ 模型驗證</a>）。",
         "<b>美股個股只當參考</b>：用沒有偏差的 18 年資料測了三輪，都沒有長期贏 SPY，所以美股以 ETF 為主。",
         "<b>何時賣</b>：照「今日選股 → 持股追蹤」的賣出訊號；跌破警戒價時重新檢視理由（不自動停損，回測顯示機械式停損會拖累報酬）。"]),

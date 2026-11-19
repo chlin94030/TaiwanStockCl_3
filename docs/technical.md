@@ -769,3 +769,17 @@ v1.9 改為每個交易日 **21:40 一次更新全部**（融資融券約 21:00�
 * 報價：`intraday.best_quote` 增加 `src_zh`、`time`、`stale_min`，`source_line()` 在卡片上顯示「證交所成交 10:32」，超過 5 分鐘標示已過幾分。
 * App：新頁「🧪 模型驗證」（`page_validate`、`snapshot_html`、`validate_html`；研究室改用 🔬）；選股卡片「模型排名」與「價格適合度」（`plan.price_fit`）分開；
   名單上方組合集中度（`plan.concentration`、`concentration_html`）；總覽加註評審後的誠實結論。
+
+## v3.15 綜合第二、三份獨立評審（docs/v3.15_protocol.md）
+* 研究：兩份評審的建議寫成 10 個事先固定的候選（報酬型 N1～N6、風險型 R1～R4），同一套五種換股日資料與門檻；新增統計關卡
+  （中線三母池日報酬差的 Newey–West t → BH-FDR；過門檻但 q > 0.10 只進前瞻觀察）。結果：只有 N3「產業調整後動能」全部門檻過，q＝0.31 → 前瞻觀察；主模型不變。
+* 因子：`t_mom_secrel`（120 日扣近 20 日動能減同官方產業別中位數，`factors._sector_rel`），列入 `inactive_factors`。
+* 設定：`research.momentum_split`（預設關閉）——開啟後把 t_rs120、t_mom120x20 權重的一半移到 t_mom_secrel（`Research.split_momentum`，
+  在 `_overlay` 之後套用；權重快取鍵含此設定）。觀察名單新增 W5（`watch.SPLIT`）每天追蹤。
+* 三級晉級：`tournament.update` 連續領先 `auto_streak` 天後先進 `observe`（前瞻觀察），`evaluate(..., observe=)` 記下標記日之後的累積報酬，
+  滿 `research.auto_forward_days`（60）個交易日且不輸冠軍才換上，落後就退回；`research.auto_reset: true` 一鍵回到設定檔模型。
+* `kosto/diagnose.py`：更新後異常診斷（名單突變、缺值進榜、同產業過半、前瞻長期落後、資料未完整、母池更換），`res["diagnostics"]`，只警告。
+* `research.latest` 每檔多 `missing`（權重 ≥3% 卻缺值的因子）；`ui.evidence()` 證據徽章（已回測／僅供參考・未回測／前瞻觀察中）。
+* App：模型驗證頁加入證據徽章說明、異常診斷、每日歷史名單重現（`replay_section`）、v3.15 對照與候選表（`v315_html`）；
+  選股卡片標示缺值因子；冠軍／挑戰者面板顯示前瞻觀察中的挑戰者。
+* 只報告：0050 核心 60／70／80%＋模型衛星、短中線重疊 82%、PBO 0.39（17 變體、CSCV 16 段）。封存保留期：2026-11-20 起。

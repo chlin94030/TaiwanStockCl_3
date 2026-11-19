@@ -69,7 +69,7 @@ def test_watch_variants_on_synthetic(tmp_path):
            "horizons": {h: {"chosen_pool": {"rule": rule, "size": size}} for h in ("short", "mid", "long")}}
     o = W.evaluate(R, res, since=str(B.sig_dates[-30].date()), need=10)
     assert o["rows"] and all(r["days"] > 0 for r in o["rows"])
-    assert {r["key"] for r in o["rows"]} <= {"W1", "W2", "W3", "W4"}
+    assert {r["key"] for r in o["rows"]} <= {"W1", "W2", "W3", "W4", "W5"}
 
 
 def test_schedule_cache_key_includes_overlay():
@@ -84,7 +84,7 @@ def test_v312_docs_and_app():
     assert t["R2"][2] >= 1.5 and t["R2"][9].startswith("中線 3")        # 報酬門檻過、一致性沒過
     assert t["R4"][6] < -1 and t["R4"][7] > 2                           # 長線：少賺、少跌
     assert len(rv.V312_AUDIT) >= 4 and [x for x in rv.IDEAS if x[0] == "v3.12"]
-    assert {it["key"] for it in W.ITEMS} == {"W1", "W2", "W3", "W4"} and W.SINCE == "2026-10-23" and W.NEED_DAYS == 120
+    assert {it["key"] for it in W.ITEMS} >= {"W1", "W2", "W3", "W4"} and W.SINCE == "2026-10-23" and W.NEED_DAYS == 120
     app = (ROOT / "app.py").read_text(encoding="utf-8")
     assert "def v312_html" in app and "v312_html()" in app
     cli = (ROOT / "cli.py").read_text(encoding="utf-8")
