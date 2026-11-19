@@ -125,7 +125,8 @@ def test_status_running_after_failures_shows_lag_and_streak():
             _run("completed", "failure", "2026-11-11T22:23:00Z"), _run("completed", "failure", "2026-11-11T13:40:00Z"),
             _run("completed", "success", "2026-11-10T13:40:00Z")]
     lvl, txt, url = F.status(now, pd.Timestamp("2026-11-10"), hist[0], hist)
-    assert lvl == "red" and "上傳程式觸發，12:40 開始" in txt and "研究資料只到 11/10（應到 11/11）" in txt
+    # v3.14：執行中一律黃燈（保留上一版），落後與連續失敗照樣寫在文字裡
+    assert lvl == "amber" and "上傳程式觸發，12:40 開始" in txt and "研究資料只到 11/10（應到 11/11）" in txt and "上一版" in txt
     assert "連續 2 次更新失敗" in txt and url == "u"
     lvl, txt, _ = F.status(now, pd.Timestamp("2026-11-11"), hist[0], hist)        # 資料已是最新 → 只是執行中
     assert lvl == "amber" and "只到" not in txt

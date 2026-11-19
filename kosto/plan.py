@@ -125,6 +125,33 @@ def live_status(price: float, plan: Plan | None, role: str = "pick", limit_up: f
     return "buy", "可進場（小量）"
 
 
+FIT = {"buy": ("適合（買進區內）", "#15803d"), "dip": ("便宜（拉回買點）", "#15803d"), "buy_s": ("略高・可小量", "#a16207"),
+       "wait": ("偏高・等拉回", "#b45309"), "warn": ("跌破警戒", "#b91c1c"), "lock": ("漲停不追", "#b91c1c"), "none": ("無報價", "#64748b")}
+
+
+def price_fit(price: float, plan: Plan | None, limit_up: float = np.nan) -> tuple[str, str, str]:
+    """v3.14（同儕評審第 5 章）：「價格適合度」與「模型排名」分開——排名說明這檔值不值得買，價格適合度說明現在這個價位適不適合進場。
+    回傳 (代碼, 中文, 顏色)；短線過熱另外加註。"""
+    code, txt = live_status(price, plan, "pick", limit_up)
+    if code == "buy" and "小量" in txt:
+        code = "buy_s"
+    lab, col = FIT.get(code, FIT["none"])
+    if plan is not None and getattr(plan, "hot", False) and code in ("buy", "buy_s", "dip"):
+        lab += "・短線過熱"
+    return code, lab, col
+
+
+def concentration(weights, groups) -> dict:
+    """組合集中度：最大單檔比重、有效檔數（1／Σw²）、最大族群（依資金比重）。"""
+    w = np.asarray([float(x) for x in weights], float)
+    if not len(w) or w.sum() <= 0:
+        return {}
+    w = w / w.sum()
+    g = pd.Series(w, index=list(groups)).groupby(level=0).agg(["sum", "size"]).sort_values("sum", ascending=False)
+    return {"top_w": float(w.max()), "eff_n": float(1 / (w ** 2).sum()), "n": int(len(w)), "n_groups": int(len(g)),
+            "top_group": str(g.index[0]), "top_group_w": float(g["sum"].iloc[0]), "top_group_n": int(g["size"].iloc[0])}
+
+
 # ------------------------------------------------------------------ 籌碼短評
 def _streak(x: pd.Series) -> int:
     """連續買超(+)/賣超(−)天數（最近一日起算）。"""

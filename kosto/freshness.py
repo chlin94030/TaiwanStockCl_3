@@ -73,7 +73,7 @@ def fail_streak(history: list | None) -> int:
 
 
 def status(now: pd.Timestamp, last: pd.Timestamp, run: dict | None, history: list | None = None) -> tuple[str, str, str]:
-    """(燈號, 文字, 連結)。綠＝已是最新；黃＝更新中／可能休市；紅＝更新失敗或今晚的自動更新沒有啟動。
+    """(燈號, 文字, 連結)。綠＝已完成（已是最新）；黃＝執行中（保留上一版）／延遲／可能休市；紅＝失敗或今晚的自動更新沒有啟動。
     run＝GitHub Actions 最近一次執行 {status, conclusion, created, event, url}（本機模式為 None）；
     history＝最近幾次執行（新到舊，v2.5：用來說明「資料落後幾天、前面失敗幾次」）。"""
     last = pd.Timestamp(last)
@@ -87,7 +87,8 @@ def status(now: pd.Timestamp, last: pd.Timestamp, run: dict | None, history: lis
         t = _tpe(run.get("created"))
         why = EVENT.get(run.get("event"), "")
         start = f"{why}觸發，{t:%H:%M} 開始，" if t is not None else ""
-        return ("red" if nf >= 2 and behind else "amber"), f"每日更新執行中（{start}約 30～60 分鐘）{lag}{fails}", url
+        # v3.14（同儕評審 4.2）：執行中一律黃燈＝「執行中（保留上一版）」；上一版名單照常可用，不再因先前失敗顯示紅燈
+        return "amber", f"每日更新執行中，上一版名單照常可用（{start}約 30～60 分鐘）{lag}{fails}", url
     if run and run.get("conclusion") == "failure":
         return "red", f"最近一次更新失敗（點此看原因）{lag}{fails if nf > 1 else ''}", url
     hm = now.hour * 60 + now.minute
@@ -115,3 +116,17 @@ def status(now: pd.Timestamp, last: pd.Timestamp, run: dict | None, history: lis
     if len(pd.bdate_range(last + pd.Timedelta(days=1), exp)) <= 1:
         return "amber", f"資料到 {last:%m/%d}（中間若為假日屬正常）", url
     return "red", f"資料落後：應更新到 {exp:%m/%d}", url
+
+
+STATE_ZH = {"green": "已完成", "amber": "執行中或延遲", "red": "失敗"}
+
+
+def state_label(level: str, text: str) -> str:
+    """v3.14 五種更新狀態（同儕評審 4.2）：已完成／執行中（保留上一版）／部分完成／延遲／失敗。"""
+    if "執行中" in text:
+        return "執行中（保留上一版）"
+    if level == "green":
+        return "部分完成" if "融資" in text and ("補上" in text or "待補" in text) else "已完成"
+    if level == "red":
+        return "失敗" if "失敗" in text else "延遲"
+    return "延遲" if any(k in text for k in ("尚未", "落後", "沒有完成", "取消", "排隊")) else "已完成（可能休市）"

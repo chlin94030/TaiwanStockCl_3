@@ -445,6 +445,11 @@ def quote_tags(bq) -> str:
     if bq.get("label"):
         out += (f"<span class='kq-sub' style='display:block;font-size:10.5px;font-weight:400;line-height:1.3'>"
                 f"{ui.esc(bq['label'])}</span>")
+    sl = IDY.source_line(bq)                                      # v3.14 報價來源、時間、是否過期
+    if sl:
+        col = ";color:#b45309" if bq.get("stale_min") else ""
+        out += (f"<span class='kq-sub' style='display:block;font-size:10px;font-weight:400;line-height:1.3{col}'>"
+                f"{ui.esc(sl)}</span>")
     return out
 
 
@@ -837,7 +842,7 @@ def header(world: bool = True):
 
 QNAV = [("home", "🏠", "總覽"), ("picks", "📋", "選股"), ("insight", "🎛️", "儀表板"), ("live", "⏱️", "盤中"), ("stock", "🔍", "個股"), ("chain", "🗺️", "產業鏈"),
         ("us", "🗽", "美股"), ("world", "🌏", "國際"),
-        ("market", "📈", "大盤"), ("etf", "💰", "ETF"), ("alloc", "⚖️", "配置"), ("guide", "📖", "指南")]
+        ("market", "📈", "大盤"), ("etf", "💰", "ETF"), ("alloc", "⚖️", "配置"), ("validate", "🧪", "驗證"), ("guide", "📖", "指南")]
 
 
 def quick_nav() -> str:
@@ -1245,6 +1250,10 @@ def pick_card(it, mode: str = "m3", d=None, q=None) -> str:
     lock = {"up": "<span class='kq-lock up'>漲停</span>", "down": "<span class='kq-lock dn'>跌停</span>"}.get(bq["lock"], "")
     tag = (lock + "<span class='kq-sub' style='display:block;font-size:10.5px;font-weight:400'>" + ui.esc(when) + "</span>") if (when or lock) else ""
     lad = ui.ladder(px, pl.buy_low, pl.buy_high, pl.chase, pl.alert, compact=True) if pl else ""
+    # v3.14（同儕評審第 5 章）：「模型排名」（值不值得買）與「價格適合度」（現在這個價位適不適合進場）分開標示
+    _, fit_txt, fit_col = planlib.price_fit(px, pl, px if bq.get("lock") == "up" else np.nan)
+    lad += (f"<div class='kq-fit' style='font-size:12px;margin:2px 0 4px'><span class='kq-sub'>模型排名</span> <b>第 {it['n']} 名</b>"
+            f"<span class='kq-sub'>｜價格適合度</span> <b style='color:{fit_col}'>{ui.esc(fit_txt)}</b></div>")
     themes = "".join(ui.tag(x, "g") for x in c.get("themes", [])[:2])
     return (f"<div class='kq-pcard'><div class='hd'><div><span class='rk'>{it['n']}</span><span class='kq-cd'>{t}</span>"
             f"<span class='nm'>{ui.esc(NAMES[j])}</span><span class='kq-sub'> {BOARD_ZH.get(BOARDS[j], '')}</span></div>"
@@ -1261,7 +1270,21 @@ def render_picks(items, mode: str = "m3") -> str:
     # 交易日盤中／盤後（研究資料還沒更新前）：不論圖表選哪一種，價格都用今天的，避免顯示前一個交易日的漲跌
     intr = tw_intraday(tks) if mode == "today" or ph in ("盤前試撮", "盤中", "盤後") else {}
     q = quotes_for(tks)[0] if _tw_live() else None
-    return "<div class='kq-grid'>" + "".join(pick_card(it, mode, intr.get(it["t"]), q) for it in items) + "</div>"
+    return concentration_html(items) + "<div class='kq-grid'>" + "".join(pick_card(it, mode, intr.get(it["t"]), q) for it in items) + "</div>"
+
+
+def concentration_html(items) -> str:
+    """v3.14 組合集中度（同儕評審 1.4）：最大單檔、有效檔數、最大族群。"""
+    if not items or not all(it.get("w") for it in items):
+        return ""
+    cc = planlib.concentration([it["w"] for it in items], [CH.get(it["t"], {}).get("group", SECTORS[it["j"]]) for it in items])
+    if not cc:
+        return ""
+    warn = cc["top_group_w"] >= 0.5
+    sty = " style='color:#b45309'" if warn else ""
+    return (f"<div class='kq-muted' style='margin:2px 0 6px;font-size:12.5px'>組合集中度：最大單檔 {cc['top_w']:.1%}｜有效檔數 {cc['eff_n']:.1f}／{cc['n']}"
+            f"｜{cc['n_groups']} 個族群，最多的是 <b{sty}>{ui.esc(cc['top_group'])}</b>"
+            f" {cc['top_group_n']} 檔、資金 {cc['top_group_w']:.0%}" + ("（同族群過半，波動會一起放大）" if warn else "") + "</div>")
 
 
 @st.cache_data(show_spinner=False, max_entries=8)
@@ -3527,7 +3550,7 @@ def page_insight():
         st.caption("模型分數的預測力逐年上升（2026 年 0.079），但 2026 第二、三季明顯轉弱（0.012、0.036）——權值股獨強、題材輪動快的行情。"
                    "「漲停次數」以前是反向（追漲停股之後較差），2025 年起轉正；「沒有暴漲」以前是正向，2025 年起轉為零或負："
                    "最近兩年題材股比較會延續。方向還不穩定、只有兩年，依規則不加入模型，持續觀察。")
-        with st.expander("歷次想法總檢視（v1.1～v3.12）：每個想法對模型的影響"):
+        with st.expander("歷次想法總檢視（v1.1～v3.14）：每個想法對模型的影響"):
             rows = [[ui.esc(v), ui.esc(i), ui.esc(src), ui.esc(tp), ui.esc(res), ("<b>" if st_.startswith("✅") else "") + ui.esc(st_)
                      + ("</b>" if st_.startswith("✅") else ""), ui.esc(imp)] for v, i, src, tp, res, st_, imp in rv.IDEAS]
             st.markdown(ui.table(["版本", "想法", "來源", "類型", "驗證結果", "狀態", "對模型的影響"], rows, left=(1, 2, 3, 4, 5, 6)),
@@ -3535,7 +3558,8 @@ def page_insight():
             n_user = sum(1 for x in rv.IDEAS if x[2] == "使用者提問")
             n_user_ok = sum(1 for x in rv.IDEAS if x[2] == "使用者提問" and x[5].startswith("✅"))
             st.caption(f"使用者提問引發的 {n_user} 組想法中，{n_user_ok} 組改變了主模型；其餘都轉為儀表板、燈號、提醒等資訊顯示。"
-                       "主模型最近一次調整是 v3.0（短中線改名次加權，docs/v3.0_protocol.md）；之前是 v1.9（營收優於同業 15%）。"
+                       "主模型最近一次調整是 v3.14（回應同儕評審：跌停賣不掉納入回測；「營收優於同業」的同業改用官方產業別）；"
+                       "之前是 v3.0（短中線改名次加權）、v1.9（營收優於同業 15%）。"
                        "v3.5 從美股借來的「風險調整動能」開發期過門檻，但整段樣本外沒有進步，未採用。")
 
     with tabs["🥚 科斯托蘭尼"]:
@@ -4135,6 +4159,90 @@ def auto_research_tab():
             ("驗收閘門通過", npass),
             ("目前因子權重（前 8）", f"<span style='white-space:normal'>{ui.esc(wtxt)}</span>"),
             ("模型監控", f"<span style='white-space:normal'>{mtxt}</span>")])), unsafe_allow_html=True)
+
+
+def snapshot_html() -> str:
+    """v3.14 這份名單是哪一版：快照編號、雜湊鏈、資料包與研究結果是否一致。"""
+    from kosto import snapshot as SN
+    if not RES:
+        return "<div class='kq-muted'>尚無每日研究結果。</div>"
+    sn = RES.get("snapshot") or {}
+    chain = ((RES.get("auto") or {}).get("snapshots")) or []
+    ok, bad = SN.verify(chain)
+    issues = SN.consistency(B.meta, RES)
+    items = [("快照編號", f"<span class='kq-mono'>{ui.esc(sn.get('id', '–'))}</span>",
+              f"資料日 {ui.esc(sn.get('data_asof', '–'))}｜模型 v{ui.esc(sn.get('model_version', '–'))}"),
+             ("發布時間", ui.esc(str(sn.get("published_at", "–"))[:16].replace("T", " ")),
+              f"同一天第 {chain[-1]['seq']} 版" if chain else "（v3.14 以前沒有快照）"),
+             (ui.light("green" if ok and chain else "amber", "雜湊鏈"), f"{len(chain)} 筆",
+              "完整（舊紀錄沒有被改動）" if ok and chain else (f"第 {bad} 筆斷開" if chain else "從 v3.14 開始累積")),
+             (ui.light("green" if not issues else "amber", "資料包＝研究結果"), "一致" if not issues else "注意",
+              "；".join(ui.esc(x) for x in issues) or f"設定雜湊 {ui.esc(sn.get('config_hash', '')[:8])}")]
+    return ui.cards(items, raw=True)
+
+
+def validate_html() -> str:
+    """v3.14「🧪 模型驗證」（回應獨立同儕評審）：證據等級、三種基準、風險與成本、穩健性、消融、統計、可解釋性、評審對照。"""
+    from kosto import review as rv
+    f2 = lambda v: f"{v:+.2f}" if isinstance(v, (int, float)) else ui.esc(v)          # noqa: E731
+    f1 = lambda v: f"{v:+.1f}" if isinstance(v, (int, float)) else ui.esc(v)          # noqa: E731
+    h = f"<div class='kq-panel' style='margin-bottom:10px'>{ui.esc(rv.V314_NOTE)}</div>"
+    h += ui.section("1. 證據等級", "回測數字不能都當成「樣本外」：只有上線後每天的前瞻紀錄是真正獨立的")
+    h += ui.table(["等級", "期間", "能證明什麼"], [[f"<b>{ui.esc(a)}</b>", ui.esc(b), ui.esc(c)] for a, b, c in rv.V314_TIERS], left=(0, 1, 2))
+    h += ui.section("2. 三種基準與歸因", "開發期、第一種換股日、年化 %；選股範圍＝同母池等權 − 0050，選股＝模型 − 同母池等權")
+    h += ui.table(["期間／母池", "模型", "同母池等權", "0050", "選股範圍", "選股", "α（扣掉市場、規模、動能）", "動能係數", "規模係數", "最近 12 月 α t"],
+                  [[f"<b>{ui.esc(n)}</b>", f"{m:.1f}", f"{e:.1f}", f"{b:.1f}", f1(sc), f1(se), f"{al:.1f}%（t {at:.2f}）", f"{bm:.2f}（t {tm:.1f}）",
+                    f"{bs:.2f}", f"{ht:.2f}"] for n, m, e, b, sc, se, al, at, bm, tm, bs, ht in rv.V314_ATTR], left=(0,))
+    h += ("<div class='kq-muted'>母池本身（中小型股等權）每年落後 0050；超額全部來自選股。選股有很強的動能與小型股傾向"
+          "（動能係數約 1）。扣掉之後開發期 α 仍顯著，最近 12 個月期間太短、還不顯著。</div>")
+    h += ui.section("3. 風險與成本壓力", "五種換股日平均、超額 %；v3.14 起回測一律「跌停賣不掉」")
+    h += ui.table(["期間", "情境", "開發期超額", "開發期回撤", "最近 12 個月", "整段", "每年成本拖累"],
+                  [[f"<b>{a}</b>", ui.esc(b), f"{c:.2f}", f"{d:.1f}", f2(e), f"{g:.2f}", f"{i:.1f}"] for a, b, c, d, e, g, i in rv.V314_STRESS],
+                  left=(0, 1))
+    h += "<div class='kq-muted'>短線換手最快、對成交成本最敏感：滑價 0.5% 時最近 12 個月轉為負。短線請用限價、避開流動性差的股票。</div>"
+    h += ui.section("4. 穩健性", "營收相對同業的同業定義（預先宣告規則：中線開發期不少於現行 − 1pp 就改用前視風險較低的版本）")
+    h += ui.table(["", "同業定義", "中線開發期", "IR", "回撤", "最近 12 個月", "整段", "短線 開發／整段", "長線 開發／整段", "IC 開發／最近 12 月", "判定"],
+                  [[f"<b>{k}</b>", ui.esc(n), f"{a:.2f}", f"{b:.3f}", f"{c:.1f}", f"{d:.2f}", f"{e:.2f}", ui.esc(g), ui.esc(i), ui.esc(j), ui.esc(m)]
+                   for k, n, a, b, c, d, e, g, i, j, m in rv.V314_B1], left=(0, 1, 10))
+    h += "<div class='kq-muted' style='margin:8px 0 2px'><b>月營收可用日延後</b>（第一種換股日、新模型，超額 %）</div>"
+    h += ui.table(["情境", "短線開發期", "中線開發期", "中線最近 12 個月", "中線整段", "長線開發期"],
+                  [[ui.esc(n), f"{a:.2f}", f"{b:.2f}", f"{c:.2f}", f"{d:.2f}", f"{e:.2f}"] for n, a, b, c, d, e in rv.V314_B2], left=(0,))
+    h += "<div class='kq-muted' style='margin:8px 0 2px'><b>五種換股日的範圍</b>（新模型，超額 %）</div>"
+    h += ui.table(["期間／母池", "開發期 平均", "最差", "最好", "最近 12 個月 平均", "最差"],
+                  [[f"<b>{ui.esc(n)}</b>", f"{a:.1f}", f"{b:.1f}", f"{c:.1f}", f"{d:.1f}", f"{e:.1f}"] for n, (a, b, c), (d, e) in rv.V314_PHASE], left=(0,))
+    h += ui.section("5. 結構消融與集中度", "五種換股日平均、超額 %：拿掉一部分後還剩多少")
+    h += ui.table(["版本", "短線開發期", "中線開發期", "中線回撤", "中線最近 12 個月", "中線整段", "長線開發期"],
+                  [[ui.esc(n), f"{a:.2f}", f"{b:.2f}", f"{c:.1f}", f2(d), f"{e:.2f}", f"{g:.2f}"] for n, a, b, c, d, e, g in rv.V314_ABL], left=(0,))
+    mx = rv.V314_MIX
+    h += (f"<div class='kq-muted'>固定假說與稀疏模型各自都差很多，合在一起才是現在的水準。0050＋中線各半（開發期）：年化 {mx['mix'][0]:.1f}%、"
+          f"回撤 {mx['mix'][1]:.1f}%、夏普 {mx['mix'][2]:.2f}（模型 {mx['model'][0]:.1f}%／{mx['model'][1]:.1f}%／{mx['model'][2]:.2f}；"
+          f"0050 {mx['0050'][0]:.1f}%／{mx['0050'][1]:.1f}%／{mx['0050'][2]:.2f}）→ 怕回撤的人，各半的回撤接近 0050、夏普接近模型。</div>")
+    h += ui.section("6. 統計", "Newey–West t、20 日區塊自助法 90% 區間（年化超額 %）、Deflated Sharpe（以 1,800 次試驗計）")
+    h += ui.table(["母池", "開發期 t", "開發期 90% 區間", "整段 t", "整段 90% 區間", "最近 12 個月 90% 區間", "開發期為正機率", "Deflated Sharpe"],
+                  [[f"<b>{ui.esc(n)}</b>", f"{a:.2f}", ui.esc(b), f"{c:.2f}", ui.esc(d), ui.esc(e), f"{g:.0%}",
+                    f"<b style='color:{'#15803d' if i >= 0.95 else '#b45309'}'>{i:.2f}</b>"] for n, a, b, c, d, e, g, i in rv.V314_STATS], left=(0,))
+    h += "<div class='kq-muted'>Deflated Sharpe ≥ 0.95 才算統計上確定；目前 0.68～0.88：有優勢的機會較大，但還不能排除運氣。</div>"
+    cr = rv.V314_CORR
+    h += ui.section("7. 可解釋性", f"中線 BLEND500：權重 > 1% 的 {cr['n']} 個因子佔 {cr['share']:.0%}；有效因子數 {cr['eff']:.1f}")
+    h += ui.table(["因子 A", "因子 B", "相關"], [[ui.esc(a), ui.esc(b), f"{c:.2f}"] for a, b, c in cr["high"]], left=(0, 1))
+    h += ui.table(["家族", "IC 開發期", "扣掉動能後", "IC 最近 12 個月", "扣掉動能後"],
+                  [[ui.esc(n), f"{a:.3f}", f"{b:.3f}", f"{c:.3f}", f"{d:.3f}"] for n, a, b, c, d in cr["inc"]], left=(0,))
+    h += ui.section("8. 評審對照表", "獨立同儕評審（2026-11-19）每一項的處理；預先宣告：docs/v3.14_protocol.md")
+    h += ui.table(["評審項目", "優先", "這次怎麼做", "結果"], [[f"<b>{ui.esc(a)}</b>", ui.esc(b), ui.esc(c), ui.esc(d)] for a, b, c, d in rv.V314_REVIEW],
+                  left=(0, 2, 3))
+    n_ideas = len(rv.IDEAS)
+    n_ok = sum(1 for x in rv.IDEAS if x[5].startswith("✅"))
+    h += (f"<div class='kq-muted'>試驗紀錄：歷次想法 {n_ideas} 組，其中 {n_ok} 組改變了模型（完整清單在「盤勢儀表板 → 模型體檢」）；"
+          "若把每個想法的參數組合都算進去，約 1,800 次，所以統計檢定用 1,800 次試驗校正。</div>")
+    return h
+
+
+def page_validate():
+    header()
+    st.markdown(ui.section("🧪 模型驗證", "這份名單是哪一版、模型到底有沒有用、哪些證據還不夠（v3.14 回應獨立同儕評審）"), unsafe_allow_html=True)
+    st.markdown(snapshot_html(), unsafe_allow_html=True)
+    forward_panel()
+    st.markdown(validate_html(), unsafe_allow_html=True)
 
 
 def page_lab():
@@ -5215,7 +5323,9 @@ def page_home():
     st.markdown(ui.bullets([
         "<b>先看市場、再決定買多少</b>：修正期且止穩訊號少時，ETF 比例自動提高 20 個百分點（回測 2021–2026 年化多約 1.5～2 個百分點、回撤略小）。",
         "<b>ETF 是核心</b>：不用選股、長期持有；台股用 0050 等大盤型，美股用 VOO／IVV。",
-        "<b>台股個股是衛星</b>：模型 2021 年起的回測與最近一年都贏 0050，但個股波動大、要照名單換股；份量依風險屬性。",
+        "<b>台股個股是衛星</b>：模型 2021 年起的回測與最近一年都贏 0050，但個股波動大、要照名單換股；份量依風險屬性。"
+        "v3.14 獨立評審後的誠實結論：超額主要來自動能與小型股傾向、扣掉後仍有優勢，但考慮做過的試驗次數還不能算統計上確定，"
+        "真正的檢驗是之後的前瞻紀錄（<a href='./validate' target='_self'>→ 模型驗證</a>）。",
         "<b>美股個股只當參考</b>：用沒有偏差的 18 年資料測了三輪，都沒有長期贏 SPY，所以美股以 ETF 為主。",
         "<b>何時賣</b>：照「今日選股 → 持股追蹤」的賣出訊號；跌破警戒價時重新檢視理由（不自動停損，回測顯示機械式停損會拖累報酬）。"]),
         unsafe_allow_html=True)
@@ -5227,6 +5337,7 @@ def page_home():
             ["🔍 個股診斷", "任一台股的模型評分、K 線、買進區與警戒價", "想查某一檔時"],
             ["🗽 美股選股", "美股 ETF 推薦順序、盤前／即時名單、美股個股查詢", "晚上（美股盤前 17:00 起）"],
             ["更多 → 精選ETF／資金配置", "台股 ETF 排行、核心＋衛星的比例", "決定資金分配時"],
+            ["更多 → 模型驗證", "這份名單是哪一版、證據等級、三種基準、成本壓力、統計檢定（v3.14）", "想知道模型可不可信時"],
             ["更多 → 操作指南／研究室", "使用說明、研究方法與完整驗證", "想深入了解時"]]
     st.markdown(ui.table(["頁面", "用途", "什麼時候看"], rows, left=(0, 1, 2)), unsafe_allow_html=True)
     st.caption("僅供研究參考，非投資建議；系統不會自動下單。")
@@ -5244,7 +5355,8 @@ pages = {"": [st.Page(page_home, title="總覽", icon="🏠", url_path="home", d
                   st.Page(page_etf, title="精選ETF", icon="💰", url_path="etf"),
                   st.Page(page_alloc, title="資金配置", icon="⚖️", url_path="alloc"),
                   st.Page(page_guide, title="操作指南", icon="📖", url_path="guide"),
-                  st.Page(page_lab, title="研究室", icon="🧪", url_path="lab")]}
+                  st.Page(page_validate, title="模型驗證", icon="🧪", url_path="validate"),
+                  st.Page(page_lab, title="研究室", icon="🔬", url_path="lab")]}
 _nav = st.navigation(pages, position="top")
 CUR_PAGE = getattr(_nav, "url_path", "") or "home"
 _nav.run()

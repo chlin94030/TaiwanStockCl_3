@@ -130,6 +130,14 @@ def cmd_research(a, cfg):
     res["auto"] = T.log_picks(auto, res)
     res["auto"]["pools"] = T.pool_state(prev.get("pools"), res)        # v2.4 母池沿用狀態（隔天讀回）
     res["data_status"] = data_status(B, res)
+    try:                                                              # v3.14 每日快照＋雜湊鏈（只新增、不覆寫）
+        from kosto import __version__, snapshot
+        res["snapshot"] = snapshot.make(res, B.meta, cfg_eff, __version__)
+        res["auto"]["snapshots"] = snapshot.append(prev.get("snapshots"), res["snapshot"])
+        ok, bad = snapshot.verify(res["auto"]["snapshots"])
+        log(f"快照 {res['snapshot']['id']}（第 {res['auto']['snapshots'][-1]['seq']} 版）" + ("" if ok else f"｜⚠ 雜湊鏈在第 {bad} 筆斷開"))
+    except Exception as e:  # noqa: BLE001
+        log(f"快照略過：{e}")
     try:
         res["linkage_ic"] = linkage_ic(R, res)                       # v2.1 連動因子逐年有效性（監控用，不進模型）
     except Exception as e:  # noqa: BLE001

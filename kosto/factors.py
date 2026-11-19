@@ -481,8 +481,24 @@ def _f_rev_surprise(c):
     return _rev(c, fn, "rev_surprise")
 
 
-@factor("f_rev_rel", "F", 1, ("mid", "long"), "營收年增率相對同業")
-def _f_rev_rel(c): return _group_rel(c, _rev(c, lambda r: _yoy(r, 3), "rev_yoy3"))
+def _sector_rel(c, x: pd.DataFrame) -> pd.DataFrame:
+    """v3.14：x 減去同「官方產業別」（證交所／櫃買中心的產業分類，≥5 檔）的當日中位數；產業別不明者不算。
+    取代原本用 2026 年產業鏈族群（事後依題材整理，有前視風險；同儕評審 3.1）。"""
+    sec = c.P.info["sector"] if c.P.info is not None and "sector" in c.P.info else pd.Series("NA", index=c.P.tickers)
+    sec = sec.reindex(c.P.tickers).fillna("NA").astype(str)
+    out = x.copy()
+    for grp, cols in sec.groupby(sec).groups.items():
+        cols = list(cols)
+        if len(cols) < 5 or grp == "NA":
+            out[cols] = np.nan
+            continue
+        sub = x[cols]
+        out[cols] = sub.sub(sub.median(axis=1), axis=0)
+    return out
+
+
+@factor("f_rev_rel", "F", 1, ("mid", "long"), "營收年增率相對同業（官方產業別）")
+def _f_rev_rel(c): return _sector_rel(c, _rev(c, lambda r: _yoy(r, 3), "rev_yoy3"))
 
 
 @factor("c_trust60", "C", 1, ("mid", "long"), "投信60日累計買超(占股本)")

@@ -81,4 +81,4 @@ def test_v313_results_docs_and_app():
     assert "## 四、結果" in doc and "二之二" in doc
     cfg = load_config()
     assert cfg["research"]["overlay"] == {"f_rev_rel": 0.15}               # 選股模型不變
-    assert '__version__ = "3.13.0"' in (ROOT / "kosto" / "__init__.py").read_text(encoding="utf-8")
+    assert '__version__ = "3.' in (ROOT / "kosto" / "__init__.py").read_text(encoding="utf-8")

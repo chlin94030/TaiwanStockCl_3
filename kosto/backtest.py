@@ -49,6 +49,7 @@ class Spec:
     vol_target: float | None = None  # 組合近 20 日年化波動超過此值 → 個股部位等比例降低（波動目標）
     entry_close: object = None       # 每個訊號是否把「新買進」改在進場日收盤（np.ndarray[S] bool；隔夜美股大波動時）
     cap_key: str = "SECTOR"          # max_per_sector 使用的分類：SECTOR 官方產業別、GROUP 產業鏈族群
+    sell_block: bool = False         # v3.14：開盤跌停（≤ 昨收 −9.5%）或沒有成交 → 當天賣不掉，之後第一個能賣的開盤賣（停損同規則）
 
 
 def spec_from_cfg(cfg: dict, horizon: str, exposure_profile: str = "none", **kw) -> Spec:
@@ -61,7 +62,8 @@ def spec_from_cfg(cfg: dict, horizon: str, exposure_profile: str = "none", **kw)
              exposure=dict(k["exposure"][exposure_profile]),
              buy_cost=c["fee"] * c["fee_discount"] + c["slippage"],
              sell_cost=c["fee"] * c["fee_discount"] + c["tax"] + c["slippage"],
-             capital=cfg["research"]["capital"], max_participation=cfg["research"]["max_participation"])
+             capital=cfg["research"]["capital"], max_participation=cfg["research"]["max_participation"],
+             sell_block=bool(cfg["research"].get("sell_block", False)))
     for key, v in kw.items():
         setattr(s, key, v)
     return s
@@ -156,6 +158,7 @@ def run(B, view: PoolView, weights: list, spec: Spec, start_i: int = 0) -> Resul
     nt = max(1, spec.H // spec.step)
     with np.errstate(invalid="ignore", divide="ignore"):
         GAP = np.where(np.isfinite(OC), (1 + R) / (1 + OC) - 1, 0.0)
+        SELLOK = np.isfinite(OC) & (GAP > -0.095)          # v3.14：開盤沒有跌停且有成交 → 可以賣
     slot_val = np.full((nt, D), np.nan)
     first_day = sig[start_i] + 1 if start_i < S else D
     for s in range(nt):
@@ -223,6 +226,18 @@ def run(B, view: PoolView, weights: list, spec: Spec, start_i: int = 0) -> Resul
         elif scale != 1.0:
             new_w = {j: v * scale for j, v in new_w.items()}
         old_w = {j: v / V for j, v in old.items()} if V > 0 else {}
+        stuck = set()                                        # v3.14：今天開盤賣不掉、要延後賣出的股票
+        if spec.sell_block and old_w:
+            blocked = [j for j, ow in old_w.items() if j != -1 and ow > 0 and new_w.get(j, 0.0) < ow - 1e-12 and not SELLOK[e, j]]
+            if blocked:
+                extra = sum(old_w[j] - new_w.get(j, 0.0) for j in blocked)
+                rest = {j: v for j, v in new_w.items() if j not in blocked}
+                tot_rest = sum(rest.values())
+                f = max(0.0, tot_rest - extra) / tot_rest if tot_rest > 0 else 0.0
+                new_w = {j: v * f for j, v in rest.items()}
+                for j in blocked:
+                    new_w[j] = old_w[j]
+                stuck = {j for j in blocked if j not in picks}
         keys = set(old_w) | set(new_w)
         sell = sum(max(0.0, old_w.get(j, 0) - new_w.get(j, 0)) for j in keys if j != -1)
         buy = sum(max(0.0, new_w.get(j, 0) - old_w.get(j, 0)) for j in keys if j != -1)
@@ -241,7 +256,8 @@ def run(B, view: PoolView, weights: list, spec: Spec, start_i: int = 0) -> Resul
         base = pv.copy()
         cash = V - pv.sum() - bv
         alive = np.ones(len(js), bool)
-        pending = np.zeros(len(js), bool)
+        pending = np.array([int(j) in stuck for j in js], bool) if len(js) else np.zeros(0, bool)
+        CANSELL = SELLOK if spec.sell_block else OK
         last = min(x - 1, D - 1)
         for d in range(e, last + 1):
             if len(js):
@@ -251,7 +267,7 @@ def run(B, view: PoolView, weights: list, spec: Spec, start_i: int = 0) -> Resul
                         f = np.where(np.isin(js, list(old)), f, 1.0)   # 新買進改在收盤成交 → 當天不承擔開盤→收盤
                     pv = pv * f
                 else:
-                    sell_now = pending & OK[d, js]
+                    sell_now = pending & CANSELL[d, js]
                     if sell_now.any():  # stop-loss exit at this open (after the overnight gap)
                         pv[sell_now] *= 1 + GAP[d, js[sell_now]]
                         cash += (pv[sell_now] * (1 - spec.sell_cost)).sum()

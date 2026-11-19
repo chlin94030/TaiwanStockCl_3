@@ -252,7 +252,31 @@ def best_quote(q: dict | None, d: dict | None, close: float, chg: float, researc
     td = pd.Timestamp(today).date() if today is not None else pd.Timestamp.now(tz=TZ).date()
     if out["live"] and out.get("date") is not None and out["date"] < td and out["src"] not in ("bid", "ask"):
         out["label"] = f"{pd.Timestamp(out['date']):%m/%d} 收盤"          # 例：隔天開盤前看到的是前一日的收盤，不是今天的報價
+    # v3.14（同儕評審 4.3）：每個報價標明來源、時間、是否過期（證交所報價比現在舊 5 分鐘以上＝過期）
+    out["src_zh"] = SRC_ZH.get(out["src"], "證交所")
+    tm = str((q or {}).get("time") or "")[:5] if out["src"] not in ("yahoo", "close") else ""
+    out["time"] = tm if len(tm) == 5 and tm[2] == ":" else ""
+    out["stale_min"] = None
+    if out["time"] and out.get("date") == td:
+        nowt = pd.Timestamp(today) if today is not None else pd.Timestamp.now(tz=TZ).tz_localize(None)
+        nowt = nowt.tz_localize(None) if getattr(nowt, "tzinfo", None) is not None else nowt
+        try:
+            qt = pd.Timestamp(f"{td} {out['time']}")
+            m = (nowt - qt).total_seconds() / 60
+            out["stale_min"] = int(m) if m >= 5 and nowt.hour * 60 + nowt.minute <= 13 * 60 + 35 else None
+        except (ValueError, TypeError):
+            pass
     return out
+
+
+SRC_ZH = {"trade": "證交所成交", "trial": "證交所試撮", "bid": "證交所委買", "ask": "證交所委賣", "yahoo": "Yahoo 分時", "close": "收盤資料"}
+
+
+def source_line(bq: dict) -> str:
+    """「證交所成交 10:32」「證交所成交 10:20・已過 12 分」；收盤資料／Yahoo 分時已在 label 說明 → 空字串。"""
+    if not bq.get("live") or not bq.get("time"):
+        return ""
+    return f"{bq.get('src_zh', '證交所')} {bq['time']}" + (f"・已過 {bq['stale_min']} 分" if bq.get("stale_min") else "")
 
 
 def _best_quote(q, d, close, chg, research_day, etf, limit_prices) -> dict:
