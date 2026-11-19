@@ -3026,6 +3026,217 @@ def env_panel_html() -> str:
               "（短線逆風 +1.4%、順風 +1.7%）→ 用來看<b>現在的趨勢位置</b>，不是買賣訊號；美股為前一晚收盤。</div>")
 
 
+# ================================================================== v3.16 每日台股盤前日報（kosto/morning.py；docs/v3.16_protocol.md）
+@st.cache_data(ttl=300, show_spinner=False)
+def morning_files() -> tuple[dict, list]:
+    """(最新日報, 日報歷史)：GitHub 模式讀 kosto-research 的 morning.json；本機讀 artifacts/。"""
+    import json
+    rep, hist = {}, []
+    if REPO:
+        for nm in ("morning.json", "morning_hist.json"):
+            try:
+                x = json.loads(fetch_asset(REPO, RESEARCH_TAG, nm, TOKEN).decode("utf-8"))
+                rep, hist = (x, hist) if nm == "morning.json" else (rep, x)
+            except Exception:  # noqa: BLE001
+                pass
+    for nm in ("morning.json", "morning_hist.json"):
+        p = Path("artifacts") / nm
+        if p.is_file() and not (rep if nm == "morning.json" else hist):
+            try:
+                x = json.loads(p.read_text(encoding="utf-8"))
+                rep, hist = (x, hist) if nm == "morning.json" else (rep, x)
+            except Exception:  # noqa: BLE001
+                pass
+    return rep, hist
+
+
+@st.cache_data(show_spinner=False)
+def morning_score(bid, hist_json: str) -> dict:
+    import json
+    from kosto import morning as M
+    return M.score(json.loads(hist_json or "[]"), B)
+
+
+def morning_now() -> dict:
+    """今天的日報：GitHub 排程產出的那一份；沒有或不是今天的 → 用本頁「立即產生」的那一份。"""
+    from kosto import morning as M
+    rep, _ = morning_files()
+    day = str(M.report_date(pd.Timestamp.now(tz="Asia/Taipei")).date())
+    live = st.session_state.get("kq_morning_live") or {}
+    if live.get("date") == day and (rep.get("date") != day or live.get("generated_at", "") > rep.get("generated_at", "")):
+        return live
+    return rep
+
+
+def _ev(kind: str) -> str:
+    return ui.evidence("tested" if kind == "tested" else "ref")
+
+
+def morning_html(rep: dict, hist: list | None = None) -> str:
+    from kosto import morning as M
+    pc = lambda x, d=1: "–" if x is None else ui.pct(x, d, color=True)          # noqa: E731
+    p0 = lambda v: "–" if v is None else f"{v:.0%}"                              # noqa: E731
+    f2 = lambda v: "–" if v is None else f"{v:.2f}"                              # noqa: E731
+    gen = pd.Timestamp(rep.get("generated_at")).tz_convert("Asia/Taipei") if rep.get("generated_at") else None
+    d = pd.Timestamp(rep["date"])
+    st_txt = "完整" if rep.get("status") == "complete" else "部分資料缺（" + "、".join(
+        {"us": "美股", "night": "夜盤", "heavy": "權值股", "news": "新聞", "link": "開盤預估"}[k] for k, v in (rep.get("sections_ok") or {}).items() if not v) + "）"
+    h = ui.section(f"🌅 台股盤前日報 {d:%m/%d}（週{'一二三四五六日'[d.weekday()]}）",
+                   f"產出 {gen:%m/%d %H:%M}｜美股資料日 {ui.esc(rep.get('us_date') or '–')}｜研究資料到 {ui.esc(rep.get('model_asof') or '–')}｜{ui.esc(st_txt)}"
+                   if gen is not None else "")
+    if rep.get("headline"):
+        h += "<div class='kq-verdict'>" + "<br>".join(f"<b>{ui.esc(x)}</b>" if k == 0 else ui.esc(x) for k, x in enumerate(rep["headline"])) + "</div>"
+    lk = rep.get("link") or {}
+    pr = lk.get("pred") or {}
+    m1 = lk.get("m1") or {}
+    cards = []
+    if pr:
+        t1 = m1.get("test") or {}
+        cards.append(("預估大盤開盤" + _ev("tested" if pr.get("tested") else "ref"), pc(pr["gap"]),
+                      f"區間 {ui.pct(pr['lo'], 1)}～{ui.pct(pr['hi'], 1)}｜2024 年後方向命中 {p0(t1.get('hit'))}"))
+    tsm = next((r for r in (rep.get("heavy") or {}).get("rows", []) if r["ticker"] == "2330"), {})
+    if pr.get("g2330") is not None:
+        adr = tsm.get("adr") or {}
+        cards.append(("台積電預估開盤" + _ev("tested" if pr.get("g2330_tested") else "ref"), pc(pr["g2330"]),
+                      f"ADR {pc(adr.get('chg'), 2)}｜換算溢價 {ui.pct(adr.get('premium'), 1)}" if adr else ""))
+    us = {r["key"]: r for r in (rep.get("us") or {}).get("rows", [])}
+    if "SOX" in us:
+        cards.append(("費城半導體", pc(us["SOX"]["chg"], 2), f"那指 {pc(us.get('IXIC', {}).get('chg'), 2)}｜VIX {f2(us.get('VIX', {}).get('price'))}"))
+    nt = rep.get("night") or {}
+    tx = nt.get("tx") or nt.get("nq") or nt.get("nq_day")
+    cards.append(("夜盤／期貨" + _ev("ref"), pc((tx or {}).get("chg"), 2) if tx else "–",
+                  "台指期夜盤" if nt.get("tx") else "台股收盤後那指期" if nt.get("nq") else "那指期（相對前一日）" if nt.get("nq_day") else "見下方說明"))
+    h += ui.cards(cards, raw=True)
+    # 1 美股
+    h += ui.section("1. 美股收盤總評", ui.evidence("ref"))
+    h += f"<div style='margin:2px 0 6px'>{ui.esc((rep.get('us') or {}).get('summary', ''))}</div>"
+    rows = [[ui.esc(r["name"]), f"{r['price']:,.2f}" if r.get("price") is not None else "–", pc(r.get("chg"), 2), ui.esc(r.get("bar_date") or "")]
+            for r in (rep.get("us") or {}).get("rows", [])]
+    if rows:
+        h += ui.table(["指數／商品", "收盤", "漲跌", "資料日"], rows, left=(0,))
+    # 2 夜盤
+    h += ui.section("2. 夜盤趨勢", "台指期夜盤 15:00～05:00；連不到期交所時改看台股收盤後的美股期貨" + ui.evidence("ref"))
+    h += f"<div>{ui.esc(nt.get('text', ''))}</div>"
+    # 3 權值股
+    h += ui.section("3. 權值股動態", "昨收與外資（研究資料）、ADR 換算價（ADR 收盤 × 匯率 ÷ 換股比例）、對應的美股同業" + ui.evidence("ref"))
+    rows = []
+    for r in (rep.get("heavy") or {}).get("rows", []):
+        adr = r.get("adr") or {}
+        rows.append([f"<b>{r['ticker']}</b> {ui.esc(r['name'])}", f"{r['close']:,.1f}" if r.get("close") else "–", pc(r.get("chg"), 2),
+                     (f"{r['fi1']:+,.0f}／{r['fi5']:+,.0f}" if r.get("fi1") is not None else "–"),
+                     (f"{ui.esc(adr['name'])} {pc(adr['chg'], 2)}｜換算 {adr['implied']:,.1f}（溢價 {ui.pct(adr['premium'], 1)}）" if adr else "–"),
+                     "、".join(f"{ui.esc(p['name'])} {pc(p['chg'], 1)}" for p in r.get("peers", []) if p["name"] != adr.get("name")) or "–"])
+    if rows:
+        h += ui.table(["權值股", "昨收", "漲跌", "外資 今日／5日（張）", "ADR", "美股同業"], rows, left=(0, 4, 5))
+    # 4 消息
+    h += ui.section("4. 重大消息", "近 24 小時新聞標題（美股、台股、台積電、聯準會、輝達），依關鍵字標主題" + ui.evidence("ref"))
+    items = (rep.get("news") or {}).get("items") or []
+    if items:
+        h += "<ul style='margin:4px 0 6px 18px;padding:0'>" + "".join(
+            f"<li style='margin:2px 0'><a href='{ui.esc(x['link'])}' target='_blank' rel='noopener'>{ui.esc(x['title'])}</a>"
+            f"<span class='kq-sub'>　{ui.esc(x.get('source') or '')} {pd.Timestamp(x['time']).tz_convert('Asia/Taipei'):%m/%d %H:%M}</span>"
+            + "".join(ui.tag(t, "g") for t in x.get("tags") or []) + "</li>" if x.get("time") else
+            f"<li><a href='{ui.esc(x['link'])}' target='_blank' rel='noopener'>{ui.esc(x['title'])}</a></li>" for x in items) + "</ul>"
+    else:
+        h += "<div class='kq-muted'>新聞來源暫時取不到（不影響其他段落）。</div>"
+    # 5 關聯性
+    h += ui.section("5. 影響台股關聯性", "前一夜美股 → 今天台股開盤的歷史關係（2024 年起為檢驗期，不參與估計）")
+    if pr:
+        x = pr.get("x") or {}
+        t1, t2 = m1.get("test") or {}, ((lk.get("m2") or {}).get("test") or {})
+        h += (f"<div style='margin:2px 0 6px'>依前一夜費半 {pc(x.get('sox'), 2)}、那指 {pc(x.get('ixic'), 2)}、台積電 ADR（台幣計）{pc(x.get('tsm_twd'), 2)}、"
+              f"VIX {x.get('dvix', 0):+.1f} → <b>預估大盤開盤 {pc(pr['gap'])}</b>（誤差帶 ±{(m1.get('rmse') or 0) * 100:.1f}%）{_ev('tested' if pr.get('tested') else 'ref')}<br>"
+              f"<span class='kq-muted'>檢驗：2024 年後 {t1.get('n', 0)} 天，預估與實際相關 {f2(t1.get('corr'))}、"
+              f"預估 |跳空|≥0.3% 的 {t1.get('n_hit', 0)} 天方向命中 {p0(t1.get('hit'))}；台積電開盤相關 {f2(t2.get('corr'))}。"
+              "大盤＝市值前 50 名市值加權開盤，與加權指數接近。</span></div>")
+        bks = lk.get("buckets") or []
+        if bks:
+            cur = pr.get("bucket")
+            h += ui.table(["預估開盤", "天數（2024 年後）", "實際開盤平均", "開盤→收盤（大型股）"],
+                          [[("<b>▶ " if b["bucket"] == cur else "") + ui.esc(b["bucket"]) + ("</b>" if b["bucket"] == cur else ""), f"{int(b['n'])}",
+                            pc(b["gap"], 2), pc(b["oc"], 2)] for b in bks], left=(0,))
+        m3, m4 = lk.get("m3") or {}, lk.get("m4") or {}
+        h += (f"<div class='kq-muted'>開高不追：預估開高 ≥1% 的 {m3.get('n', 0)} 天，大型股開盤→收盤平均 {ui.pct(m3.get('oc300'), 2)}"
+              f"（{(m3.get('neg') or 0):.0%} 收在開盤價之下）{_ev('tested' if m3.get('tested') else 'ref')}；"
+              f"大跌不恐慌：預估開低 ≤−1% 的 {m4.get('n', 0)} 天，開盤→收盤平均 {ui.pct(m4.get('oc300'), 2)}{_ev('tested' if m4.get('tested') else 'ref')}</div>")
+    else:
+        h += "<div class='kq-muted'>缺少研究模型或美股報價，今天沒有開盤預估。</div>"
+    th = lk.get("themes") or []
+    if th:
+        h += "<div style='margin:8px 0 2px'><b>美股族群大漲跌 → 台股相關族群</b>" + ui.evidence("ref") + "</div>"
+        h += ui.table(["主題", "美股", "台股相關"], [[f"<b>{ui.esc(t['theme'])}</b> {pc(t['avg'], 1)}",
+                                                   "、".join(f"{ui.esc(u['name'])} {pc(u['chg'], 1)}" for u in t["us"]), ui.esc(t["tw"])] for t in th],
+                      left=(0, 1, 2))
+    # 6 建議
+    adv = rep.get("advice") or {}
+    h += ui.section("6. 今日操作建議", "只用經過歷史檢驗的規則與模型名單；每點標證據等級")
+    col = lambda nm, xs, c: (f"<div class='kq-panel' style='border-top:3px solid {c}'><h4>{nm}</h4><ol style='margin:4px 0 0 18px;padding:0'>"   # noqa: E731
+                             + "".join(f"<li style='margin:4px 0'>{ui.esc(x['text'])}{_ev(x['ev'])}</li>" for x in xs) + "</ol></div>")
+    h += ("<div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:10px'>"
+          + col("🛡️ 保守型", adv.get("conservative") or [], "#2563eb") + col("🚀 積極型", adv.get("aggressive") or [], "#dc2626") + "</div>")
+    if hist:
+        sc = morning_score(BID, M.dumps(hist))
+        if sc.get("n"):
+            h += (f"<div class='kq-muted' style='margin-top:8px'>日報前瞻紀錄：{sc['n']} 天已有實際開盤，方向命中 "
+                  f"{p0(sc.get('hit'))}（{sc['n_dir']} 天），平均誤差 {sc['mae'] * 100:.2f}%" + (f"；{sc['pending']} 天待研究資料更新" if sc.get("pending") else "") + "</div>")
+    h += f"<div class='kq-muted' style='margin-top:6px'>{ui.esc(rep.get('disclaimer', ''))}</div>"
+    return h
+
+
+def morning_tab():
+    from kosto import morning as M
+    now = pd.Timestamp.now(tz="Asia/Taipei")
+    day = str(M.report_date(now).date())
+    rep, hist = morning_files()
+    cur = morning_now()
+    if cur.get("date") != day:
+        st.markdown(ui.section("🌅 台股盤前日報", f"每個交易日台北 05:43 自動產出（06:13、06:38 備援），07:00 前可看；{day} 的日報還沒有產出"),
+                    unsafe_allow_html=True)
+        if cur:
+            st.caption(f"以下是最近一份（{cur.get('date')}）。")
+    if st.button("立即產生今日盤前日報（約 20～40 秒）", key="kq_morning_btn",
+                 help="抓最新的美股收盤、期貨、ADR 與新聞，用每日研究的模型做開盤預估（不會上傳，只在這次瀏覽使用）"):
+        with st.spinner("抓取美股、期貨、ADR 與新聞…"):
+            st.session_state["kq_morning_live"] = M.build((RES or {}).get("morning_model") or {}, M.fetch_live(now), RES or {}, now)
+        cur = morning_now()
+    if cur:
+        st.markdown(morning_html(cur, hist), unsafe_allow_html=True)
+    else:
+        st.info("還沒有任何盤前日報：第一次請按上方按鈕，或到 GitHub Actions 執行「Kosto 盤前日報」。")
+
+
+def morning_banner() -> str:
+    """盤勢儀表板頂端：今日盤前日報的重點與兩種建議的第一點（全文在「🌅 盤前日報」分頁）。"""
+    try:
+        from kosto import morning as M
+        cur = morning_now()
+        if cur.get("date") != str(M.report_date(pd.Timestamp.now(tz="Asia/Taipei")).date()):
+            return ""
+        hd = cur.get("headline") or []
+        adv = cur.get("advice") or {}
+        pick = lambda k: next((x["text"] for x in adv.get(k) or [] if "預估" in x["text"] or "開" in x["text"][:4]), "")   # noqa: E731
+        c, g = pick("conservative"), pick("aggressive")
+        return ("<div class='kq-verdict' style='border-left-color:#f59e0b'><b>🌅 今日盤前日報</b>　" + "｜".join(ui.esc(x) for x in hd[:2])
+                + (f"<br><span class='kq-muted'>保守：{ui.esc(c)}</span>" if c else "") + (f"<br><span class='kq-muted'>積極：{ui.esc(g)}</span>" if g else "")
+                + "<br><span class='kq-sub'>全文（美股、夜盤、權值股、消息、關聯性、建議）在下方第一個分頁「🌅 盤前日報」</span></div>")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def morning_home_line() -> str:
+    try:
+        from kosto import morning as M
+        cur = morning_now()
+        if cur.get("date") != str(M.report_date(pd.Timestamp.now(tz="Asia/Taipei")).date()):
+            return ""
+        pr = (cur.get("link") or {}).get("pred") or {}
+        hd = cur.get("headline") or []
+        return ("<br><span class='kq-muted'>🌅 今日盤前日報：" + ui.esc(hd[0] if hd else "")
+                + ("" if pr else "") + "（<a href='./insight' target='_self'>盤勢儀表板 → 盤前日報</a>）</span>")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def env_tab_html(df: pd.DataFrame) -> str:
     """🌡️ 環境與估值：估值溫度、站上各均線比例、底線（關鍵價位）、歷史檢查。"""
     from kosto import env as E
@@ -3308,7 +3519,8 @@ def page_insight():
     header()
     data_strip()
     df, c, sto = insight_frame(BID)
-    st.markdown(ui.section("盤勢儀表板", "現在在哪裡、今天盤中、止穩了沒、急跌怎麼應對、特別時期怎麼選股、模型體檢"), unsafe_allow_html=True)
+    st.markdown(ui.section("盤勢儀表板", "盤前日報、現在在哪裡、今天盤中、止穩了沒、急跌怎麼應對、特別時期怎麼選股、模型體檢"), unsafe_allow_html=True)
+    st.markdown(morning_banner(), unsafe_allow_html=True)            # v3.16 今日盤前日報摘要（全文在下方第一個分頁）
     if df.empty or not sto:
         st.info("盤勢儀表板需要新版每日研究資料（下一次每日更新後提供）。")
         return
@@ -3361,7 +3573,10 @@ def page_insight():
     in_crash = any(f[2] for f in cur.get("flags", [])) or sto["corr"]
     names = ["🚨 急跌應變", "✅ 止穩檢查", "🎯 特別時期選股", "🩺 模型體檢", "🧭 觀察重點", "🥚 科斯托蘭尼", "🌡️ 環境與估值"]
     order = names if in_crash else [names[4], names[6], names[5], names[1], names[0], names[2], names[3]]
+    order = ["🌅 盤前日報"] + order                                     # v3.16 每日台股盤前日報（07:00 前）
     tabs = dict(zip(order, st.tabs(order)))
+    with tabs["🌅 盤前日報"]:
+        morning_tab()
 
     with tabs["🚨 急跌應變"]:
         summ, asof, fresh = crash_summary()
@@ -4278,6 +4493,25 @@ def v315_html() -> str:
     return h
 
 
+def v316_html() -> str:
+    """v3.16 盤前日報的歷史驗證與前瞻命中率。"""
+    from kosto import review as rv
+    h = ui.section("盤前日報的歷史驗證（v3.16）", "2019～2023 估計、2024 年後檢驗；預先宣告：docs/v3.16_protocol.md")
+    h += ui.table(["", "規則", "檢驗期結果", "門檻", "證據"], [[f"<b>{a}</b>", ui.esc(b), ui.esc(c), ui.esc(d), ui.evidence(e)] for a, b, c, d, e in rv.V316_RULES],
+                  left=(0, 1, 2, 3))
+    h += ui.table(["預估開盤", "天數", "實際開盤平均", "開盤→收盤（大型股）"],
+                  [[ui.esc(a), str(b), f"{c:+.2f}%", f"{d:+.2f}%"] for a, b, c, d in rv.V316_BUCKETS], left=(0,))
+    _, hist = morning_files()
+    if hist:
+        from kosto import morning as M
+        sc = morning_score(BID, M.dumps(hist))
+        if sc.get("n"):
+            lt = "日報前瞻：{} 天已有實際開盤，方向命中 {}、平均誤差 {:.2f}%".format(sc["n"], "–" if sc.get("hit") is None else f"{sc['hit']:.0%}", sc["mae"] * 100)
+            h += f"<div>{ui.light('green' if (sc.get('hit') or 0) >= 0.65 else 'amber', lt)}</div>"
+    h += f"<div class='kq-muted'>{ui.esc(rv.V316_NOTE)}</div>"
+    return h
+
+
 def diagnostics_html() -> str:
     """v3.15 更新後自動異常診斷（第二份評審 9C；kosto/diagnose.py）：只警告、不改名單。"""
     dg = (RES or {}).get("diagnostics")
@@ -4318,6 +4552,7 @@ def page_validate():
     st.markdown(diagnostics_html(), unsafe_allow_html=True)
     forward_panel()
     replay_section()
+    st.markdown(v316_html(), unsafe_allow_html=True)
     st.markdown(v315_html(), unsafe_allow_html=True)
     st.markdown(validate_html(), unsafe_allow_html=True)
 
@@ -5357,7 +5592,8 @@ def page_home():
                 f"{ui.esc(nm)} {c['short_zh']}／{c['long_zh']}" for nm, c in ec) + "</span>")
     except Exception:  # noqa: BLE001
         pass
-    c1 = hcard(1, "今天市場：能不能進場？", b1, "<a href='./insight' target='_self'>→ 盤勢儀表板（燈號、急跌應變、科斯托蘭尼階段）</a>")
+    b1 += morning_home_line()                                          # v3.16 盤前日報一行摘要
+    c1 = hcard(1, "今天市場：能不能進場？", b1, "<a href='./insight' target='_self'>→ 盤勢儀表板（盤前日報、燈號、急跌應變、科斯托蘭尼階段）</a>")
     # ② 資金
     mx = (UE.research().get("mix") or {}).get(prof, {})
     us_mix = "、".join(f"{UV.etf_label(t)} {x:.0%}" for t, x in (mx.get("w") or {}).items())

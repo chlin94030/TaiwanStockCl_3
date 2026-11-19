@@ -1,0 +1,57 @@
+name: Kosto 盤前日報
+
+# v3.16 每日台股盤前日報（docs/v3.16_protocol.md；與台股研究、美股名單互不影響）：
+#  * 台北 05:43 產出（美股收盤、台指期夜盤 05:00 結束之後），06:13、06:38 兩次備援 → 07:00 前一定看得到
+#  * 讀前一晚每日研究的結果（含盤前日報模型）＋盤前即時行情與新聞 → 上傳 morning.json 到 kosto-research（App 自動讀取）
+#  * 當天已有完整日報時備援排程會略過；手動 Run workflow 一律重做
+#  * 美股報價全部取不到就不發布，App 繼續顯示前一份（App 也可以按「立即產生」自己做）
+
+on:
+  schedule:
+    - cron: "43 21 * * 0-4"   # 台北 05:43（週一～週五）
+    - cron: "13 22 * * 0-4"   # 台北 06:13 備援
+    - cron: "38 22 * * 0-4"   # 台北 06:38 備援
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: kosto-morning
+  cancel-in-progress: false
+
+env:
+  PYTHONUNBUFFERED: "1"
+  RESEARCH_TAG: kosto-research
+
+jobs:
+  morning:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-pipeline.txt
+      - run: pip install -r requirements-pipeline.txt
+      - name: 取回研究結果與前一份日報
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p prev artifacts
+          gh release download "$RESEARCH_TAG" -p "results.pkl" -D artifacts --clobber || echo "尚無研究結果（只整理行情與新聞）"
+          gh release download "$RESEARCH_TAG" -p "morning.json" -D prev --clobber || echo "第一次產生日報"
+          gh release download "$RESEARCH_TAG" -p "morning_hist.json" -D prev --clobber || echo "尚無日報歷史"
+      - name: 產生盤前日報
+        run: python cli.py morning --hist prev/morning_hist.json --prev prev/morning.json ${{ github.event_name == 'workflow_dispatch' && '--force' || '' }}
+      - name: 發布到 App
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -f artifacts/morning.json ]; then
+            gh release upload "$RESEARCH_TAG" artifacts/morning.json artifacts/morning_hist.json --clobber
+          else
+            echo "今日日報已完成或資料取不到，略過發布"
+          fi

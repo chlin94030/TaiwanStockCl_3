@@ -10,6 +10,7 @@
   python cli.py pack --group price --out x.tar.gz         打包某資料群組（Actions 用）
   python cli.py unpack x.tar.gz                           解開資料群組
   python cli.py us-build [--prev us_bundle.pkl.gz]        v3.4 美股：抓日線→因子→參考名單（輸出 artifacts/us_bundle.pkl.gz）
+  python cli.py morning [--hist h.json] [--prev m.json]   v3.16 台股盤前日報（輸出 artifacts/morning.json、morning_hist.json）
 """
 from __future__ import annotations
 
@@ -150,6 +151,17 @@ def cmd_research(a, cfg):
             log(("⚠ " if x["level"] == "warn" else "") + "診斷：" + x["text"])
     except Exception as e:  # noqa: BLE001
         log(f"異常診斷略過：{e}")
+    try:                                                              # v3.16 盤前日報的歷史驗證模型（隔天清晨 cli morning 使用）
+        from kosto import morning
+        res["morning_model"] = morning.fit(B)
+        mm = res["morning_model"]
+        if mm.get("error"):
+            log(f"盤前日報模型略過：{mm['error']}")
+        else:
+            t1 = mm["m1"]["test"]
+            log(f"盤前日報模型：大盤開盤預估（2024 年後）相關 {t1['corr']:.2f}、方向命中 {t1['hit']:.0%}（{t1['n_hit']} 天）")
+    except Exception as e:  # noqa: BLE001
+        log(f"盤前日報模型略過：{e}")
     try:
         res["linkage_ic"] = linkage_ic(R, res)                       # v2.1 連動因子逐年有效性（監控用，不進模型）
     except Exception as e:  # noqa: BLE001
@@ -376,6 +388,55 @@ def cmd_status(a, cfg):
     print(Store(cfg["data"]["dir"]).summary().to_string())
 
 
+def cmd_morning(a, cfg):
+    """v3.16 每日台股盤前日報：讀前一晚的研究結果（含 morning_model）＋盤前即時行情與新聞 → artifacts/morning.json。"""
+    import json
+
+    import pandas as pd
+
+    from kosto import morning as M
+    now = pd.Timestamp.now(tz="Asia/Taipei")
+    day = str(M.report_date(now).date())
+    if a.prev and Path(a.prev).is_file() and not a.force:
+        try:
+            old = json.loads(Path(a.prev).read_text(encoding="utf-8"))
+            if old.get("date") == day and old.get("status") == "complete":
+                log(f"{day} 的盤前日報已完成（{old.get('generated_at', '')[:16]}），略過；要重做請加 --force")
+                return
+        except Exception:  # noqa: BLE001
+            pass
+    res = {}
+    rp = Path(a.results)
+    if rp.is_file():
+        try:
+            with open(rp, "rb") as f:
+                res = pickle.load(f).get("res") or {}
+        except Exception as e:  # noqa: BLE001
+            log(f"讀取研究結果失敗（日報只整理行情與新聞）：{e}")
+    model = res.get("morning_model") or {}
+    if not model or model.get("error"):
+        log("研究結果沒有盤前日報模型（v3.16 以前，或研究失敗）→ 只整理行情與新聞，不做開盤預估")
+    live = M.fetch_live(now)
+    rep = M.build(model, live, res, now)
+    if not rep["us"]["rows"]:
+        log("美股報價全部取不到 → 不發布（App 繼續顯示前一份）")
+        return 2
+    hist = []
+    if a.hist and Path(a.hist).is_file():
+        try:
+            hist = json.loads(Path(a.hist).read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            hist = []
+    hist = M.append_hist(hist, rep)
+    ART.mkdir(exist_ok=True)
+    (ART / "morning.json").write_text(M.dumps(rep), encoding="utf-8")
+    (ART / "morning_hist.json").write_text(M.dumps(hist), encoding="utf-8")
+    for x in rep["headline"]:
+        log("日報：" + x)
+    miss = [k for k, v in rep["sections_ok"].items() if not v]
+    log(f"{day} 盤前日報完成（{rep['status']}" + (f"；缺：{'、'.join(miss)}" if miss else "") + "）")
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description="Kosto Lab 科斯托蘭尼量化選股實驗室")
     p.add_argument("--config", default=None, help="自訂 YAML（會覆蓋 config/default.yaml 的同名欄位）")
@@ -399,6 +460,8 @@ def main(argv=None):
     pk = sub.add_parser("pack"); pk.add_argument("--group", required=True); pk.add_argument("--out", required=True)
     up = sub.add_parser("unpack"); up.add_argument("archive", nargs="+")
     ub = sub.add_parser("us-build"); ub.add_argument("--prev", default=None)
+    mo = sub.add_parser("morning"); mo.add_argument("--results", default=str(ART / "results.pkl"))
+    mo.add_argument("--hist", default=None); mo.add_argument("--prev", default=None); mo.add_argument("--force", action="store_true")
     a = p.parse_args(argv)
     over = {"data": {"dir": a.data_dir}} if a.data_dir else None
     if a.cmd == "demo" and not a.data_dir:
@@ -417,7 +480,7 @@ def main(argv=None):
         return
     {"update": cmd_update, "bundle": cmd_bundle, "research": cmd_research, "demo": cmd_demo,
      "status": cmd_status, "summary": cmd_summary, "progress": cmd_progress, "auto": cmd_auto,
-     "us-build": cmd_us_build}[a.cmd](a, cfg)
+     "us-build": cmd_us_build, "morning": cmd_morning}[a.cmd](a, cfg)
 
 
 if __name__ == "__main__":

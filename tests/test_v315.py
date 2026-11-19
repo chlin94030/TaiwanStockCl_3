@@ -113,4 +113,4 @@ def test_v315_results_and_docs():
     assert "## 二、候選（全部事先固定，不做網格）" in doc and "## 五、結果" in doc and "q > 0.10" in doc
     cfg = load_config()
     assert cfg["research"]["overlay"] == {"f_rev_rel": 0.15} and cfg["research"]["sell_block"] is True
-    assert '__version__ = "3.15.0"' in (ROOT / "kosto" / "__init__.py").read_text(encoding="utf-8")
+    assert '__version__ = "3.' in (ROOT / "kosto" / "__init__.py").read_text(encoding="utf-8")
