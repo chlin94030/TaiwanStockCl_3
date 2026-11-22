@@ -31,7 +31,14 @@ ITEMS = [
      "why": "v2.3 S2：回撤淺 4.7、超額 −0.3；需要新的急跌事件"},
     {"key": "W5", "hz": ("short", "mid", "long"), "kind": "return", "name": "產業調整後動能（動能權重一半）",
      "why": "v3.15 N3（第二份評審策略 B）：歷史門檻全過（中線 +2.1、5/5 換股日、三期間回撤都較淺），多重檢定 q=0.31 未過"},
+    {"key": "W6", "hz": ("short", "mid", "long"), "kind": "return", "name": "急跌時改用反彈候選選股",
+     "why": "v3.17 C4：急跌換股日改選跌深、營收優於同業、投信沒追高的股票；全期中線 +2.0、短線 +6.1，但急跌期間只多 0.9pp（門檻 1pp）、回撤深 1.8"},
+    {"key": "W7", "hz": ("short", "mid", "long"), "kind": "return", "name": "美股風險關閉時動能減半",
+     "why": "v3.18 A3：前一晚費半在 50 日線之下且 VIX≥25 → 動能群權重減半；門檻 1～4 全過（中線 +1.7、短線 +3.8、5/5 換股日、弱勢狀態不變差），"
+            "但效果集中在 2022 年，q 0.71 未過"},
 ]
+MOM_GROUP = ("t_rs120", "t_mom120x20", "t_high252", "t_mom60", "t_high20", "t_rmom240")    # v3.18 動能群
+REBOUND = (("t_mom20", -1), ("t_high60", -1), ("f_rev_rel", 1), ("c_trust20", -1))
 SPLIT = {"enabled": True, "to": "t_mom_secrel", "from": ["t_rs120", "t_mom120x20"], "share": 0.5}
 KIND_ZH = {"return": "報酬型", "balanced": "平衡型"}
 RULE = {"return": "累積報酬高於現行，且最大回撤不深於 2 個百分點",
@@ -84,6 +91,31 @@ def variant(R, key: str, h: str, rule: str, size: int, v, W: list, spec):
         return [None if w is None else (0.85 * _norm(w) + 0.15 * chips).astype(np.float32) for w in W], spec
     if key == "W3":
         return W, dataclasses.replace(spec, max_per_sector=3)
+    if key == "W6":
+        dirs = np.array(R.B.meta["directions"], float)
+        dirs[dirs == 0] = 1
+        if not all(f in F for f, _ in REBOUND):
+            return None
+        reb = np.zeros(n, np.float32)
+        for f, sg in REBOUND:
+            reb[F.index(f)] = sg * dirs[F.index(f)]
+        reb /= np.abs(reb).sum()
+        panic = R.panic_signals(PANIC)
+        return [reb if (panic[i] and w is not None) else w for i, w in enumerate(W)], spec
+    if key == "W7":
+        Mi = [F.index(f) for f in MOM_GROUP if f in F]
+        off = us_off_signals(R.B)
+        if not Mi or off is None:
+            return None
+
+        def half(w):
+            w = _norm(np.asarray(w, float)); w2 = w.copy(); w2[Mi] *= 0.5
+            m = np.ones(n, bool); m[Mi] = False
+            o = np.abs(w[m]).sum()
+            if o > 0:
+                w2[m] *= (1 - np.abs(w2[Mi]).sum()) / o
+            return w2.astype(np.float32)
+        return [half(w) if (w is not None and off[i]) else w for i, w in enumerate(W)], spec
     if key == "W5":
         if "t_mom_secrel" not in F:
             return None
@@ -98,6 +130,18 @@ def variant(R, key: str, h: str, rule: str, size: int, v, W: list, spec):
         return [None if w is None else ((0.85 * _norm(w) + 0.15 * e).astype(np.float32) if panic[i] else w)
                 for i, w in enumerate(W)], spec
     raise KeyError(key)
+
+
+def us_off_signals(B, vix_min: float = 25.0, ma: int = 50):
+    """v3.18 美股風險關閉（每個換股日）：前一晚費半收盤低於 50 日均線，且 VIX ≥ 25（WORLD＝美國日期 ≤ T−1）。"""
+    keys = list(B.meta.get("world_keys") or [])
+    if "WORLD" not in B.a or "SOX" not in keys or "VIX" not in keys:
+        return None
+    Wd = np.asarray(B.a["WORLD"], float)
+    sox = pd.Series(Wd[:, keys.index("SOX")]).ffill()
+    vix = pd.Series(Wd[:, keys.index("VIX")]).ffill()
+    off = ((sox < sox.rolling(ma, min_periods=40).mean()) & (vix >= vix_min)).to_numpy()
+    return off[np.asarray(B.sig_pos, int)]
 
 
 def forward(nav: pd.Series, since: str = SINCE) -> dict:

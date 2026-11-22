@@ -794,3 +794,44 @@ v1.9 改為每個交易日 **21:40 一次更新全部**（融資融券約 21:00�
 * App：盤勢儀表板第一個分頁「🌅 盤前日報」（`morning_tab`／`morning_html`，可「立即產生」）、總覽 ① 一行摘要、模型驗證頁 `v316_html()`。
 * 檢驗結果（2024 年後）：M1 相關 0.79、方向命中 92%；M2 相關 0.75；M3 開高 ≥1% 後大型股盤中 −0.39%；M4 開低 ≤−1% 後盤中 +0.40% → 皆標「已回測」；
   夜盤、新聞、主題對應、VIX 減碼標「僅供參考」。選股模型不變。
+
+## v3.17 崩跌因應（docs/v3.17_protocol.md）
+* 研究：2017～2026 的 6 次 0050 跌 15% 以上崩跌——模型與 0050 同期表現、橫斷面（融資使用率、60 日波動、本益比、120 日動能與崩跌跌幅／連續跌停）、
+  連續兩根跌停之後的走勢、0050 分批進場 P1～P4、反轉訊號 S1～S5（`review.V317_*`）。
+* 急跌選股規則 C1～C5（避開高融資、避開連續跌停、減碼轉 0050、反彈候選、C1＋C2）都沒有通過預先宣告的門檻 → 主模型不變；
+  C4 反彈候選列入觀察名單 W6（`watch.REBOUND`）。回測新增 `Spec.no_new`（只限制新買、已持有照原規則）。
+* `kosto/crash.py`：`market_state`（距高點、急跌狀態、融資自 120 日高點、近 5 日跌停家數、外資連買賣、VIX、費半）、`regime`、
+  `reversal_checklist`、`analogs`、`crash_risk`（融資使用率＋60 日波動百分位 → 高／中／低）、`recent_limit_downs`。
+* 盤前日報：`morning.fit(B, res)` 多存市況與名單風險（`crash_context`）；`morning.analysis()` 產生評析（市況定位、今晨美股的意義、消息與風險溫度、
+  名單怎麼看、資金與部位、今日一句話、反轉觀察）；急跌時建議排除高風險與連續跌停的名單股。原始數字收合在最後。
+* App：急跌應變分頁頂端「現在在哪裡＋反轉觀察清單」與歷史研究；選股卡片「急跌風險高」「近 5 日 n 根跌停」；模型驗證頁加崩跌檢驗。
+* 研究資料落後的保護：`morning.taiex_trend()`（Yahoo ^TWII 一年日線）＋`morning.live_state()` 只在加權指數日期比研究資料新時，把距高點／急跌狀態改成較嚴重的一方；App `crash_now_html(cur)` 同樣用今天的加權分時與即時 VIX。
+* 今日選股頁 `crash_mode_now()`：急跌時在買進清單下方列出急跌風險高或近 5 日 ≥2 根跌停的新進股（只提醒，不改名單）。
+
+
+## v3.18 全天候檢視（docs/v3.18_protocol.md）
+* 研究：以現行模型 walk-forward 日報酬，依 8 個面向的狀態（台股 200 日線、市況、60 日波動、VIX、費半 50 日線、新台幣 60 日、融資 20 日、動能多空近 12 週）
+  拆解年化超額與因子族群 IC（`review.V318_REGIME`、`V318_IC`）；名單曝險（β、費半敏感度、波動／融資使用率百分位，`V318_EXPO`）。
+* 候選 A1～A5（狀態條件權重、風險控管動能、美股風險關閉時動能減半、擁擠度因子 5%、反彈期加反彈候選）；門檻同 v3.15 報酬型＋新增「弱勢狀態不變差 1pp 以上」＋BH-FDR。
+  只有 A3 門檻全過，q 0.71 → 觀察名單 W7（`watch.us_off_signals`：WORLD 的費半＜50 日均線且 VIX≥25，動能群 `watch.MOM_GROUP` 權重減半、其餘等比例補回）。主模型不變。
+* `crash.model_weather(B, live)`：每個面向的目前狀態＋歷史統計；`live` 可帶即時 VIX、費半、今天的加權距高點（只更新狀態）。`crash.rebound_window`。
+* 盤前日報：`morning.crash_context` 多存 `weather`；`morning.live_weather` 用今晨 VIX／費半更新；評析「模型名單怎麼看」加入弱勢狀態說明與 W7 狀態。
+* App：`weather_html`（模型體檢分頁、模型驗證頁）、今日選股頁弱勢狀態一行提醒、`v318_html`（模型驗證頁收合）。
+
+## v3.19 全方位驗證（docs/v3.19_protocol.md）
+* 台股驗證（只報告，`review.V319_RANDOM／BOOT／STRESS／YEARS`）：同母池隨機名單（`PoolView` 隨機名次，規則相同）、20 日區塊自助法、
+  DSR（N＝500、試驗間 IR 變異取已存的 233 個中線變體）、成本加倍與隔日收盤成交（`Spec.entry_close`）、逐年超額。
+* 台美連動：`kosto/data/linkage_v319.json` 凍結 2019–2023 的估計——大盤（等權前 800 名）開盤＝費半、那指、台積電 ADR 的 OLS；
+  每個族群（產業鏈族群、≥5 檔）13 個美股訊號（費半、那指、台積電 ADR、SPY、9 個類股 SPDR）的脊迴歸（alpha 以 2023 驗證選）＋「大盤 × 族群 β」；
+  `pass`＝檢驗期相關 ≥ 0.5、方向命中 ≥ 70%、誤差小於大盤 × β。
+* `morning.stock_betas(B, res)`：個股開盤跳空對前一晚費半的 β（近 250 日；前 300 大＋名單股＋權值股）與族群平均 β，存在 `morning_model["link"]`。
+* `morning.link_predict(model, q, tickers)`：大盤、族群（通過的用脊迴歸、其餘大盤 × β）、個股（族群脊迴歸預估＋(β−族群平均 β)×費半，與 L2 檢驗相同）。
+  `fetch_live` 多抓 `LINK_ETF`（SPY 與 9 個類股 SPDR）。`build()` 加 `rep["groups"]`（`link_section`），並在評析「今晨美股的意義」加一句族群摘要。
+* App：盤前日報 `groups_html`；模型驗證頁 `v319_html`；今日選股短線提醒；美股頁 `UV.round4_html`（`us_research.json` 的 `round4`、`round4_zh`、`qqq_vs_spy`）。
+
+## v3.20 挑戰架構（docs/v3.20_protocol.md）
+* 研究（不進程式）：LightGBM 排序（因子母池名次＋7 個市場狀態，標籤＝之後 H 日母池內名次，與現行相同的重估點、只用已到期標籤）、
+  線性＋GBM 名次平均、meta-labeling 濾網（線性前 24 名內的 GBM 分類器）、美股 GBM（13 個價量因子＋3 個 SPY 狀態，每年重估）。全部不採用。
+* `phases.current_book(tranches, n_slots)`：某種換股日目前持有的組合（最近 n_slots 批、每批 1／n_slots、批內等權）；
+  `phases.consensus(books)`：五種換股日平均。`phase_check(..., books=)` 在重建平移資料包時順便記下；`cli research` 存成 `res["consensus"]`。
+* App：今日選股頁「🧩 五種換股日共識組合」（`consensus_html`）；模型驗證頁 `v320_html`。

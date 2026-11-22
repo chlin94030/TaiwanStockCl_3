@@ -109,7 +109,7 @@ def test_pipeline_workflow_and_cli():
     assert "python cli.py morning" in wf and "morning_hist.json" in wf
     assert (ROOT / "morning_workflow_COPY.txt").read_text(encoding="utf-8") == wf
     cli = (ROOT / "cli.py").read_text(encoding="utf-8")
-    assert "def cmd_morning" in cli and '"morning": cmd_morning' in cli and 'res["morning_model"] = morning.fit(B)' in cli
+    assert "def cmd_morning" in cli and '"morning": cmd_morning' in cli and 'res["morning_model"] = morning.fit(B, res=res)' in cli
 
 
 def test_app_and_docs():
@@ -121,4 +121,4 @@ def test_app_and_docs():
     assert [x for x in rv.IDEAS if x[0] == "v3.16"]
     doc = (ROOT / "docs" / "v3.16_protocol.md").read_text(encoding="utf-8")
     assert "## 二、歷史驗證規則" in doc and "## 三、結果" in doc
-    assert '__version__ = "3.16.0"' in (ROOT / "kosto" / "__init__.py").read_text(encoding="utf-8")
+    assert '__version__ = "3.' in (ROOT / "kosto" / "__init__.py").read_text(encoding="utf-8")

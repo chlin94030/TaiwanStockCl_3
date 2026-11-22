@@ -16,10 +16,47 @@ from .research import Research
 from .store import Store
 
 
-def phase_check(cfg: dict, res: dict, n: int = 4, log=print, on_bundle=None) -> pd.DataFrame:
-    """on_bundle(R, k)：每個平移起點建好研究物件後呼叫（v1.9 冠軍／挑戰者比較共用這些資料包，不重建）。"""
+def current_book(tranches: pd.DataFrame, n_slots: int) -> dict:
+    """v3.20：某一種換股日「現在持有」的組合＝最近 n_slots 批名單，每批 1／n_slots、批內等權（不含已沒有名單的批次）。"""
+    if tranches is None or not len(tranches):
+        return {}
+    tr = tranches.sort_values("i").tail(n_slots)
+    book = {}
+    for picks in tr["picks"]:
+        picks = list(picks or [])
+        for t in picks:
+            book[t] = book.get(t, 0.0) + 1.0 / n_slots / len(picks)
+    tot = sum(book.values())
+    return {t: w / tot for t, w in book.items()} if tot > 0 else {}
+
+
+def consensus(books: dict) -> dict:
+    """v3.20 五種換股日共識組合：每種換股日各占 1／n 資金（＝把五種換股日的回測平均，報酬期望值相同、少了「哪一天開始」的運氣）。
+    books＝{h: {phase: {ticker: weight}}} → {h: {"n_phases", "rows": [{ticker, weight, phases}]}}。"""
+    out = {}
+    for h, bk in books.items():
+        bk = {k: b for k, b in bk.items() if b}
+        if not bk:
+            continue
+        agg, cnt = {}, {}
+        for b in bk.values():
+            for t, w in b.items():
+                agg[t] = agg.get(t, 0.0) + w / len(bk)
+                cnt[t] = cnt.get(t, 0) + 1
+        rows = sorted(({"ticker": t, "weight": round(w, 4), "phases": cnt[t]} for t, w in agg.items()), key=lambda r: -r["weight"])
+        out[h] = {"n_phases": len(bk), "rows": rows}
+    return out
+
+
+def phase_check(cfg: dict, res: dict, n: int = 4, log=print, on_bundle=None, books: dict | None = None) -> pd.DataFrame:
+    """on_bundle(R, k)：每個平移起點建好研究物件後呼叫（v1.9 冠軍／挑戰者比較共用這些資料包，不重建）。
+    books（v3.20）：傳入 dict 時，另外記下每種換股日目前持有的組合（給五種換股日共識組合用）。"""
     t0 = time.time()
     rows = []
+    if books is not None:
+        for h, hb in res["horizons"].items():
+            nt = max(1, int(cfg["horizons"][h]["days"]) // int(cfg["research"]["signal_step"]))
+            books.setdefault(h, {})[0] = current_book(hb.get("tranches"), nt)
     for h, hb in res["horizons"].items():
         ev = hb["eval"]
         rows.append({"phase": 0, "end": res["protocol"]["last_date"], "h": h, **{k: ev.get(k) for k in
@@ -40,7 +77,13 @@ def phase_check(cfg: dict, res: dict, n: int = 4, log=print, on_bundle=None) -> 
             for h, hb in res["horizons"].items():
                 rule, size = hb["chosen_pool"]["rule"], int(hb["chosen_pool"]["size"])
                 v = R.model_variant(h, exposure=(cfg["horizons"][h].get("model") or {}).get("exposure", "none"))
-                ev = R.evaluate(rule, size, h, v)
+                ev = R.evaluate(rule, size, h, v, keep=books is not None)
+                if books is not None:
+                    rk = ev.pop("_res", None)
+                    ev.pop("_hist", None)
+                    ev.pop("_W", None)
+                    nt = max(1, int(cfg["horizons"][h]["days"]) // int(cfg["research"]["signal_step"]))
+                    books.setdefault(h, {})[k] = current_book(rk.tranches if rk is not None else None, nt)
                 rows.append({"phase": k, "end": str(end.date()), "h": h, **{c: ev.get(c) for c in
                              ("dev_cagr", "hold_cagr", "oos_cagr", "oos_mdd", "oos_bench_cagr", "hold_bench_cagr")}})
             if on_bundle is not None:

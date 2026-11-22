@@ -50,6 +50,7 @@ class Spec:
     entry_close: object = None       # 每個訊號是否把「新買進」改在進場日收盤（np.ndarray[S] bool；隔夜美股大波動時）
     cap_key: str = "SECTOR"          # max_per_sector 使用的分類：SECTOR 官方產業別、GROUP 產業鏈族群
     sell_block: bool = False         # v3.14：開盤跌停（≤ 昨收 −9.5%）或沒有成交 → 當天賣不掉，之後第一個能賣的開盤賣（停損同規則）
+    no_new: object = None            # v3.17 急跌模式：np.ndarray[S, N] bool，True＝這個換股日不新買（已持有照原規則續抱／賣出）
 
 
 def spec_from_cfg(cfg: dict, horizon: str, exposure_profile: str = "none", **kw) -> Spec:
@@ -106,10 +107,11 @@ def choose(B, view: PoolView, i: int, w, prev: list, spec: Spec):
     K = spec.top_k
     buf = set(order[: max(K, int(round(K * spec.hysteresis)))].tolist())
     keep = sorted([j for j in prev if j in buf], key=lambda j: -smap[j])[:K]
+    nn = spec.no_new[i] if spec.no_new is not None else None
     if spec.max_per_sector and spec.cap_key in B.a:
         sec = B.a[spec.cap_key]
         cnt, picks = {}, []
-        for j in keep + [j for j in order.tolist() if j not in keep]:
+        for j in keep + [j for j in order.tolist() if j not in keep and (nn is None or not nn[j])]:
             g = int(sec[j])
             if g >= 0 and cnt.get(g, 0) >= spec.max_per_sector:
                 continue
@@ -119,7 +121,7 @@ def choose(B, view: PoolView, i: int, w, prev: list, spec: Spec):
                 break
         picks = sorted(picks, key=lambda j: -smap[j])
         return picks, order.tolist(), smap
-    rest = [j for j in order.tolist() if j not in keep]
+    rest = [j for j in order.tolist() if j not in keep and (nn is None or not nn[j])]
     picks = keep + rest[: K - len(keep)]
     return picks, order.tolist(), smap
 

@@ -69,7 +69,7 @@ def test_watch_variants_on_synthetic(tmp_path):
            "horizons": {h: {"chosen_pool": {"rule": rule, "size": size}} for h in ("short", "mid", "long")}}
     o = W.evaluate(R, res, since=str(B.sig_dates[-30].date()), need=10)
     assert o["rows"] and all(r["days"] > 0 for r in o["rows"])
-    assert {r["key"] for r in o["rows"]} <= {"W1", "W2", "W3", "W4", "W5"}
+    assert {r["key"] for r in o["rows"]} <= {"W1", "W2", "W3", "W4", "W5", "W6", "W7"}
 
 
 def test_schedule_cache_key_includes_overlay():

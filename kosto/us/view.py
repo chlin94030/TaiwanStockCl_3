@@ -522,3 +522,28 @@ def round3_html(R: dict) -> str:
             cells.append(f"{ui.pct(x.at['dev', 'excess'], color=True)}<br><small class='kq-muted'>驗 {ui.pct(x.at['val', 'excess'])}｜25後 {ui.pct(x.at['blind', 'excess'])}</small>")
         rows.append([f"{ui.esc(zh.get(c, c))}<br><small class='kq-muted'>{c}</small>", *cells])
     return ui.table(["第三輪候選（開發期對 SPY 超額；小字＝驗證期、2025 後）", "短線", "中線", "長線"], rows, left=(0,))
+
+
+
+def round4_html(R: dict) -> str:
+    """v3.19 美股第四輪：每個候選取開發期較好的母池；小字＝驗證期、2025 後、對 QQQ（開發期）。"""
+    g = pd.DataFrame(R.get("round4", []))
+    if g.empty:
+        return ""
+    zh = R.get("round4_zh", {})
+    rows = []
+    for c in ["U1", "U2", "U3", "U4", "U5"]:
+        cells = []
+        for h in ("short", "mid", "long"):
+            x = g[(g.cand == c) & (g.h == h)]
+            if x.empty:
+                cells.append("–")
+                continue
+            dev = x[x.period == "dev"].sort_values("excess", ascending=False).iloc[0]
+            y = x[x.pool == dev["pool"]].set_index("period")
+            cells.append(f"{ui.pct(y.at['dev', 'excess'], color=True)}<small class='kq-muted'>（IR {y.at['dev', 'ir']:.2f}，{dev['pool']}）</small><br>"
+                         f"<small class='kq-muted'>驗 {ui.pct(y.at['val', 'excess'])}｜25後 {ui.pct(y.at['blind', 'excess'])}｜對 QQQ {ui.pct(y.at['dev', 'vs_qqq'])}</small>")
+        rows.append([f"{ui.esc(zh.get(c, c))}<br><small class='kq-muted'>{c}</small>", *cells])
+    q = R.get("qqq_vs_spy") or {}
+    rows.append(["<b>參考：一直抱 QQQ</b>", *([f"{ui.pct(q.get('dev'), color=True)}<br><small class='kq-muted'>驗 {ui.pct(q.get('val'))}｜25後 {ui.pct(q.get('blind'))}</small>"] * 3)])
+    return ui.table(["第四輪候選（開發期對 SPY 超額）", "短線", "中線", "長線"], rows, left=(0,))

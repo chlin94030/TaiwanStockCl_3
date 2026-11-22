@@ -122,7 +122,14 @@ def cmd_research(a, cfg):
         except Exception as e:  # noqa: BLE001
             log(f"冠軍／挑戰者比較失敗：{e}")
         log("換股日敏感度＋冠軍／挑戰者：重建 4 個平移起點的研究資料包（約 10～20 分鐘）…")
-        res["phases"] = phase_check(cfg_eff, res, log=log, on_bundle=lambda Rk, k: rows.extend(T.evaluate(Rk, res, cfg_eff, k, observe=prev.get("observe"))))
+        books = {}
+        res["phases"] = phase_check(cfg_eff, res, log=log, on_bundle=lambda Rk, k: rows.extend(T.evaluate(Rk, res, cfg_eff, k, observe=prev.get("observe"))),
+                                    books=books)
+        try:                                                                     # v3.20 五種換股日共識組合
+            from kosto.phases import consensus
+            res["consensus"] = consensus(books)
+        except Exception as e:  # noqa: BLE001
+            log(f"五種換股日共識組合失敗：{e}")
         if rows:
             auto = T.update(prev, rows, res, cfg, cfg_eff)
             for h, ld in (auto.get("leader") or {}).items():
@@ -153,7 +160,7 @@ def cmd_research(a, cfg):
         log(f"異常診斷略過：{e}")
     try:                                                              # v3.16 盤前日報的歷史驗證模型（隔天清晨 cli morning 使用）
         from kosto import morning
-        res["morning_model"] = morning.fit(B)
+        res["morning_model"] = morning.fit(B, res=res)
         mm = res["morning_model"]
         if mm.get("error"):
             log(f"盤前日報模型略過：{mm['error']}")

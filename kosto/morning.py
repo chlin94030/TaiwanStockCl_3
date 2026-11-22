@@ -137,7 +137,7 @@ def _cond(df, m) -> dict:
             "gap50": float(x["gap50"].mean()) if len(x) else np.nan}
 
 
-def fit(B, split: str = SPLIT) -> dict:
+def fit(B, split: str = SPLIT, res: dict | None = None) -> dict:
     """M1～M4（docs/v3.16_protocol.md 第二節）＋權值股背景。失敗回傳含 error 的 dict（不影響每日研究）。"""
     try:
         T, X = _daily_table(B), _overnight(B)
@@ -173,6 +173,8 @@ def fit(B, split: str = SPLIT) -> dict:
         out["buckets"] = [{"bucket": str(k), **{c: float(v) for c, v in r.items()}} for k, r in tb.iterrows()]
         out["edges"], out["labels"] = edges, labs
         out["heavy"] = heavy_context(B)
+        out.update(crash_context(B, res))
+        out["link"] = stock_betas(B, res)                                # v3.19 個股對費半的隔夜 β（族群／個股開盤預估）
         return _clean(out)
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
@@ -313,16 +315,138 @@ def news(n: int = 10) -> list[dict]:
     return out[:n]
 
 
+# ================================================================== v3.19 台美連動預測（docs/v3.19_protocol.md 第二節）
+LINK_ETF = ["SPY", "XLK", "XLE", "XLF", "XLI", "XLB", "XLY", "XLV", "XLP", "XLU"]
+LINK_Q = {"SOX": "SOX", "IXIC": "IXIC", "TSM": "TSM", **{k: k for k in LINK_ETF}}      # 研究訊號 → 盤前報價鍵
+_LINK = {}
+
+
+def link_model() -> dict:
+    """2019–2023 估計、2024 後檢驗的族群開盤模型（凍結係數；kosto/data/linkage_v319.json）。"""
+    if "m" not in _LINK:
+        import json
+        from pathlib import Path
+        p = Path(__file__).resolve().parent / "data" / "linkage_v319.json"
+        _LINK["m"] = json.loads(p.read_text(encoding="utf-8")) if p.is_file() else {}
+    return _LINK["m"]
+
+
+def stock_betas(B, res: dict | None = None, top: int = 300, days: int = 250) -> dict:
+    """每檔個股開盤跳空對前一晚費半的 β（近 250 日）＋所屬族群；成交金額前 300 名＋名單股＋權值股。"""
+    try:
+        keys = list(B.meta.get("world_keys") or [])
+        if "SOX" not in keys:
+            return {}
+        Rr, OC = np.asarray(B.a["R"][-days:], float), np.asarray(B.a["OC"][-days:], float)
+        gap = np.where(np.isfinite(OC), (1 + Rr) / (1 + OC) - 1, np.nan)
+        gap = np.where(np.abs(gap) < 0.105, gap, np.nan)
+        sox = pd.Series(np.asarray(B.a["WORLD"], float)[:, keys.index("SOX")]).ffill()
+        sx = (sox / sox.shift(1) - 1).to_numpy()[-days:]
+        tick = list(B.tickers)
+        cap = np.nan_to_num(np.asarray(B.a["CAP"][-1], float))
+        want = set(np.array(tick)[np.argsort(-cap)[:top]])
+        want |= {t for t, _, _ in HEAVY}
+        for hb in ((res or {}).get("horizons") or {}).values():
+            want |= {p["ticker"] for p in ((hb.get("latest") or {}).get("picks") or [])}
+        groups = list(B.meta.get("groups") or [""] * len(tick))
+        out, gsum = {}, {}
+        ok_x = np.isfinite(sx) & (np.abs(sx) > 0)
+        for j, t in enumerate(tick):
+            y = gap[:, j]
+            m = ok_x & np.isfinite(y)
+            if m.sum() < 120:
+                continue
+            xv, yv = sx[m], y[m]
+            b = float(((xv - xv.mean()) * (yv - yv.mean())).mean() / xv.var())
+            gsum.setdefault(groups[j], []).append(b)
+            if t in want:
+                out[t] = {"beta": round(b, 4), "group": groups[j]}
+        return {"stocks": out, "gbeta": {g: round(float(np.mean(v)), 4) for g, v in gsum.items() if len(v) >= 3}}
+    except Exception as e:  # noqa: BLE001
+        return {"error": str(e)}
+
+
+def link_predict(model: dict, q: dict, tickers: list | None = None) -> dict:
+    """前一晚美股 → 大盤、各族群、個股的開盤預估。通過 v3.19 門檻的族群（脊迴歸）與個股相對開盤標 tested，
+    其餘族群用「大盤預估 × 族群 β」（ref，附檢驗期相關）。"""
+    lm = link_model()
+    if not lm:
+        return {}
+    x = {k: (q.get(v) or {}).get("chg") for k, v in LINK_Q.items()}
+    if any(x.get(k) is None or not np.isfinite(x[k]) for k in ("SOX", "IXIC", "TSM")):
+        return {}
+    mk = lm["market"]
+    mkt = mk["const"] + sum(mk[k] * x[k] for k in ("SOX", "IXIC", "TSM"))
+    full = all(x.get(k) is not None and np.isfinite(x[k]) for k in lm["signals"])
+    groups = {}
+    ridge = {}
+    for g, m in lm["groups"].items():
+        if not m.get("n_test") or m.get("corr") is None or not np.isfinite(m["corr"]):
+            continue                                                    # 檢驗期沒有資料的族群不預估
+        idx = m["idx_const"] + m["idx_slope"] * mkt
+        ridge[g] = m["const"] + sum(m["coef"][k] * x[k] for k in lm["signals"]) if full else idx     # L2 檢驗時用的族群預估
+        if m.get("pass") and full:
+            p_, ev = ridge[g], "tested"
+        else:
+            p_, ev = idx, "ref"
+        groups[g] = {"pred": float(p_), "ev": ev, "corr": m["corr"] if ev == "tested" else m["corr_idx"], "hit": m.get("hit")}
+    lk = (model or {}).get("link") or {}
+    st_, gb = lk.get("stocks") or {}, lk.get("gbeta") or {}
+    stocks = {}
+    for t in tickers or []:
+        s_ = st_.get(t)
+        if not s_:
+            continue
+        g = s_.get("group")
+        pg = ridge[g] if g in ridge else mkt
+        p_ = pg + (s_["beta"] - gb.get(g, s_["beta"])) * x["SOX"]
+        stocks[t] = {"pred": float(p_), "rel": float(p_ - mkt), "group": g, "beta": s_["beta"]}
+    return {"market": float(mkt), "groups": groups, "stocks": stocks, "full": full, "l2": lm.get("L2", {}).get("test", {}),
+            "l3": lm.get("L3", [])}
+
+
+def taiex_trend() -> dict | None:
+    """v3.17：加權指數近一年日線（Yahoo ^TWII）→ 距一年高點、近 20 日；研究資料落後時用來判斷今天的市況。"""
+    try:
+        m = _chart("^TWII", "1y")
+        ts = m.get("timestamp") or []
+        cl = ((m.get("indicators") or {}).get("quote") or [{}])[0].get("close") or []
+        off = int((m.get("meta") or {}).get("gmtoffset") or 28800)
+        s = pd.Series([c for c in cl], index=[pd.Timestamp(t + off, unit="s").normalize() for t in ts], dtype=float).dropna()
+        if len(s) < 30:
+            return None
+        return {"date": str(s.index[-1].date()), "close": float(s.iloc[-1]), "high250": float(s.tail(250).max()),
+                "dd250": float(s.iloc[-1] / s.tail(250).max() - 1), "dd120": float(s.iloc[-1] / s.tail(120).max() - 1),
+                "r20": float(s.iloc[-1] / s.iloc[-21] - 1)}
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def live_state(model: dict | None, live: dict) -> dict:
+    """研究資料的市況（model["state"]）若比今天的加權指數舊，用加權指數更新距高點與急跌狀態（只會更嚴重、不會更樂觀）。"""
+    st = dict((model or {}).get("state") or {})
+    tw = (live or {}).get("taiex") or {}
+    if not tw or tw.get("date", "") <= st.get("date", ""):
+        return st
+    st["dd250"] = min(float(st.get("dd250", 0) or 0), tw["dd250"])
+    st["dd120"] = min(float(st.get("dd120", 0) or 0), tw["dd120"])
+    st["r20_live"] = tw["r20"]
+    st["panic"] = bool(st.get("panic") or tw["r20"] <= -0.08 or tw["dd120"] <= -0.12)
+    st["taiex"], st["taiex_date"], st["taiex_high"] = tw["close"], tw["date"], tw["high250"]
+    return st
+
+
 def fetch_live(now: pd.Timestamp | None = None, with_news: bool = True) -> dict:
     now = now or pd.Timestamp.now(tz=TZ)
-    syms = {k: s for k, s, _ in US_IDX + MACRO + FUT} | {k: v[0] for k, v in ADR.items()} | {k: k for k in PEERS}
+    syms = {k: s for k, s, _ in US_IDX + MACRO + FUT} | {k: v[0] for k, v in ADR.items()} | {k: k for k in PEERS} | {k: k for k in LINK_ETF}
     with ThreadPoolExecutor(max_workers=8) as ex:
         q = dict(zip(syms, ex.map(daily_quote, syms.values())))
         nq, es = ex.submit(since_tw_close, "NQ=F", now), ex.submit(since_tw_close, "ES=F", now)
         tx = ex.submit(taifex_night)
+        tw = ex.submit(taiex_trend)
         nw = ex.submit(news) if with_news else None
         live = {"quotes": {k: v for k, v in q.items() if v}, "night": {"NQF": nq.result(), "ESF": es.result(), "TX": tx.result()},
-                "news": nw.result() if nw else [], "fetched_at": now.isoformat()}
+                "taiex": tw.result(), "news": nw.result() if nw else [], "fetched_at": now.isoformat()}
     return live
 
 
@@ -437,19 +561,215 @@ def night_text(night: dict, q: dict | None = None) -> tuple[str, str]:
     return "；".join(parts) + (f" → {trend}" if trend else "") + "。", "ref"
 
 
+def crash_context(B, res: dict | None = None) -> dict:
+    """v3.17：市況（急跌狀態、去槓桿進度、跌停家數）＋名單與權值股的急跌風險分級、近 5 日跌停次數。"""
+    from . import crash as C
+    out = {"state": C.market_state(B)}
+    risk = C.crash_risk(B)
+    tick = {t for t, _, _ in HEAVY}
+    for hb in ((res or {}).get("horizons") or {}).values():
+        tick |= {p["ticker"] for p in ((hb.get("latest") or {}).get("picks") or [])}
+    out["risk"] = {t: {**risk[t], "ld5": C.recent_limit_downs(B, t)} for t in sorted(tick) if t in risk}
+    out["weather"] = C.model_weather(B)                                # v3.18 模型天氣
+    return out
+
+
+def live_weather(weather: dict, q: dict, st: dict | None = None) -> dict:
+    """v3.18：用今晨的 VIX、費半與今天的加權距高點更新模型天氣的狀態（歷史統計不變）。"""
+    from .review import V318_REGIME
+    if not weather or not weather.get("rows"):
+        return weather or {}
+    stat = {(d, s): (m, n, t, sh, lg, wk) for d, s, m, n, t, sh, lg, wk in V318_REGIME}
+    rows = [dict(r) for r in weather["rows"]]
+    vix = (q.get("VIX") or {}).get("price")
+    sox = (q.get("SOX") or {}).get("price")
+    w = dict(weather)
+    for r in rows:
+        new = None
+        if r["dim"] == "美股恐慌" and vix is not None and np.isfinite(vix):
+            new = "VIX ≥ 30" if vix >= 30 else "VIX 20～30" if vix >= 20 else "VIX < 20"
+            w["vix"] = vix
+        if r["dim"] == "美股半導體" and sox is not None and np.isfinite(sox) and weather.get("sox_ma50"):
+            ma = (weather["sox_ma50"] * 49 + sox) / 50
+            new = "費半在 50 日線之上" if sox > ma else "費半在 50 日線之下"
+            w["sox_vs_ma50"] = sox / ma - 1
+        if r["dim"] == "台股趨勢" and st and st.get("taiex_date") and (st.get("dd250") or 0) <= -0.15:
+            new = "0050 在 200 日線之下"
+        if r["dim"] == "台股市況" and st and C_regime(st) == "crash":
+            new = "急跌"
+        if new and new != r["state"]:
+            m, n, t, sh, lg, wk = stat.get((r["dim"], new), (None, None, None, None, None, False))
+            r.update({"state": new, "mid": m, "days": n, "t": t, "short": sh, "long": lg, "weak": bool(wk), "live": True})
+    w["rows"] = rows
+    w["weak"] = sum(r["weak"] for r in rows)
+    if w.get("vix") is not None and w.get("sox_vs_ma50") is not None:
+        w["us_off"] = bool(w["sox_vs_ma50"] < 0 and w["vix"] >= 25)
+    return w
+
+
+def C_regime(st: dict) -> str:
+    from . import crash as C
+    return C.regime(st)[0]
+
+
+def news_themes(items: list) -> list[dict]:
+    """新聞依主題歸納：每個主題的則數與代表標題（最新一則）。"""
+    groups = {}
+    for x in items or []:
+        for t in (x.get("tags") or ["其他"]):
+            groups.setdefault(t, []).append(x)
+    out = [{"tag": t, "n": len(v), "top": v[0]["title"], "link": v[0].get("link"), "source": v[0].get("source")} for t, v in groups.items()]
+    return sorted(out, key=lambda r: (r["tag"] == "其他", -r["n"]))
+
+
+def _p(x, d=1):
+    return "–" if x is None or not np.isfinite(x) else f"{x * 100:+.{d}f}%"
+
+
+def analysis(model: dict, pred: dict, q: dict, night: dict, res: dict | None, news_items: list) -> dict:
+    """v3.17 盤前評析：把數字與新聞整理成「今天代表什麼、該做什麼、要看什麼」。規則產生，每段標證據等級。"""
+    from . import crash as C
+    from .review import V317_MODEL, V317_TIERS, V317_TWO
+    st = (model or {}).get("state") or {}
+    code, zh = C.regime(st) if st else ("normal", "正常")
+    g = pred.get("gap") if pred else None
+    vix = (q.get("VIX") or {}).get("price")
+    paras = []
+    # ① 市況定位
+    if st:
+        if st.get("taiex_date"):                                       # 研究資料落後：用今天的加權指數
+            t = (f"加權指數 {st['taiex_date']} 收 {st['taiex']:,.0f}，距一年高點 {_p(st.get('dd250'))}、近 20 日 {_p(st.get('r20_live'))}，"
+                 f"屬於「{zh}」" + (f"（研究資料到 {st['date']}，融資與跌停家數是那天的數字）。" if st.get("date") else "。"))
+        else:
+            t = (f"研究資料 {st.get('date', '')}：0050 距一年高點 {_p(st.get('dd250'))}、近 20 日 {_p(st.get('r20'))}，屬於「{zh}」。")
+        if st.get("margin_chg120") is not None:
+            t += f"融資餘額較 120 日高點 {_p(st['margin_chg120'], 0)}"
+            if code == "crash":
+                t += "（歷史上跌到 −28% 左右的 3 次崩跌，見底時融資減 48～52%；2024 年的快速崩跌減 25% 就見底）"
+            t += "。"
+        if st.get("limit_down5"):
+            t += f"近 5 日跌停家數 {'、'.join(str(x) for x in st['limit_down5'])}。"
+        if st.get("foreign_streak"):
+            fs = st["foreign_streak"]
+            t += f"外資連 {abs(fs)} 日{'買' if fs > 0 else '賣'}超，近 5 日 {st.get('foreign5', 0):+,.0f} 億元。"
+        if code == "crash":
+            an = C.analogs(st.get("dd250", 0))
+            if an:
+                t += "歷史上 0050 也跌到這個深度的：" + "；".join(
+                    f"{a['peak'][:4]} 年（最深 {a['dd']:.0f}%，見底後 60 日 {a['r60']:+.0f}%）" if a.get("r60") is not None else f"{a['peak'][:4]} 年（最深 {a['dd']:.0f}%）"
+                    for a in an) + "。每一次都在 1～15 個月內回到前高，但不保證這次一樣。"
+        paras.append({"title": "市況定位", "text": t, "ev": "ref"})
+    # ② 今晨美股的意義
+    if pred:
+        x = pred.get("x") or {}
+        hb = pred.get("hist") or {}
+        t = (f"前一夜費半 {_p(x.get('sox'), 2)}、那指 {_p(x.get('ixic'), 2)}、台積電 ADR（台幣計）{_p(x.get('tsm_twd'), 2)} → "
+             f"預估大盤開盤 {_p(g)}（區間 {_p(pred.get('lo'))}～{_p(pred.get('hi'))}），台積電 {_p(pred.get('g2330'))}。")
+        if hb:
+            t += f"同一級預估在 2024 年後實際開盤平均 {_p(hb.get('gap'), 2)}、開盤後到收盤 {_p(hb.get('oc'), 2)}。"
+        if g is not None and g >= 0.01:
+            t += "開高的日子盤中通常回落，不追開盤價。"
+        elif g is not None and g <= -0.01:
+            t += "開低的日子盤中通常回升一些，開盤恐慌賣出最吃虧。"
+        tx = night.get("TX") or night.get("NQF")
+        if tx and tx.get("chg") is not None:
+            t += f"{'台指期夜盤' if night.get('TX') else '台股收盤後那指期'} {_p(tx['chg'], 2)}。"
+        paras.append({"title": "今晨美股對台股的意義", "text": t, "ev": "tested" if pred.get("tested") else "ref"})
+    # ③ 消息面
+    th = news_themes(news_items)
+    if th or vix is not None:
+        t = ""
+        if th:
+            t += "消息集中在" + "、".join(f"{r['tag']}（{r['n']} 則）" for r in th[:3] if r["tag"] != "其他") + "。" if any(r["tag"] != "其他" for r in th[:3]) else ""
+            tops = list(dict.fromkeys(r["top"] for r in th))[:2]
+            t += "代表標題：" + "；".join(f"「{x_}」" for x_ in tops) + "。"
+        if vix is not None and np.isfinite(vix):
+            t += f"VIX {vix:.1f}（{'恐慌' if vix >= 30 else '偏高' if vix >= 20 else '平穩'}）"
+            if vix >= 35:
+                t += "：歷史上 VIX 衝上 35 之後「回到 30 以下」才是較可靠的止穩訊號。"
+            else:
+                t += "。"
+        if "TNX" in q:
+            tn = q["TNX"]["price"]
+            t += f"美 10 年債殖利率 {tn / 10 if tn > 20 else tn:.2f}%。"
+        paras.append({"title": "消息與風險溫度", "text": t, "ev": "ref"})
+    # ④ 名單怎麼看
+    risk = (model or {}).get("risk") or {}
+    lt = (((res or {}).get("horizons") or {}).get("mid") or {}).get("latest") or {}
+    picks = lt.get("picks") or []
+    flags = []
+    for pk in picks:
+        r = risk.get(pk["ticker"]) or {}
+        if r.get("tier") == "高" or (r.get("ld5") or 0) >= 2:
+            flags.append({"ticker": pk["ticker"], "name": pk.get("name", ""), "tier": r.get("tier"), "ld5": r.get("ld5", 0),
+                          "kept": bool(pk.get("kept"))})
+    t = ""
+    if code == "crash":
+        t += (f"模型是動能型選股：歷史 5 次崩跌中平均跌幅和 0050 一樣（{V317_MODEL['avg_crash'][0]:.0f}%），但最近兩次跌得比 0050 多，"
+              f"低點後 60 日平均 {V317_MODEL['avg_reb60'][0]:+.0f}%、0050 {V317_MODEL['avg_reb60'][1]:+.0f}%：剛開始反彈時，0050 通常比名單股反彈得快。")
+    hi = [f for f in flags if f["tier"] == "高"]
+    if hi:
+        th_ = V317_TIERS[0]
+        t += ("名單中急跌風險「高」（融資使用率與波動都在前段）：" + "、".join(f"{f['ticker']} {f['name']}" for f in hi)
+              + f"；歷史崩跌中這一級平均跌 {abs(th_[1]):.0f}%、{th_[3]:.0f}% 出現 2 次以上跌停 → 急跌期間不新買、已持有不加碼。")
+    ld = [f for f in flags if f["ld5"] >= 2]
+    if ld:
+        t += ("近 5 日已有 2 根以上跌停：" + "、".join(f"{f['ticker']} {f['name']}（{f['ld5']} 根）" for f in ld)
+              + f"。歷史上急跌中連續 2 根跌停後，隔天再跌停的機率 {V317_TWO['next_ld']:.0f}%；但 20 日內平均反彈 {V317_TWO['a20']:.0f}%"
+              f"（比 0050 多 {V317_TWO['r20']:.1f} 個百分點），60 日後有 {100 - V317_TWO['p_r60_pos']:.0f}% 落後 0050 → 不在跌停價排隊殺出，"
+              "等打開跌停後的反彈再決定減碼或換成 0050；不要攤平。")
+    wx = live_weather((model or {}).get("weather") or {}, q, st)
+    weak = [r for r in wx.get("rows") or [] if r.get("weak") and r.get("mid") is not None]
+    if weak:
+        t += (f"模型天氣：目前 {len(weak)} 個面向處於模型弱勢狀態（" + "、".join(f"{r['state']} {r['mid']:+.0f}%" for r in weak)
+              + "，歷史上中線名單在這些狀態年化落後 0050）；這時動能因子幾乎失效（VIX≥30 時 IC 轉負），營收成長、短期反轉較有效。"
+              "要不要把新資金偏向 0050 由你決定：v1.7 檢驗過依美股狀態把個股減半，回撤少 6pp、但報酬少 2.3pp。")
+        if wx.get("us_off"):
+            t += "費半跌破 50 日線且 VIX≥25（美股風險關閉）：觀察名單 W7「動能減半」正用新資料前瞻追蹤。"
+    if t:
+        paras.append({"title": "模型名單怎麼看", "text": t, "ev": "ref"})
+    # ⑤ 資金與部位
+    if code in ("crash", "correction"):
+        t = ("資金：歷史 6 次崩跌中，0050 從跌 15% 開始買，第一筆之後平均再跌 9%（最多 21%，2022 年），一年後全部為正。"
+             "剩下的資金分 3～4 份，用時間（每 20 個交易日一份）或反轉訊號分批，不要一天用完；先補 0050 等大盤型 ETF，再補名單股；"
+             "絕對不用融資（斷頭會在最低點被迫賣出）。")
+        paras.append({"title": "資金與部位", "text": t, "ev": "ref"})
+    # 今日一句話
+    if code == "crash":
+        if g is not None and g >= 0.01:
+            one = "急跌中的反彈日：開高不追，持股可趁反彈調節急跌風險高、連續跌停過的股票；現金照分批計畫。"
+        elif g is not None and g <= -0.01:
+            one = "急跌延續、今晨美股偏空：不搶開盤、不在跌停價殺出、不用融資；手上現金今天最多動用一份。"
+        else:
+            one = "急跌中的平盤日：先看跌停家數是否明顯減少；現金照分批計畫，名單股只買急跌風險低、中的。"
+    elif code == "correction":
+        one = "修正期：照名單執行但不追高，現金分批、優先 0050；看融資與外資是否止血。"
+    else:
+        one = "市況正常：照模型名單與計畫執行，開盤不追價。" if g is None or g < 0.01 else "市況正常、預估開高：不追開盤價，掛買進區。"
+    return {"regime": [code, zh], "oneliner": one, "paragraphs": paras, "watch": C.reversal_checklist(st, vix) if st else [],
+            "flags": flags, "themes": th, "weather": wx}
+
+
 def advice(model: dict, pred: dict, q: dict, res: dict | None) -> dict:
     """保守／積極各 3～5 點；每點附證據等級（tested／ref）。只用 v3.16 第二節通過的規則、模型名單與 v3.15 D1。"""
     g = pred.get("gap") if pred else None
     m3, m4 = (model or {}).get("m3") or {}, (model or {}).get("m4") or {}
     lt = (((res or {}).get("horizons") or {}).get("mid") or {}).get("latest") or {}
     picks = lt.get("picks") or []
-    new = [p for p in picks if not p.get("kept")]
-    top3 = "、".join(f"{p['ticker']} {p.get('name', '')}" for p in picks[:3])
+    from . import crash as C
+    st0 = (model or {}).get("state") or {}
+    crash_now = bool(st0) and C.regime(st0)[0] == "crash"
+    rk = (model or {}).get("risk") or {}
+    risky = {p["ticker"] for p in picks if (rk.get(p["ticker"]) or {}).get("tier") == "高" or ((rk.get(p["ticker"]) or {}).get("ld5") or 0) >= 2}
+    usable = [p for p in picks if not (crash_now and p["ticker"] in risky)]     # v3.17 急跌時排除高風險、連續跌停的名單股
+    new = [p for p in usable if not p.get("kept")]
+    top3 = "、".join(f"{p['ticker']} {p.get('name', '')}" for p in usable[:3])
     news_ = "、".join(f"{p['ticker']} {p.get('name', '')}" for p in new[:4])
     vix = q.get("VIX", {}).get("price")
     cons, aggr = [], []
     cons.append(("配置：大盤型 ETF（0050）約七成＋模型名單約三成；歷史回撤（−30.7%）比只買 0050（−34.0%）淺、年化多約 12 個百分點（v3.15）", "tested"))
-    aggr.append(("配置：照中線名單（名次加權，第 1 名資金最多）全部執行；短線名單用限價、避開冷門股（v3.14：短線最怕成交成本）", "tested"))
+    aggr.append((("配置：照中線名單（名次加權）執行，但跳過下一點列出的高風險股；短線名單用限價" if crash_now else
+                   "配置：照中線名單（名次加權，第 1 名資金最多）全部執行；短線名單用限價、避開冷門股（v3.14：短線最怕成交成本）"), "tested"))
     if g is not None and np.isfinite(g):
         if g >= 0.01:
             t = m3.get("tested")
@@ -472,9 +792,16 @@ def advice(model: dict, pred: dict, q: dict, res: dict | None) -> dict:
         cons.append((f"新買進只做中線名單前 3 名（{top3}），分 2～3 批、每批間隔至少半天", "ref"))
     if news_:
         aggr.append((f"今日中線新進：{news_}（模型排名已回測；價位尺、價格適合度僅供參考）", "tested"))
-    if vix is not None and np.isfinite(vix) and vix >= 25:
+    if vix is not None and np.isfinite(vix) and vix >= 25 and crash_now:   # 急跌中：不在低點砍倉，只放慢新買
+        cons.append((f"VIX {vix:.1f} 偏高：新買進的個股只用原計畫一半金額；等 VIX 衝上 35 後回到 30 以下（歷史上最可靠的止穩訊號）再補足", "ref"))
+        aggr.append((f"VIX {vix:.1f} 偏高：照名單執行但不加碼、不用融資", "ref"))
+    elif vix is not None and np.isfinite(vix) and vix >= 25:
         cons.append((f"VIX {vix:.1f} 偏高：個股部位先降到原計畫的一半，等 VIX 回到 20 以下", "ref"))
         aggr.append((f"VIX {vix:.1f} 偏高：照名單執行但不加碼、不用融資", "ref"))
+    if crash_now:                                                      # v3.17 急跌時的紀律（歷史統計，非選股規則）
+        cons.insert(1, ("急跌期間：不用融資；剩下的現金分 3～4 份，每 20 個交易日或出現反轉訊號才動用一份，優先 0050", "ref"))
+        aggr.insert(1, ("急跌期間名單股只新買急跌風險低、中、近 5 日沒有連續跌停的" + (f"（暫不新買：{'、'.join(sorted(risky))}）" if risky else "")
+                        + "；連續跌停的持股不在跌停價殺出，等反彈再處理", "ref"))
     cons.append(("跌破警戒價時重新檢視理由（不自動停損；回測顯示機械式停損拖累報酬）", "tested"))
     return {"conservative": [{"text": a, "ev": b} for a, b in cons[:5]], "aggressive": [{"text": a, "ev": b} for a, b in aggr[:5]]}
 
@@ -496,6 +823,8 @@ def build(model: dict | None, live: dict, res: dict | None = None, now: pd.Times
     now = now or pd.Timestamp.now(tz=TZ)
     q = live.get("quotes") or {}
     night = live.get("night") or {}
+    if model:
+        model = {**model, "state": live_state(model, live)}             # v3.17 研究資料落後時，市況用今天的加權指數
     pred = predict(model or {}, q)
     nt, nev = night_text(night, q)
     sec_ok = {"us": "SOX" in q and "GSPC" in q, "night": bool(night.get("TX") or night.get("NQF") or "NQF" in q), "heavy": bool((model or {}).get("heavy")),
@@ -514,8 +843,46 @@ def build(model: dict | None, live: dict, res: dict | None = None, now: pd.Times
                     "m3": (model or {}).get("m3"), "m4": (model or {}).get("m4"), "buckets": (model or {}).get("buckets"),
                     "ev": "tested" if pred.get("tested") else "ref"},
            "advice": advice(model or {}, pred, q, res),
+           "analysis": analysis(model or {}, pred, q, night, res, live.get("news") or []),
            "disclaimer": "盤前日報由程式依公開資料自動產生；預估與建議只用經過歷史檢驗的規則，仍可能失準。僅供研究參考，非投資建議。"}
+    rep["groups"] = link_section(model or {}, q, res)                   # v3.19 族群與個股開盤預估
+    gt = rep["groups"].get("text")
+    if gt:
+        for p_ in rep["analysis"].get("paragraphs") or []:
+            if p_["title"] == "今晨美股對台股的意義":
+                p_["text"] += gt
+                break
+        else:
+            rep["analysis"].setdefault("paragraphs", []).insert(1, {"title": "今晨美股對台股的意義", "text": gt.lstrip(), "ev": "tested"})
     return _clean(rep)
+
+
+def link_section(model: dict, q: dict, res: dict | None) -> dict:
+    """v3.19：族群開盤預估（前 5 高／前 5 低）、名單股與權值股的預估開盤（相對大盤）、開盤後延續的歷史。"""
+    names = {t: nm for t, nm, _ in HEAVY}
+    order = []
+    for h in ("mid", "short", "long"):
+        for p_ in ((((res or {}).get("horizons") or {}).get(h) or {}).get("latest") or {}).get("picks") or []:
+            names.setdefault(p_["ticker"], p_.get("name", ""))
+            if p_["ticker"] not in order:
+                order.append(p_["ticker"])
+    order += [t for t, _, _ in HEAVY if t not in order]
+    lp = link_predict(model, q, order)
+    if not lp:
+        return {}
+    gs = sorted(({"group": g, **v} for g, v in lp["groups"].items()), key=lambda r: -r["pred"])
+    pk = {p_["ticker"] for hb in ((res or {}).get("horizons") or {}).values() for p_ in ((hb.get("latest") or {}).get("picks") or [])}
+    st_ = [{"ticker": t, "name": names.get(t, ""), **lp["stocks"][t], "pick": t in pk} for t in order if t in lp["stocks"]]
+    up = [r for r in gs if r["pred"] >= 0.003][:3]
+    dn = [r for r in gs[::-1] if r["pred"] <= -0.003][:3]
+    txt = ""
+    if up or dn:
+        txt = "族群（成分股平均，口徑和 0050 不同）：" + ("；".join(x for x in (
+            ("預估開高較多 " + "、".join(f"{r['group']}{'' if r['ev'] == 'tested' else '*'} {r['pred'] * 100:+.1f}%" for r in up)) if up else "",
+            ("開低較多 " + "、".join(f"{r['group']}{'' if r['ev'] == 'tested' else '*'} {r['pred'] * 100:+.1f}%" for r in dn)) if dn else "") if x))
+        txt += "（* 為全市場預估×族群 β，未單獨通過檢驗）。歷史上族群跳空在開盤一次反映：預估開高 ≥1% 的族群開盤後到收盤平均只比大盤少 0.1%、5 日內幾乎沒有延續；預估開低 ≤−1% 的族群盤中反而平均強 0.3%。"
+    return {"market": lp["market"], "groups": gs, "stocks": st_, "l2": lp.get("l2"), "l3": lp.get("l3"), "full": lp["full"],
+            "text": (" " + txt) if txt else "", "ev_stock": "tested"}
 
 
 def append_hist(hist: list | None, rep: dict, keep: int = 400) -> list:
