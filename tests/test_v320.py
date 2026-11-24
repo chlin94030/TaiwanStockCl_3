@@ -39,4 +39,6 @@ def test_v320_results_docs_app():
         assert fn in app, fn
     doc = (ROOT / "docs" / "v3.20_protocol.md").read_text(encoding="utf-8")
     assert "## 四之二、第二階段" in doc and "## 五、結果（2026-11-22）" in doc and "（待補）" not in doc
-    assert '__version__ = "3.20.0"' in (ROOT / "kosto" / "__init__.py").read_text(encoding="utf-8")
+    import re
+    v = re.search(r'__version__ = "3\.(\d+)\.', (ROOT / "kosto" / "__init__.py").read_text(encoding="utf-8"))
+    assert v and int(v.group(1)) >= 20

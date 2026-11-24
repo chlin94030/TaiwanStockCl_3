@@ -36,6 +36,12 @@ ITEMS = [
     {"key": "W7", "hz": ("short", "mid", "long"), "kind": "return", "name": "美股風險關閉時動能減半",
      "why": "v3.18 A3：前一晚費半在 50 日線之下且 VIX≥25 → 動能群權重減半；門檻 1～4 全過（中線 +1.7、短線 +3.8、5/5 換股日、弱勢狀態不變差），"
             "但效果集中在 2022 年，q 0.71 未過"},
+    {"key": "W8", "since": "2026-11-25", "hz": ("short", "mid"), "kind": "return", "name": "輝達重大消息後押反轉 15%",
+     "why": "v3.21 E1：輝達特有消息日（|輝達扣那指| ≥ 5%）後 10 個交易日內，加 15% 押「跟輝達連動高的股票會回吐消息反應」（利空後買、利多後賣）"},
+    {"key": "W9", "since": "2026-11-25", "hz": ("short", "mid"), "kind": "return", "name": "輝達重大消息後押延續 15%",
+     "why": "v3.21 E2：與 W8 相反方向（消息反應會延續），兩個一起測，由資料決定方向"},
+    {"key": "W10", "since": "2026-11-25", "hz": ("short", "mid", "long"), "kind": "balanced", "name": "不新買輝達特有連動最高的 10%",
+     "why": "v3.21 E3：降低單一公司消息（如黃仁勳去留）的集中風險；風險型"},
 ]
 MOM_GROUP = ("t_rs120", "t_mom120x20", "t_high252", "t_mom60", "t_high20", "t_rmom240")    # v3.18 動能群
 REBOUND = (("t_mom20", -1), ("t_high60", -1), ("f_rev_rel", 1), ("c_trust20", -1))
@@ -116,6 +122,29 @@ def variant(R, key: str, h: str, rule: str, size: int, v, W: list, spec):
                 w2[m] *= (1 - np.abs(w2[Mi]).sum()) / o
             return w2.astype(np.float32)
         return [half(w) if (w is not None and off[i]) else w for i, w in enumerate(W)], spec
+    if key in ("W8", "W9", "W10"):
+        arr = news_arrays(R.B)
+        if arr is None:
+            return None
+        beta, sgn = arr
+        view = R.view(rule, size)
+        if key == "W10":
+            nn = np.zeros(beta.shape, bool)
+            for i, m in enumerate(view.members):
+                b = beta[i, m]
+                if np.isfinite(b).sum() >= 20:
+                    nn[i, m[b >= np.nanquantile(b, 0.9)]] = True
+            return W, dataclasses.replace(spec, no_new=nn)
+        from .optimize import PoolView, pool_view
+        d = -1.0 if key == "W8" else 1.0
+        col = np.nan_to_num(d * sgn[:, None] * beta, nan=0.0).astype(np.float32)
+        ri = R.B.meta["rules"].index(rule)
+        rk = R.B.a["RANKS"][ri]
+        vz = pool_view(col[:, :, None], (rk >= 1) & (rk <= size), R.B.a["TRADE"])
+        v2 = PoolView(view.members, [np.c_[z, zz] for z, zz in zip(view.Z, vz.Z)])
+        W2 = [None if w is None else (np.r_[0.85 * _norm(np.asarray(w, float)), 0.15] if sgn[i] != 0 else np.r_[np.asarray(w, float), 0.0]).astype(np.float32)
+              for i, w in enumerate(W)]
+        return W2, spec, v2
     if key == "W5":
         if "t_mom_secrel" not in F:
             return None
@@ -130,6 +159,39 @@ def variant(R, key: str, h: str, rule: str, size: int, v, W: list, spec):
         return [None if w is None else ((0.85 * _norm(w) + 0.15 * e).astype(np.float32) if panic[i] else w)
                 for i, w in enumerate(W)], spec
     raise KeyError(key)
+
+
+_NEWS: dict = {}
+
+
+def news_arrays(B, lookback: int = 250, window: int = 10, thr: float = 0.05):
+    """v3.21：每個換股日每檔股票對「輝達特有報酬」的 β（前 250 日、只用當天以前）＋最近 10 個交易日最大的輝達特有消息方向（|e| ≥ 5%，否則 0）。"""
+    key = (id(B), len(B.days), str(B.days[-1]))
+    if key in _NEWS:
+        return _NEWS[key]
+    from .shock import nvda_news
+    nd = nvda_news(B)
+    if nd is None:
+        return None
+    e = nd["e"]
+    Rr = pd.DataFrame(np.where(np.abs(np.asarray(B.a["R"], float)) < 0.5, np.asarray(B.a["R"], float), np.nan))
+    ee = pd.Series(e.to_numpy())
+    Rm = Rr.where(ee.notna(), axis=0)
+    mp = int(lookback * 0.5)
+    cov = Rm.mul(ee, axis=0).rolling(lookback, min_periods=mp).mean() - Rm.rolling(lookback, min_periods=mp).mean().mul(
+        ee.rolling(lookback, min_periods=mp).mean(), axis=0)
+    var = ee.rolling(lookback, min_periods=mp).var(ddof=0)
+    sp = np.asarray(B.sig_pos, int)
+    beta = cov.div(var, axis=0).to_numpy(np.float32)[sp]
+    ev = ee.to_numpy()
+    sgn = np.zeros(len(sp))
+    for i, p in enumerate(sp):
+        w = ev[max(0, p - window + 1): p + 1]
+        if np.isfinite(w).any() and np.nanmax(np.abs(w)) >= thr:
+            sgn[i] = np.sign(w[np.nanargmax(np.abs(w))])
+    _NEWS.clear()
+    _NEWS[key] = (beta, sgn)
+    return _NEWS[key]
 
 
 def us_off_signals(B, vix_min: float = 25.0, ma: int = 50):
@@ -195,10 +257,11 @@ def evaluate(R, res: dict, since: str = SINCE, need: int = NEED_DAYS) -> dict:
                 if vv is None:
                     out["errors"].append(f"{it['key']} {h}：資料包缺少需要的因子")
                     continue
-                rv = run(R.B, view, vv[0], vv[1], start_i=R.first_oos)
+                rv = run(R.B, vv[2] if len(vv) > 2 else view, vv[0], vv[1], start_i=R.first_oos)
                 dv = R.segments(rv).get("dev") or {}
-                fb, fv = forward(rb.nav, since), forward(rv.nav, since)
-                fz = forward(rb.bench, since)
+                si = it.get("since", since)                                # v3.21：新加入的候選從加入之後才算前瞻（黃仁勳事件不算新證據）
+                fb, fv = forward(rb.nav, si), forward(rv.nav, si)
+                fz = forward(rb.bench, si)
                 d_ret = (fv["ret"] - fb["ret"]) if fv.get("days") and fb.get("days") else None
                 d_mdd = (fv["mdd"] - fb["mdd"]) if fv.get("days") and fb.get("days") else None
                 code, zh = verdict(it["kind"], fv.get("days", 0), d_ret, d_mdd, need)

@@ -835,3 +835,13 @@ v1.9 改為每個交易日 **21:40 一次更新全部**（融資融券約 21:00�
 * `phases.current_book(tranches, n_slots)`：某種換股日目前持有的組合（最近 n_slots 批、每批 1／n_slots、批內等權）；
   `phases.consensus(books)`：五種換股日平均。`phase_check(..., books=)` 在重建平移資料包時順便記下；`cli research` 存成 `res["consensus"]`。
 * App：今日選股頁「🧩 五種換股日共識組合」（`consensus_html`）；模型驗證頁 `v320_html`。
+
+## v3.21 重大消息衝擊（docs/v3.21_protocol.md）
+* `kosto/shock.py`：`nvda_news(B)`（輝達前一晚報酬 x、那指 m、輝達特有 e＝x−b·m）、`linkage(B)`（前 400 大對 x 與 e 的 β、相關，族群中位數）、
+  `episode(B, start, trough, end)`（事件區間跌幅／反彈，個股、族群、0050，跌幅與反彈的相關）、`shock_study(B)`（|e| ≥ 5% 的消息日，
+  高連動減低連動、依消息方向調整，開盤／當天／5／20／60 日）、`summary(B)`（每日研究呼叫，存 `res["shock"]`；預設黃仁勳事件 11-09 → 11-20 → 最新）。
+  需要研究資料包的 WORLD 有 NVDA 與 IXIC（每日研究的國際同業本來就會抓 NVDA）。
+* 影子模型 W8～W10（`watch.news_arrays`：每個換股日的輝達特有 β〔前 250 日〕與近 10 日最大消息方向）：W8 押反轉、W9 押延續（多一欄分數、15%，
+  `variant` 可回傳自訂的 PoolView）、W10 不新買輝達特有 β 前 10%（`Spec.no_new`）。前瞻起點各自設為 2026-11-25（`ITEMS[*]["since"]`）。
+* 盤前日報：輝達前一晚 |漲跌| ≥ 5% 時評析第一段加「重大消息」（`morning.news_shock_text`，用 `res["shock"]` 的消息日研究與連動族群）。
+* App：盤勢儀表板「📰 消息衝擊」分頁（`news_shock_html`）。新增測試：app.py 不能有同名的頂層函式（同名會讓前一個被覆蓋）。

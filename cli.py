@@ -169,6 +169,15 @@ def cmd_research(a, cfg):
             log(f"盤前日報模型：大盤開盤預估（2024 年後）相關 {t1['corr']:.2f}、方向命中 {t1['hit']:.0%}（{t1['n_hit']} 天）")
     except Exception as e:  # noqa: BLE001
         log(f"盤前日報模型略過：{e}")
+    try:                                                              # v3.21 重大消息衝擊：輝達連動排名、黃仁勳事件區間、消息日研究
+        from kosto import shock
+        res["shock"] = shock.summary(B)
+        sl = res["shock"].get("study") or {}
+        if sl.get("summary"):
+            a_ = sl["summary"][0]
+            log(f"輝達特有消息日 {a_['n']} 次：高連動股當天 {a_['d0']:+.2%}、之後 5 日 {a_['d5']:+.2%}、20 日 {a_['d20']:+.2%}（依消息方向調整）")
+    except Exception as e:  # noqa: BLE001
+        log(f"消息衝擊研究略過：{e}")
     try:
         res["linkage_ic"] = linkage_ic(R, res)                       # v2.1 連動因子逐年有效性（監控用，不進模型）
     except Exception as e:  # noqa: BLE001

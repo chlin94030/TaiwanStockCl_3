@@ -846,6 +846,10 @@ def build(model: dict | None, live: dict, res: dict | None = None, now: pd.Times
            "analysis": analysis(model or {}, pred, q, night, res, live.get("news") or []),
            "disclaimer": "盤前日報由程式依公開資料自動產生；預估與建議只用經過歷史檢驗的規則，仍可能失準。僅供研究參考，非投資建議。"}
     rep["groups"] = link_section(model or {}, q, res)                   # v3.19 族群與個股開盤預估
+    ns = news_shock_text(q, res)                                         # v3.21 重大消息（輝達單晚大漲大跌）
+    if ns:
+        rep["analysis"].setdefault("paragraphs", []).insert(0, {"title": "重大消息", "text": ns, "ev": "ref"})
+        rep["analysis"]["news_shock"] = True
     gt = rep["groups"].get("text")
     if gt:
         for p_ in rep["analysis"].get("paragraphs") or []:
@@ -855,6 +859,28 @@ def build(model: dict | None, live: dict, res: dict | None = None, now: pd.Times
         else:
             rep["analysis"].setdefault("paragraphs", []).insert(1, {"title": "今晨美股對台股的意義", "text": gt.lstrip(), "ev": "tested"})
     return _clean(rep)
+
+
+def news_shock_text(q: dict, res: dict | None, thr: float = 0.05) -> str:
+    """v3.21：輝達前一晚漲跌 ≥ 5% 時，說明這類消息歷史上在台股怎麼走（每日研究的消息日研究）與該怎麼做。"""
+    nv = (q.get("NVDA") or {}).get("chg")
+    if nv is None or not np.isfinite(nv) or abs(nv) < thr:
+        return ""
+    ix = (q.get("IXIC") or {}).get("chg")
+    sh = (res or {}).get("shock") or {}
+    b = (sh.get("linkage") or {}).get("b_nasdaq")
+    t = f"輝達前一晚 {nv * 100:+.1f}%" + (f"（那指 {ix * 100:+.1f}%，扣掉大盤後輝達特有約 {(nv - (b or 1.5) * ix) * 100:+.1f}%）" if ix is not None and np.isfinite(ix) else "") + "。"
+    side = "利多（輝達特有上漲）" if nv > 0 else "利空（輝達特有下跌）"
+    sm = next((r for r in ((sh.get("study") or {}).get("summary") or []) if r.get("side") == side), None)
+    if sm:
+        t += (f"歷史上同方向的輝達特有消息日 {sm['n']} 次：跟輝達連動高的股票比連動低的，當天多反應 {sm['d0'] * 100:+.1f}%，"
+              f"之後 5 日 {sm['d5'] * 100:+.1f}%、20 日 {sm['d20'] * 100:+.1f}%（正＝延續、負＝回吐）。")
+    gs = [g["group"] for g in ((sh.get("linkage") or {}).get("groups") or []) if str(g["group"]).startswith("電子")][:4]
+    if gs:
+        t += "連動最高的族群：" + "、".join(gs) + "。"
+    t += ("消息大多在開盤一次反映（v3.19：族群跳空後當天與 5 日內幾乎不延續）→ 不追漲停開盤、也不在跌停價殺出；"
+          "中長線名單不因單一消息改變，名單股照原本的買進區與續抱規則。")
+    return t
 
 
 def link_section(model: dict, q: dict, res: dict | None) -> dict:

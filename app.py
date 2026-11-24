@@ -3090,6 +3090,74 @@ def risk_badge(t: str) -> str:
     return out
 
 
+def news_shock_html() -> str:
+    """v3.21 重大消息衝擊：輝達特有連動（族群／個股）、黃仁勳事件的跌幅與反彈、消息對短中長線的影響、模型怎麼處理。"""
+    from kosto import review as rv
+    sh = (RES or {}).get("shock") or {}
+    nm = lambda t: ui.esc(NAMES[TIDX[t]]) if t in TIDX else ""          # noqa: E731
+    pc = lambda x, d=1: "–" if x is None or not ui.ok(x) else ui.pct(x, d, color=True)   # noqa: E731
+    h = ui.section("📰 重大消息衝擊（v3.21）", "黃仁勳去留這類「只跟輝達有關」的消息，台股誰最敏感、跌多少、彈多少；消息對短中長線的影響（docs/v3.21_protocol.md）")
+    h += f"<div class='kq-panel' style='margin-bottom:8px'>{ui.esc(rv.V321_NOTE)}</div>"
+    # 1 事件經過（新聞）
+    h += "<div class='kq-muted' style='margin:6px 0 2px'><b>1. 黃仁勳事件經過</b>（新聞整理）</div>"
+    h += ui.table(["日期", "事件", "市場"], [[a, ui.esc(b), ui.esc(c)] for a, b, c in rv.V321_EVENTS], left=(0, 1, 2))
+    # 2 連動
+    lk = sh.get("linkage") or {}
+    h += "<div class='kq-muted' style='margin:10px 0 2px'><b>2. 誰跟輝達連動最高</b></div>"
+    if lk.get("groups"):
+        g = [x for x in lk["groups"] if str(x["group"]).startswith("電子")][:12]
+        h += ui.table(["族群（電子）", "輝達特有 β", "輝達 β", "相關", "檔數"],
+                      [[ui.esc(x["group"]), f"{x['beta_idio']:.2f}", f"{x['beta']:.2f}", f"{x['corr']:.2f}", str(x["n"])] for x in g], left=(0,))
+        h += ui.table(["個股（前 400 大，輝達特有 β 最高 20）", "族群", "輝達特有 β", "輝達 β", "相關"],
+                      [[f"{ui.esc(x['ticker'])} {nm(x['ticker'])}", ui.esc(x["group"]), f"{x['beta_idio']:.2f}", f"{x['beta']:.2f}", f"{x['corr']:.2f}"]
+                       for x in lk["stocks"][:20]], left=(0, 1))
+        h += (f"<div class='kq-muted'>近 {lk['days']} 個交易日、資料到 {ui.esc(lk['asof'])}。輝達特有 β＝輝達前一晚報酬扣掉那指能解釋的部分（每 1% 對台股當天報酬的影響）；"
+              "黃仁勳去留、輝達財報這類消息主要落在這一部分。</div>")
+    else:
+        h += "<div class='kq-muted'>下一次每日研究後出現（需要研究資料包有輝達收盤）。先看 v3.19 族群開盤對前一晚美股的敏感度（2019–2023 估計、2024 後檢驗）：</div>"
+        h += ui.table(["族群", "開盤敏感度（相對全市場）", "檢驗期相關"], [[ui.esc(a), f"{b:.2f}", f"{c:.2f}"] for a, b, c in rv.V321_GROUP_SENS], left=(0,))
+    # 3 黃仁勳事件區間
+    ep = sh.get("huang") or {}
+    h += "<div class='kq-muted' style='margin:10px 0 2px'><b>3. 黃仁勳離開後跌最深、回歸後反彈最大</b></div>"
+    if ep.get("stocks"):
+        df = pd.DataFrame(ep["stocks"])
+        gg = pd.DataFrame(ep["groups"])
+        ge = gg[gg["group"].astype(str).str.startswith("電子")]
+        h += (f"<div class='kq-muted'>{ui.esc(ep['start'])} 收盤 → {ui.esc(ep['trough'])} 收盤（0050 {pc(ep['bench_down'])}）；"
+              f"之後到 {ui.esc(ep['end'])}（{ep['rebound_days']} 個交易日，0050 {pc(ep['bench_up'])}）。"
+              + (f"跌幅與反彈的相關 {ep['corr_down_up']:+.2f}（負＝跌越深彈越多）。" if ep.get("corr_down_up") is not None else "") + "</div>")
+        h += ui.table(["電子族群（跌最深 10）", "跌幅（中位數）", "反彈", "合計"],
+                      [[ui.esc(r.group), pc(r.down), pc(r.up), pc(r.recover)] for r in ge.sort_values("down").head(10).itertuples()], left=(0,))
+        h += ui.table(["個股（跌最深 15）", "族群", "跌幅", "反彈", "合計"],
+                      [[f"{ui.esc(r.ticker)} {nm(r.ticker)}", ui.esc(r.group), pc(r.down), pc(r.up), pc(r.recover)]
+                       for r in df.sort_values("down").head(15).itertuples()], left=(0, 1))
+        if ep["rebound_days"] > 0:
+            h += ui.table(["個股（反彈最大 15）", "族群", "跌幅", "反彈", "合計"],
+                          [[f"{ui.esc(r.ticker)} {nm(r.ticker)}", ui.esc(r.group), pc(r.down), pc(r.up), pc(r.recover)]
+                           for r in df.sort_values("up", ascending=False).head(15).itertuples()], left=(0, 1))
+    else:
+        h += (f"<div class='kq-muted'>{ui.esc(ep.get('error') or '下一次每日研究後出現')}。在那之前：歷史上急跌時「融資使用率＋波動」最高的一級跌得最深（平均 −31%），"
+              "反彈也最大（低點後 60 日 +32%，最低一級 +18%）（v3.17）；跟輝達連動越高的族群，跳空幅度越大（見上表）。</div>")
+    # 4 消息對短中長線的影響
+    sd = sh.get("study") or {}
+    h += "<div class='kq-muted' style='margin:10px 0 2px'><b>4. 消息對短中長線的影響</b>（輝達特有消息日；高連動組 − 低連動組，依消息方向調整：正＝跟著消息走、負＝回吐）</div>"
+    if sd.get("summary"):
+        from kosto.shock import HORIZONS
+        h += ui.table(["消息", "次數"] + [a for a, _ in HORIZONS],
+                      [[ui.esc(r["side"]), str(r["n"])] + [f"{pc(r.get(k), 2)}<br><small class='kq-muted'>{r.get(k + '_pos', 0):.0%} 為正</small>" for _, k in HORIZONS]
+                       for r in sd["summary"]], left=(0,))
+    h += "<div class='kq-muted' style='margin:6px 0 2px'>先前的研究（已回測）：</div>"
+    h += ui.table(["研究", "結果", "對模型的意義"], [[ui.esc(a), ui.esc(b), ui.esc(c)] for a, b, c in rv.V321_PRIOR], left=(0, 1, 2))
+    # 5 模型怎麼處理
+    wr = [r for r in ((RES or {}).get("watch") or {}).get("rows", []) if r.get("key") in ("W8", "W9", "W10")]
+    h += "<div class='kq-muted' style='margin:10px 0 2px'><b>5. 模型權重怎麼調</b></div>"
+    h += ui.table(["", "候選", "期間", "狀態"], [[a, ui.esc(b), ui.esc(c), ui.esc(d)] for a, b, c, d in rv.V321_CAND], left=(0, 1, 2, 3))
+    if wr:
+        h += ui.table(["影子模型", "期間", "開發期超額差", "前瞻（11/25 起）"],
+                      [[f"{r['key']} {ui.esc(r['name'])}", HZ.get(r["h"], r["h"]), pc(r.get("dev_d_excess")), ui.esc(r["status_zh"])] for r in wr], left=(0,))
+    return h
+
+
 def weather_now(cur: dict | None = None) -> dict:
     """v3.18 模型天氣：研究資料的狀態，VIX／費半／今天的加權有較新的就用較新的（只更新狀態，歷史統計不變）。"""
     from kosto import crash as C
@@ -3924,7 +3992,10 @@ def page_insight():
     names = ["🚨 急跌應變", "✅ 止穩檢查", "🎯 特別時期選股", "🩺 模型體檢", "🧭 觀察重點", "🥚 科斯托蘭尼", "🌡️ 環境與估值"]
     order = names if in_crash else [names[4], names[6], names[5], names[1], names[0], names[2], names[3]]
     order = ["🌅 盤前日報"] + order                                     # v3.16 每日台股盤前日報（07:00 前）
+    order.insert(2, "📰 消息衝擊")                                       # v3.21 重大消息（輝達／黃仁勳）衝擊
     tabs = dict(zip(order, st.tabs(order)))
+    with tabs["📰 消息衝擊"]:
+        st.markdown(news_shock_html(), unsafe_allow_html=True)
     with tabs["🌅 盤前日報"]:
         morning_tab()
 
