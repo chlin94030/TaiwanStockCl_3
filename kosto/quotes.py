@@ -4,13 +4,14 @@
 """
 from __future__ import annotations
 
+import os
 import time
 
 import numpy as np
 import pandas as pd
 import requests
 
-MIS = "https://mis.twse.com.tw/stock"
+MIS = (os.environ.get("KOSTO_MIS_HOST") or "https://mis.twse.com.tw").rstrip("/") + "/stock"     # 環境變數只供測試／展示用
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
       "Referer": "https://mis.twse.com.tw/stock/index.jsp", "Accept-Language": "zh-TW,zh;q=0.9"}
 INDEX_CH = {"加權指數": "tse_t00.tw", "櫃買指數": "otc_o00.tw"}
@@ -130,9 +131,20 @@ class Quotes:
         return pd.concat(out, ignore_index=True) if out else pd.DataFrame()
 
 
+def now_tw() -> pd.Timestamp:
+    """台北現在時間（KOSTO_FAKE_NOW 只供測試／展示：例如 2026-11-24 10:30）。"""
+    fake = os.environ.get("KOSTO_FAKE_NOW")
+    if fake:
+        try:
+            return pd.Timestamp(fake).tz_localize("Asia/Taipei") if pd.Timestamp(fake).tzinfo is None else pd.Timestamp(fake).tz_convert("Asia/Taipei")
+        except (ValueError, TypeError):
+            pass
+    return pd.Timestamp.now(tz="Asia/Taipei")
+
+
 def market_phase(now: pd.Timestamp | None = None) -> str:
     """台北時間：盤前 / 盤中 / 盤後 / 休市（週末）。"""
-    now = now or pd.Timestamp.now(tz="Asia/Taipei")
+    now = now or now_tw()
     if now.weekday() >= 5:
         return "休市"
     hm = now.hour * 60 + now.minute

@@ -29,7 +29,7 @@ from kosto.bundle import Bundle, build_bundle
 from kosto.compare import Daily, head_to_head, parse_external
 from kosto.config import HORIZON_KEYS, STAGE_ZH, dump_yaml, load_config
 from kosto.metrics import perf
-from kosto.quotes import INDEX_CH, Quotes, channel, market_phase
+from kosto.quotes import INDEX_CH, Quotes, channel, market_phase, now_tw
 from kosto.remote import RESEARCH_TAG, dispatch, fetch_asset, latest_runs, release_info
 from kosto.report import build_zip
 from kosto.research import Research, Variant
@@ -1963,9 +1963,28 @@ def mix_stats(bid, weights: tuple, cash: bool = False):
     return {"nav": nav, "bench": b, "full": full, "last": last}
 
 
+def beat_alloc_html() -> str:
+    """v3.23 資金配置頁：報酬與回撤都勝過 0050 的組合（歷史門檻通過者），沒有就說明最接近的。"""
+    bo = (RES or {}).get("beat0050") or {}
+    cs = bo.get("cands") or []
+    if not cs:
+        return ""
+    ok = [x for x in cs if x.get("pass")]
+    if ok:
+        x = max(ok, key=lambda z: (z["full"]["cagr"] - z["full"]["b_cagr"]))
+        f = x["full"]
+        return (f"<div class='kq-panel' style='border-left:4px solid #16a35f;margin:6px 0'>🏆 <b>贏 0050 組合（v3.23 歷史門檻通過、{ui.esc(bo.get('fwd_start', ''))} 起前瞻追蹤）</b>："
+                f"{ui.esc(x['key'])} {ui.esc(x['name'])}｜{ui.esc(bo.get('start', ''))} 起年化 {ui.pct(f['cagr'], 1)}（0050 {ui.pct(f['b_cagr'], 1)}）、"
+                f"最大回撤 {ui.pct(f['mdd'], 1, sign=False)}（0050 {ui.pct(f['b_mdd'], 1, sign=False)}）。細節與目前權重：<a href='./validate' target='_self'>🧪 模型驗證</a>。"
+                "回測不保證未來，仍建議分批。</div>")
+    return ("<div class='kq-muted' style='margin:6px 0'>v3.23「報酬與回撤都勝過 0050」的 8 個組合目前沒有一個通過全部門檻"
+            "（見 <a href='./validate' target='_self'>🧪 模型驗證</a>）；怕回撤的人仍以「0050 核心＋模型衛星」為主。</div>")
+
+
 def page_alloc():
     header()
     st.markdown(ui.section("資金配置", "輸入金額 → 每檔張數；可選擇是否包含 0050"), unsafe_allow_html=True)
+    st.markdown(beat_alloc_html(), unsafe_allow_html=True)                  # v3.23
     c1, c2, c3 = st.columns([1, 2, 1])
     cap = c1.number_input("投資金額（元）", min_value=50_000, max_value=1_000_000_000, value=1_000_000, step=50_000)
     prof = c2.segmented_control("投資風格", list(planlib.PROFILES) + ["自訂"], default="穩健型", key="alloc_prof") or "穩健型"
@@ -3090,6 +3109,37 @@ def risk_badge(t: str) -> str:
     return out
 
 
+NEWS_LIVE = [("NVDA", "輝達"), ("AMD", "超微"), ("AVGO", "博通"), ("TSM", "台積電 ADR"), ("SOX", "費城半導體"), ("NQF", "那斯達克期貨"), ("IXIC", "那斯達克")]
+
+
+def news_live_section():
+    """v3.22 消息衝擊的即時區：輝達、美股同業、費半、那指期的最新分時（美股晚上盤中每分鐘更新），
+    以及依 v3.21 族群輝達特有 β 推估的台股族群反應。"""
+    from kosto import live as LV
+    auto = st.toggle("每 60 秒自動更新", value=True, key="news_live_auto")
+
+    @st.fragment(run_every=60 if auto else None)
+    def body():
+        wd = world_intraday([k for k, _ in NEWS_LIVE])
+        rows = [(nm, wd.get(k), "") for k, nm in NEWS_LIVE if k != "IXIC"]
+        chg = {k: (d["last"] / d["prev"] - 1) if d and d.get("prev") else None for k, d in wd.items()}
+        sh = (RES or {}).get("shock") or {}
+        lk = sh.get("linkage") or {}
+        imp = LV.news_impact([g for g in (lk.get("groups") or []) if str(g["group"]).startswith("電子")], chg.get("NVDA"), chg.get("IXIC"), lk.get("b_nasdaq"))
+        left = mini_rows(rows) or "<div class='kq-muted'>美股分時暫時無法取得（Yahoo Finance）。</div>"
+        right = ""
+        if imp:
+            right = ui.table(["台股電子族群", "輝達特有 β", "依目前輝達推估"], [[ui.esc(r["group"]), f"{r['beta_idio']:.2f}", ui.pct(r["impact"], 1, color=True)] for r in imp],
+                             left=(0,))
+            right += "<div class='kq-muted'>＝族群的輝達特有 β ×（輝達漲跌 − 那指能解釋的部分）。β 是歷史平均，重大事件常被放大；開盤一次反映，之後不延續（v3.19）。</div>"
+        else:
+            right = "<div class='kq-muted'>族群預估反應要等每日研究算出輝達特有 β（v3.21）後出現。</div>"
+        st.markdown(ui.section("即時：輝達與美股同業", f"更新 {now_tw():%H:%M:%S}｜美股盤中、盤前盤後每分鐘更新；台股盤中看那斯達克期貨")
+                    + "<div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px'>"
+                    f"<div>{left}</div><div>{right}</div></div>", unsafe_allow_html=True)
+    body()
+
+
 def news_shock_html() -> str:
     """v3.21 重大消息衝擊：輝達特有連動（族群／個股）、黃仁勳事件的跌幅與反彈、消息對短中長線的影響、模型怎麼處理。"""
     from kosto import review as rv
@@ -3243,6 +3293,186 @@ def v318_html() -> str:
     h += "<div class='kq-muted' style='margin:10px 0 2px'><b>4. 名單曝險</b>（中線，名單平均）</div>"
     h += ui.table(["項目", "歷史中位數", "2026-10-22", "在歷史中的百分位"], [[ui.esc(a), f"{b:.2f}", f"{c:.2f}", f"{d}%"] for a, b, c, d in rv.V318_EXPO], left=(0,))
     h += ("<div class='kq-muted'>已經試過、不再重測：" + "；".join(f"{ui.esc(a)}（{b}：{ui.esc(c)}）" for a, b, c in rv.V318_TRIED) + "。</div>")
+    return h
+
+
+# ================================================================== v3.23 贏 0050 研究、費氏回撤、知名理論、短中長線重疊
+def _pp(a, b) -> str:
+    return f"{(a - b) * 100:+.1f}" if ui.ok(a) and ui.ok(b) else "–"
+
+
+def _beat_verdict(x) -> str:
+    return "✅ 通過" if x.get("pass") else ("👀 觀察" if x.get("observe") else "❌")
+
+
+def beat_rows(items, with_gate=True) -> list:
+    rows = []
+    for x in items:
+        f, d, c, fw = x.get("full") or {}, x.get("dev") or {}, x.get("recent") or {}, x.get("fwd") or {}
+        yrs = x.get("years") or []
+        g = x.get("gates") or {}
+        ph = g.get("g6_n")
+        row = [f"<b>{ui.esc(x['key'])}</b>", ui.esc(x["name"]),
+               f"{ui.pct(f.get('cagr'), 1)}（{_pp(f.get('cagr'), f.get('b_cagr'))}）",
+               f"{ui.pct(f.get('mdd'), 1, sign=False)}（{_pp(f.get('mdd'), f.get('b_mdd'))}）",
+               f"{_pp(d.get('cagr'), d.get('b_cagr'))}／{_pp(d.get('mdd'), d.get('b_mdd'))}",
+               f"{_pp(c.get('cagr'), c.get('b_cagr'))}／{_pp(c.get('mdd'), c.get('b_mdd'))}",
+               f"{sum(a > b for _, a, b in yrs)}／{len(yrs)}" if yrs else "–",
+               f"{x['p_boot']:.0%}" if ui.ok(x.get("p_boot")) else "–"]
+        if with_gate:
+            row += [f"{x['q']:.2f}" if ui.ok(x.get("q")) else "–", f"{ph[0]}／{ph[1]}" if ph else "–",
+                    _pp(fw.get("cagr"), fw.get("b_cagr")) if fw else "–", _beat_verdict(x)]
+        else:
+            row += ["✅" if g.get("g1") and g.get("g2") else "❌"]
+        rows.append(row)
+    return rows
+
+
+def fib_text(fb: dict) -> str:
+    """費氏回撤研究的一句話結論（每日研究的數字）。"""
+    if not fb:
+        return ""
+    stx = fb.get("stocks") or {}
+    tb = {round(r["level"], 3): r for r in stx.get("table") or [] if r.get("n")}
+    cl = stx.get("cluster") or {}
+    out = []
+    if 0.618 in tb and 0.382 in tb:
+        a, b = tb[0.382], tb[0.618]
+        out.append(f"個股反彈碰到 0.382 後先回前高 {a['up']:.0%}、先破底 {a['down']:.0%}；碰到 0.618 後先回前高 {b['up']:.0%}"
+                   f"（完全隨機的走勢也有約 38%／62%）")
+        if 0.55 in tb and 0.70 in tb:
+            out.append(f"0.55 → 0.618 → 0.70：{tb[0.55]['up']:.0%} → {b['up']:.0%} → {tb[0.70]['up']:.0%}（平滑上升＝反彈越多越強，不是 0.618 才有的門檻）")
+    if cl.get("n"):
+        out.append(f"反彈停住的位置：費氏位置附近 {cl['fib']} 次、左右對照平均 {cl['expected']:.0f} 次（{cl['ratio']:.2f} 倍，z {cl['z']:+.1f}）"
+                   + ("→ 費氏位置比較常當壓力" if ui.ok(cl.get("z")) and cl["z"] > 2 else "→ 費氏位置沒有比旁邊更常當壓力"))
+    fc = fb.get("factor") or {}
+    if ui.ok(fc.get("ic")):
+        out.append(f"當選股因子：中線 IC {fc['ic']:+.3f}（t {fc['t']:+.1f}）、扣掉一年新高與相對強度後 {fc['pic']:+.3f}（t {fc['pt']:+.1f}）；"
+                   f"和一年新高相關 {fc['corr_high252']:.2f}")
+    return "；".join(out) + "。" if out else ""
+
+
+def beat0050_html() -> str:
+    """v3.23 模型驗證：報酬與回撤都勝過 0050 的候選、為何難贏 0050、短中長線重疊、費氏回撤、知名理論。"""
+    bo = (RES or {}).get("beat0050")
+    if not bo:
+        return ("<div class='kq-muted'>規則已先寫好（docs/v3.23_protocol.md），下一次每日研究用最新資料算出後出現：</div>"
+                + ui.bullets(["B1a／B1b 權值股母池（前 50／100 大選 8 檔）、B2 0050 增強（市值權重 × 模型分數傾斜）、B3 台積電錨定＋模型、"
+                              "B4 200 日線趨勢切換、B5 核心衛星＋趨勢、B6 0050 增強＋趨勢、B7 0050 正 2＋200 日線",
+                              "門檻：整段年化 ≥ 0050＋3pp、最大回撤淺 ≥1pp、開發期與最近 12 個月不崩、逐年 2／3 贏、自助法 ≥90%、五種換股日 4／5、BH-FDR q ≤ 0.10",
+                              "費氏回撤（反彈停在哪裡、0.382／0.5／0.618 規則、當因子）與 7 個知名理論"]))
+    h = ""
+    cs = bo.get("cands") or []
+    ok = [x for x in cs if x.get("pass")]
+    ob = [x for x in cs if x.get("observe")]
+    best = max(cs, key=lambda x: ((x.get("full") or {}).get("cagr") or -9) - ((x.get("full") or {}).get("b_cagr") or 0), default=None)
+    if cs:
+        msg = (f"<b>{len(ok)} 個候選全部門檻通過</b>：" + "、".join(f"{x['key']} {ui.esc(x['name'])}" for x in ok) if ok else
+               "<b>沒有候選通過全部門檻</b>" + (f"；只差多重檢定或換股日的觀察：{'、'.join(x['key'] for x in ob)}" if ob else ""))
+        h += (f"<div class='kq-panel' style='margin-bottom:8px'>資料 {ui.esc(bo.get('start', ''))}～{ui.esc(bo.get('asof', ''))}（最近 12 個月從 "
+              f"{ui.esc(bo.get('holdout', ''))}；前瞻從 {ui.esc(bo.get('fwd_start', ''))}）。{msg}。主模型不變。</div>")
+        hd = ["", "組合", "整段年化（−0050）", "最大回撤（−0050）", "開發期 年化／回撤 差", "最近 12 個月 差", "逐年贏", "超額>0 機率", "q", "換股日", "前瞻", "判定"]
+        h += "<div class='kq-muted' style='margin:6px 0 2px'><b>1. 候選</b>（差＝候選 − 0050，個百分點；回撤差為正＝比 0050 淺）</div>"
+        h += ui.table(hd, beat_rows(cs), left=(0, 1, 11))
+        if bo.get("refs"):
+            h += "<div class='kq-muted' style='margin:6px 0 2px'><b>對照</b></div>"
+            h += ui.table(hd[:8], [r[:8] for r in beat_rows(bo["refs"], with_gate=False)], left=(0, 1))
+        cur = bo.get("current") or {}
+        tr = cur.get("trend") or {}
+        if tr:
+            h += (f"<div class='kq-muted' style='margin:4px 0'>現在：0050 {'在' if tr.get('up') else '<b>跌破</b>'} 200 日線"
+                  f"（距離 {ui.pct(tr.get('gap'), 1)}）→ 趨勢類候選（B4～B7）目前為「{'之上' if tr.get('up') else '之下'}」配置。"
+                  + (f"台積電在前 50 大的市值權重 {ui.pct((cur.get('B3') or {}).get('tsmc_w'), 0, sign=False)}。" if cur.get("B3") else "") + "</div>")
+        if ok and cur.get("B2") and any(x["key"] in ("B2", "B6") for x in ok):
+            w = (cur["B2"] or {}).get("w") or []
+            h += ("<div class='kq-muted' style='margin:4px 0 2px'><b>B2 目前權重</b>（前 12 檔；括號＝市值權重）</div>"
+                  + ui.table(["股票", "權重", "市值權重"], [[f"{ui.esc(t)} {ui.esc(NAMES[TIDX[t]]) if t in TIDX else ''}", f"{a * 100:.1f}%",
+                                                          f"{b * 100:.1f}%"] for t, a, b in w[:12]], left=(0,)))
+    elif best is None and bo.get("errors"):
+        h += f"<div class='kq-muted'>候選計算失敗：{ui.esc('；'.join(bo['errors']))}</div>"
+    cc = bo.get("concentration") or {}
+    if cc.get("years"):
+        h += "<div class='kq-muted' style='margin:10px 0 2px'><b>2. 為什麼難贏 0050</b>（逐年報酬 %）</div>"
+        h += ui.table(["年", "0050", "台積電", "前 50 大市值加權", "前 50 大等權", "中線母池等權", "中線模型", "台積電權重", "0050 報酬中台積電貢獻"],
+                      [[str(r["year"]), ui.pct(r["0050"], 1), ui.pct(r["tsmc"], 1), ui.pct(r["rep50"], 1), ui.pct(r["ew50"], 1),
+                        ui.pct(r.get("pool_ew"), 1), ui.pct(r.get("model"), 1), ui.pct(r.get("tsmc_w"), 0, sign=False),
+                        ui.pct(r.get("tsmc_share"), 0, sign=False)] for r in cc["years"]], left=(0,))
+        h += (f"<div class='kq-muted'>前 50 大市值加權和 0050 的日報酬相關 {cc.get('rep_corr', float('nan')):.2f}（追蹤誤差 {ui.pct(cc.get('rep_te'), 1, sign=False)}）。"
+              "等權的選股範圍先天落後市值加權（台積電一檔就占一半）；模型的超額是在這個落後之上靠選股贏回來的。</div>")
+    et = bo.get("etf") or {}
+    if et.get("rows"):
+        h += (f"<div class='kq-muted' style='margin:10px 0 2px'><b>2b. 真實 ETF 和 0050 同期間比較</b>（不是回測；含息淨值，資料到 {ui.esc(et.get('asof', ''))}；"
+              "Smart Beta／ESG／高股息等，依年化超額排序）</div>")
+        h += ui.table(["ETF", "類型", "起算", "年化（−0050）", "最大回撤（−0050）", "逐年贏", "報酬與回撤都贏"],
+                      [[f"{ui.esc(r['ticker'])} {ui.esc(r['name'])}", ui.esc(r["type"]), r["from"], f"{ui.pct(r['cagr'], 1)}（{_pp(r['cagr'], r['b_cagr'])}）",
+                        f"{ui.pct(r['mdd'], 1, sign=False)}（{_pp(r['mdd'], r['b_mdd'])}）",
+                        f"{sum(a > b for _, a, b in r['years'])}／{len(r['years'])}", "✅" if r["both"] else ""] for r in et["rows"][:20]], left=(0, 1))
+        lv = et.get("lev") or {}
+        if lv:
+            h += (f"<div class='kq-muted'>真實 00631L（0050 正 2）{ui.esc(lv['from'])} 起：一直持有年化 {ui.pct(lv.get('hold_cagr'), 1)}、回撤 {ui.pct(lv.get('hold_mdd'), 1, sign=False)}；"
+                  f"＋200 日線（之下放現金，換了 {lv.get('switches', 0)} 次）年化 {ui.pct(lv.get('cagr'), 1)}、回撤 {ui.pct(lv.get('mdd'), 1, sign=False)}；"
+                  f"同期 0050 年化 {ui.pct(lv.get('b_cagr'), 1)}、回撤 {ui.pct(lv.get('b_mdd'), 1, sign=False)}。"
+                  f"候選 B7 用 2×0050−年 2.5% 模擬（和真實 00631L 日報酬相關 {lv.get('sim_corr', float('nan')):.2f}，年化差 {_pp(lv.get('sim_gap'), 0)}）。</div>")
+    ov = bo.get("overlap") or {}
+    if ov.get("pairs"):
+        hz = {"short": "短線", "mid": "中線", "long": "長線"}
+        h += "<div class='kq-muted' style='margin:10px 0 2px'><b>3. 短中長線名單重疊</b></div>"
+        h += ui.table(["兩份名單", "整段平均", "最近 12 個月", "今天"],
+                      [[f"{hz[p['a']]}／{hz[p['b']]}", ui.pct(p["avg"], 0, sign=False), ui.pct(p["recent"], 0, sign=False), ui.pct(p["now"], 0, sign=False)]
+                       for p in ov["pairs"]], left=(0,))
+        mo = ov.get("momentum") or {}
+        if mo:
+            h += ("<div class='kq-muted'>模型權重裡的動能家族（相對強度、中期動能、一年新高、均線）："
+                  + "、".join(f"{hz.get(k, k)} {ui.pct(v['momentum'], 0, sign=False)}" for k, v in mo.items())
+                  + "。短線刻意用中線的慢訊號（v1.5：短線自己的快訊號扣成本後輸），所以和中線重疊最高；三份名單擇一操作即可。</div>")
+    fb = bo.get("fib") or {}
+    if fb:
+        h += "<div class='kq-muted' style='margin:10px 0 2px'><b>4. 費氏回撤</b>（反彈第一次碰到各位置之後）</div>"
+        for key, lab in (("stocks", "成交金額前 300 大個股（跌 ≥20% 的波段）"), ("bench", "0050（跌 ≥10% 的波段）")):
+            t = (fb.get(key) or {}).get("table") or []
+            if t:
+                h += f"<div class='kq-muted'>{lab}</div>" + ui.table(
+                    ["位置", "次數", "先回前高", "隨機漫步約", "先破底", "震盪（250 日內都沒有）", "之後 20 日", "之後 60 日"],
+                    [[f"{r['level']:.3f}" + (" ★" if round(r["level"], 3) in (0.382, 0.5, 0.618) else ""), str(r.get("n", 0)),
+                      ui.pct(r.get("up"), 0, sign=False), ui.pct(r.get("rw"), 0, sign=False), ui.pct(r.get("down"), 0, sign=False),
+                      ui.pct(r.get("range"), 0, sign=False), ui.pct(r.get("f20"), 1), ui.pct(r.get("f60"), 1)] for r in t], left=())
+        ft = fib_text(fb)
+        if ft:
+            h += f"<div class='kq-panel' style='margin:6px 0'>{ft}</div>"
+    th = bo.get("theories") or []
+    if th:
+        h += "<div class='kq-muted' style='margin:10px 0 2px'><b>5. 知名理論</b>（同一套回測；選股類＝市值前 300 大選 8 檔，擇時類＝0050）</div>"
+        h += ui.table(["", "理論", "整段年化（−0050）", "最大回撤（−0050）", "開發期 差", "最近 12 個月 差", "逐年贏", "超額>0 機率", "報酬與回撤都贏"],
+                      beat_rows(th, with_gate=False), left=(0, 1))
+    if bo.get("errors"):
+        h += f"<div class='kq-muted'>部分計算略過：{ui.esc('；'.join(bo['errors']))}</div>"
+    return h
+
+
+def fib_panel_html() -> str:
+    """盤勢儀表板：加權指數目前的費氏回撤位置（只顯示），附每日研究對費氏回撤的檢驗結論。"""
+    if "Q_TAIEX" not in B.a or "q_days" not in B.meta:
+        return ""
+    tx = pd.Series(B.a["Q_TAIEX"], index=pd.DatetimeIndex(B.meta["q_days"])).dropna()
+    if len(tx) < 60:
+        return ""
+    hd = tx.idxmax()
+    H = float(tx.max())
+    after = tx[tx.index >= hd]
+    L, ld = float(after.min()), after.idxmin()
+    now = taiex_now() or {}
+    cur = float(now.get("px") or tx.iloc[-1])
+    head = ui.section("📐 費氏回撤：加權指數現在在哪裡", "只是位置參考；有沒有用看下方的歷史檢驗（v3.23）")
+    if (H - L) / H < 0.10:
+        return head + f"<div class='kq-muted'>近兩年高點 {H:,.0f}（{hd:%Y-%m-%d}）之後沒有跌超過 10% 的波段。</div>"
+    x = (cur - L) / (H - L)
+    rows = [[f"{r:.3f}", f"{L + r * (H - L):,.0f}", "✅ 已站上" if cur >= L + r * (H - L) else "未到"] for r in (0.236, 0.382, 0.5, 0.618, 0.786)]
+    h = head + (f"<div class='kq-muted'>高點 {H:,.0f}（{hd:%m/%d}）→ 低點 {L:,.0f}（{ld:%m/%d}，{L / H - 1:+.1%}）→ 現在 {cur:,.0f}："
+                f"<b>反彈到跌幅的 {x:.0%}</b></div>") + ui.table(["回撤位置", "加權指數", "現在"], rows, left=())
+    ft = fib_text(((RES or {}).get("beat0050") or {}).get("fib") or {})
+    h += ("<div class='kq-muted' style='margin-top:4px'>" + (f"歷史檢驗（台股，每日研究）：{ft}" if ft else
+          "歷史檢驗由下一次每日研究產出（v3.23）。國外研究（外匯、美股）多半發現費氏位置沒有比隨機位置更準。")
+          + "注意：完全沒有規律的走勢，從反彈 x 成的位置先回到前高的機率本來就約 x 成，所以「到 0.618 才有機會」本身不代表費氏有效。</div>")
     return h
 
 
@@ -3992,9 +4222,10 @@ def page_insight():
     names = ["🚨 急跌應變", "✅ 止穩檢查", "🎯 特別時期選股", "🩺 模型體檢", "🧭 觀察重點", "🥚 科斯托蘭尼", "🌡️ 環境與估值"]
     order = names if in_crash else [names[4], names[6], names[5], names[1], names[0], names[2], names[3]]
     order = ["🌅 盤前日報"] + order                                     # v3.16 每日台股盤前日報（07:00 前）
-    order.insert(2, "📰 消息衝擊")                                       # v3.21 重大消息（輝達／黃仁勳）衝擊
-    tabs = dict(zip(order, st.tabs(order)))
+    order.insert(1, "📰 消息衝擊")                                       # v3.21 重大消息（輝達／黃仁勳）衝擊；v3.22 移到第二個分頁
+    tabs = dict(zip(order, st.tabs(order, default="📰 消息衝擊" if st.query_params.get("tab", "") == "news" else None)))  # ./insight?tab=news
     with tabs["📰 消息衝擊"]:
+        news_live_section()                                                # v3.22 即時：輝達與美股同業、台股族群預估反應
         st.markdown(news_shock_html(), unsafe_allow_html=True)
     with tabs["🌅 盤前日報"]:
         morning_tab()
@@ -4214,6 +4445,10 @@ def page_insight():
 
     with tabs["🧭 觀察重點"]:
         st.markdown(insight_focus(df, sto, f5, t5, mchg, sox_dd), unsafe_allow_html=True)
+        try:
+            st.markdown(fib_panel_html(), unsafe_allow_html=True)            # v3.23 費氏回撤位置＋歷史檢驗
+        except Exception:  # noqa: BLE001
+            pass
         st.markdown(ui.section("重大事件與即時消息", "事件的歷史參考、可靠的即時消息來源、最新頭條（10 分鐘更新）"), unsafe_allow_html=True)
         st.markdown(nv_event_html(), unsafe_allow_html=True)
         n1, n2 = st.columns(2)
@@ -4977,6 +5212,10 @@ def page_validate():
     st.markdown(diagnostics_html(), unsafe_allow_html=True)
     forward_panel()
     replay_section()
+    st.markdown(ui.section("贏 0050 研究（v3.23）", "報酬與回撤都勝過 0050 的組合、為何難贏 0050、短中長線重疊、費氏回撤、知名理論；預先宣告：docs/v3.23_protocol.md"),
+                unsafe_allow_html=True)
+    with st.expander("展開 v3.23 結果", expanded=True):
+        st.markdown(beat0050_html(), unsafe_allow_html=True)
     st.markdown(ui.section("挑戰架構（v3.20）", "機器學習排序、集成、濾網、美股 GBM 都沒有贏過現行線性架構；採用五種換股日共識組合；預先宣告：docs/v3.20_protocol.md"),
                 unsafe_allow_html=True)
     with st.expander("展開 v3.20 挑戰架構結果", expanded=False):
@@ -5271,7 +5510,17 @@ def heat_frame(bid, top: int, elec_only: bool) -> pd.DataFrame:
 
 
 def heatmap_section(key: str, height: int | None = None, default_top: int = 300):
-    """v3.1 台股熱力圖：面積＝近 20 日均成交金額、顏色＝漲跌（紅漲綠跌，越深越多）；電子依產業鏈層級與細族群分組。"""
+    """v3.1 台股熱力圖：面積＝近 20 日均成交金額、顏色＝漲跌（紅漲綠跌，越深越多）；電子依產業鏈層級與細族群分組。
+    v3.22：盤中可每 30 秒自動更新（只重畫熱力圖）。"""
+    auto = auto_toggle(f"{key}_auto")
+
+    @st.fragment(run_every=30 if auto else None)
+    def body():
+        _heatmap_body(key, height, default_top)
+    body()
+
+
+def _heatmap_body(key: str, height: int | None = None, default_top: int = 300):
     from kosto import chainmap as cm
     c1, c2, c3 = st.columns([1.3, 1.2, 1])
     per = c1.segmented_control("期間", list(cm.PERIODS), format_func=lambda k: cm.PERIODS[k][0], default="r1", key=f"{key}_per") or "r1"
@@ -5354,6 +5603,68 @@ def chain_position_html(t: str) -> str:
     return ui.bullets(lines)
 
 
+# ================================================================== v3.22 盤中即時分析（kosto/live.py）
+@st.cache_data(show_spinner=False)
+def vol20_series(bid) -> pd.Series:
+    """近 20 日平均成交量（張），算量比用。"""
+    if "Q_V" not in B.a:
+        return pd.Series(dtype=float)
+    return pd.DataFrame(B.a["Q_V"].astype(float), columns=list(B.tickers)).tail(20).mean()
+
+
+def chain_members() -> list:
+    from kosto import supply as S
+    return list(dict.fromkeys(t for d in S.SUBGROUPS.values() for t, _ in d["members"] if t in TIDX))
+
+
+def live_today(tickers) -> tuple[pd.DataFrame, str, bool]:
+    """(報價表, 說明, 是否為今天的報價)：交易日用證交所即時（盤後＝今日收盤），否則用研究資料最後一天收盤。"""
+    from kosto import live as LV
+    ph = market_phase()
+    if ph in ("盤中", "盤前試撮", "盤後"):
+        try:
+            q, err = quotes_for(tickers)
+            if len(q) and "date" in q:
+                q = q[q["date"].astype(str) > RDAY.strftime("%Y%m%d")]
+            if len(q) and q["chg"].notna().any():
+                tm = str(q["time"].dropna().iloc[-1]) if "time" in q and q["time"].notna().any() else ""
+                return q, ("證交所即時（約 5 秒延遲）" if ph != "盤後" else "證交所今日收盤") + (f" {tm}" if tm else ""), True
+        except Exception:  # noqa: BLE001
+            pass
+    return LV.fallback_quotes(chain_metrics(BID)).reindex(tickers), f"{RDAY:%m/%d} 收盤（研究資料；盤中 9:00～13:30 改為即時）", False
+
+
+def chain_live_data():
+    from kosto import live as LV
+    from kosto import supply as S
+    q, label, is_live = live_today(chain_members())
+    frac = LV.session_frac(now_tw()) if is_live and market_phase() == "盤中" else 1.0
+    gl = LV.group_live(q, S.SUBGROUPS, chain_metrics(BID), vol20_series(BID) if is_live else None, frac,
+                       {t: NAMES[TIDX[t]] for t in q.index if t in TIDX})
+    return gl, q, label, is_live
+
+
+def auto_toggle(key: str, label: str = "盤中每 30 秒自動更新") -> bool:
+    return st.toggle(label, value=market_phase() in ("盤中", "盤前試撮"), key=key)
+
+
+def chain_live_section():
+    """產業鏈地圖「⚡ 盤中即時」：細族群即時強弱、上下游各層、領漲領跌、量比。"""
+    from kosto import live as LV
+    from kosto import supply as S
+    auto = auto_toggle("cm_live_auto")
+
+    @st.fragment(run_every=30 if auto else None)
+    def body():
+        gl, q, label, is_live = chain_live_data()
+        tx = taiex_now()
+        br = LV.breadth(q)
+        st.markdown(LV.chain_live_html(gl, tx.get("chg") if tx else None, br, S.LAYER_NAME, label), unsafe_allow_html=True)
+        st.caption(f"更新 {now_tw():%H:%M:%S}｜細族群＝產業鏈地圖的代表個股；今日＝依近 20 日成交金額加權；"
+                   "量比＝到目前的成交量 ÷（近 20 日均量 × 已過的盤中時間）；點族群名稱看拆解。")
+    body()
+
+
 def page_chain():
     from kosto import chainmap as cm
     from kosto import impact as I
@@ -5367,7 +5678,11 @@ def page_chain():
     lead = cm.lead_names(B, met)
     picks, rmid = picks_all(), rank_mid_map()
     cell = lambda t: stock_cell(t) if t in TIDX else ui.esc(t)          # noqa: E731
-    tabs = st.tabs(["🗺️ 全景圖・細族群", "🔥 熱力圖", "🧩 AI 伺服器拆解", "🚀 題材地圖", "⚡ 消息衝擊評估", "📏 族群敏感度"])
+    names_t = ["⚡ 盤中即時", "🗺️ 全景圖・細族群", "🔥 熱力圖", "🧩 AI 伺服器拆解", "🚀 題材地圖", "⚡ 消息衝擊評估", "📏 族群敏感度"]
+    t_all = st.tabs(names_t, default=names_t[1] if st.query_params.get("g", "") in S.SUBGROUPS else None)   # 點族群連結 → 直接看拆解
+    with t_all[0]:                                                       # v3.22 盤中即時
+        chain_live_section()
+    tabs = list(t_all[1:])
     with tabs[1]:
         heatmap_section("cm_heat", default_top=150 if IS_MOBILE else 300)
     tabs = [tabs[0], *tabs[2:]]
@@ -5411,6 +5726,7 @@ def page_chain():
         st.caption("階段：成熟＝營收已明顯貢獻；成長＝營收開始貢獻；題材＝主要看預期（股價波動大、容易「利多出盡」）。"
                    "新題材／轉型：CPO 矽光子、800V 高壓直流、FOPLP／CoPoS 面板級封裝、玻璃基板、人形機器人。")
     with tabs[3]:
+        st.markdown("<div class='kq-muted' style='margin-bottom:6px'>即時版（輝達現在漲跌 × 台股族群的輝達特有 β、黃仁勳事件跌幅／反彈排名）在 <a href='./insight?tab=news' target='_self'>盤勢儀表板 → 📰 消息衝擊</a>。</div>", unsafe_allow_html=True)
         names = [sc["name"] for sc in I.SCENARIOS]
         k = st.selectbox("選一個重大消息", range(len(names)), format_func=lambda i: names[i], key="cm_sc")
         sc = I.SCENARIOS[k]
@@ -6017,9 +6333,52 @@ def hcard(n: int, title: str, body: str, go: str = "") -> str:
             + (f"<div class='go'>{go}</div>" if go else "") + "</div>")
 
 
+def home_live_strip():
+    """v3.22 總覽最上方「現在盤勢」：加權、櫃買、前 300 大漲跌家數、最強／最弱細族群、那指期、重大消息提醒（盤中每 30 秒）。"""
+    from kosto import live as LV
+    live_on = market_phase() in ("盤中", "盤前試撮")
+
+    @st.fragment(run_every=30 if live_on else None)
+    def body():
+        cap = np.nan_to_num(np.asarray(B.a["CAP"][-1], float)) if "CAP" in B.a else np.zeros(len(B.tickers))
+        top = [B.tickers[j] for j in np.argsort(-cap)[:300]]
+        q, label, is_live = live_today(top)
+        br = {**LV.breadth(q), "label": f"市值前 {len(top)} 大"}
+        try:
+            gl, _, _, _ = chain_live_data()
+        except Exception:  # noqa: BLE001
+            gl = None
+        tx = taiex_now() or {}
+        idx = {"px": tx.get("px", np.nan), "chg": tx.get("chg", np.nan)}
+        otc = {}
+        if is_live:
+            oq, _ = live_quotes((INDEX_CH["櫃買指數"],))
+            if len(oq) and ui.ok(oq["price"].iloc[0]):
+                otc = {"px": float(oq["price"].iloc[0]), "chg": float(oq["chg"].iloc[0])}
+        snap = world_snapshot()
+        extra = [f"<span class='kq-item'>{lab}<b>{ui.chg(snap[k]['chg'])}</b></span>" for k, lab in (("NQF", "那指期"), ("SOX", "費半"), ("TSM", "台積ADR"))
+                 if k in snap]
+        nv = (snap.get("NVDA") or {}).get("chg")
+        try:                                                           # 輝達用最近一個美股時段的分時（含盤前盤後），比日收盤即時
+            di = world_intraday(["NVDA"]).get("NVDA")
+            if di and di.get("prev"):
+                nv = di["last"] / di["prev"] - 1
+        except Exception:  # noqa: BLE001
+            pass
+        if nv is not None and ui.ok(nv) and abs(nv) >= 0.05:
+            extra.append(f"<span class='kq-item'><a href='./insight?tab=news' target='_self' style='color:#f0464b'>"
+                         f"📰 輝達 {nv * 100:+.1f}%：看誰受影響（盤勢儀表板 → 📰 消息衝擊）</a></span>")
+        else:
+            extra.append("<span class='kq-item'><a href='./insight?tab=news' target='_self'>📰 重大消息衝擊</a>｜"
+                         "<a href='./chain' target='_self'>⚡ 族群即時</a></span>")
+        st.markdown(LV.strip_html(idx, otc, br, gl, extra, label + ("｜每 30 秒更新" if live_on else "")), unsafe_allow_html=True)
+    body()
+
+
 def page_home():
     from kosto import market as mklib
     header()
+    home_live_strip()                                                  # v3.22 現在盤勢（盤中即時）
     st.markdown(ui.section("總覽：第一次使用，照 ①→④ 的順序看", "這個 App 在做什麼、今天該怎麼做；每張卡片都可以點進去看細節"),
                 unsafe_allow_html=True)
     prof = st.segmented_control("你的風險屬性（決定 ETF 和個股的比例）", list(mklib.PROFILES), default="穩健型", key="home_prof") or "穩健型"
@@ -6093,8 +6452,9 @@ def page_home():
     st.markdown(ui.section("每一頁在做什麼"), unsafe_allow_html=True)
     rows = [["📋 今日選股", "台股明天開盤要買／賣／續抱什麼（短、中、長線）", "每個交易日晚上（17:23 初版、21:40 完整版）"],
             ["⏱️ 盤中監控", "台股即時價、能不能進場、價位提醒", "台股 9:00–13:30"],
-            ["🎛️ 盤勢儀表板", "大盤燈號、急跌應變、止穩檢查、科斯托蘭尼階段、模型體檢", "開盤前、大盤急跌時"],
-            ["🗺️ 產業鏈地圖", "電子產業上下游、題材、消息衝擊評估", "想了解產業或消息影響時"],
+            ["🎛️ 盤勢儀表板", "盤前日報、📰 消息衝擊（第二個分頁：輝達即時、台股誰最敏感、黃仁勳事件跌幅／反彈）、燈號、急跌應變、模型體檢",
+             "開盤前、重大消息、大盤急跌時"],
+            ["🗺️ 產業鏈地圖", "⚡ 盤中即時（細族群即時強弱、領漲領跌、量比，每 30 秒）、熱力圖、上下游、題材、消息衝擊評估", "盤中、想了解產業或消息影響時"],
             ["🔍 個股診斷", "任一台股的模型評分、K 線、買進區與警戒價", "想查某一檔時"],
             ["🗽 美股選股", "美股 ETF 推薦順序、盤前／即時名單、美股個股查詢", "晚上（美股盤前 17:00 起）"],
             ["更多 → 精選ETF／資金配置", "台股 ETF 排行、核心＋衛星的比例", "決定資金分配時"],

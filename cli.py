@@ -112,6 +112,7 @@ def cmd_research(a, cfg):
     hz = a.horizons.split(",") if a.horizons else list(HORIZON_KEYS)
     res = R.run_all(hz, quick=a.quick, progress=log, prev_pools=prev.get("pools"))
     auto = dict(prev)
+    beat_rows = []
     if (not a.quick and cfg["research"].get("phase_check", True) and not B.meta.get("synthetic")
             and (Path(cfg["data"]["dir"]) / "raw" / "price").is_dir()):
         from kosto.phases import phase_check
@@ -123,8 +124,15 @@ def cmd_research(a, cfg):
             log(f"冠軍／挑戰者比較失敗：{e}")
         log("換股日敏感度＋冠軍／挑戰者：重建 4 個平移起點的研究資料包（約 10～20 分鐘）…")
         books = {}
-        res["phases"] = phase_check(cfg_eff, res, log=log, on_bundle=lambda Rk, k: rows.extend(T.evaluate(Rk, res, cfg_eff, k, observe=prev.get("observe"))),
-                                    books=books)
+
+        def on_bundle(Rk, k):
+            rows.extend(T.evaluate(Rk, res, cfg_eff, k, observe=prev.get("observe")))
+            try:                                                             # v3.23 贏 0050 候選：五種換股日（門檻 6）
+                from kosto import beat0050
+                beat_rows.append(beat0050.phase_row(Rk, res, k))
+            except Exception as e:  # noqa: BLE001
+                log(f"贏 0050 候選（平移 {k} 天）略過：{e}")
+        res["phases"] = phase_check(cfg_eff, res, log=log, on_bundle=on_bundle, books=books)
         try:                                                                     # v3.20 五種換股日共識組合
             from kosto.phases import consensus
             res["consensus"] = consensus(books)
@@ -140,6 +148,20 @@ def cmd_research(a, cfg):
                     ev = x.get("event", "promote")
                     log((f"★ {x['h']} 自動換上新模型（明天起生效）：" if ev == "promote" else f"☆ {x['h']} ") + x["text"])
     res["auto"] = T.log_picks(auto, res)
+    try:                                                              # v3.23 報酬與回撤都勝過 0050 的組合、費氏回撤、知名理論、重疊
+        from kosto import beat0050
+        res["beat0050"] = beat0050.summary(R, res)
+        if beat_rows:
+            res["beat0050"] = beat0050.attach_phases(res["beat0050"], beat_rows)
+        for x in res["beat0050"].get("cands") or []:
+            f = x.get("full") or {}
+            if f:
+                log(f"贏 0050 {x['key']}：年化 {f['cagr']:+.1%}（0050 {f['b_cagr']:+.1%}）、回撤 {f['mdd']:.1%}（0050 {f['b_mdd']:.1%}）"
+                    + ("｜✅ 全部門檻通過" if x.get("pass") else ("｜觀察" if x.get("observe") else "")))
+        for e in res["beat0050"].get("errors") or []:
+            log(f"贏 0050 研究：{e}")
+    except Exception as e:  # noqa: BLE001
+        log(f"贏 0050 研究略過：{e}")
     res["auto"]["pools"] = T.pool_state(prev.get("pools"), res)        # v2.4 母池沿用狀態（隔天讀回）
     res["data_status"] = data_status(B, res)
     try:                                                              # v3.14 每日快照＋雜湊鏈（只新增、不覆寫）

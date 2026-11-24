@@ -845,3 +845,29 @@ v1.9 改為每個交易日 **21:40 一次更新全部**（融資融券約 21:00�
   `variant` 可回傳自訂的 PoolView）、W10 不新買輝達特有 β 前 10%（`Spec.no_new`）。前瞻起點各自設為 2026-11-25（`ITEMS[*]["since"]`）。
 * 盤前日報：輝達前一晚 |漲跌| ≥ 5% 時評析第一段加「重大消息」（`morning.news_shock_text`，用 `res["shock"]` 的消息日研究與連動族群）。
 * App：盤勢儀表板「📰 消息衝擊」分頁（`news_shock_html`）。新增測試：app.py 不能有同名的頂層函式（同名會讓前一個被覆蓋）。
+
+## v3.22 盤中即時化（docs/v3.22_notes.md；選股模型不變）
+* `kosto/live.py`（純函式）：`session_frac`（盤中已過比例）、`fallback_quotes`（沒有即時報價時用研究資料最後一天收盤）、`breadth`（漲跌家數、漲跌停）、
+  `group_live`（細族群：近 20 日成交金額加權漲跌、中位數、漲跌家數、漲跌停、量比、領漲／領跌、近 20 日）、`chain_live_html`、`news_impact`（族群輝達特有 β ×
+  輝達特有漲跌）、`strip_html`（總覽「現在盤勢」）。
+* App：`live_today(tickers)` 決定報價來源（交易日證交所即時／今日收盤；研究資料已更新或休市 → 研究資料收盤並標日期）；
+  `chain_live_section`（產業鏈地圖第一個分頁）、`heatmap_section` 改用 `st.fragment(run_every=30)` 包 `_heatmap_body`、`news_live_section`（消息衝擊最上方，60 秒）、
+  `home_live_strip`（總覽最上方，盤中 30 秒）。自動更新只重畫該區塊（fragment），不會整頁重跑。
+* 「📰 消息衝擊」移到盤勢儀表板第二個分頁；`./insight?tab=news` 直接打開（`st.tabs(default=)`，Streamlit 1.52）；`./chain?g=<族群>` 直接打開全景圖拆解。
+* 測試用環境變數：`KOSTO_MIS_HOST`（證交所報價主機）、`KOSTO_FAKE_NOW`（台北時間，`quotes.now_tw`／`market_phase`）；正式環境不要設定。
+
+## v3.23 贏 0050 研究、費氏回撤、知名理論（docs/v3.23_protocol.md；主模型不變）
+* `kosto/beat0050.py`：
+  - 診斷：`overlap(res)`（短中長線每個換股日名單兩兩重疊、模型權重中的動能家族占比）、`concentration(B, res, i0)`（逐年 0050、台積電、前 50 大市值加權／等權、母池等權、模型；台積電權重與貢獻）。
+  - 候選：`candidates(B, R, res)` → B1a／B1b（`R.evaluate("MCAP", 50／100, "mid")`）、B2 `enhanced`（前 50 大市值權重，`tilt_weights`：台積電不動、其餘 × e^(2×名次)，每 4 個換股日）、
+    B3（台積電照市值權重＋中線模型）、B4～B7（`signal_states`：0050 含息淨值對 200 日均線，換股日收盤判斷、隔兩天生效；`mix_returns` 切換時被換掉的比例扣 0.5%）。
+    對照 R0～R3。`drift_returns` 權重隨漲跌漂移、調整時依設定檔成本扣費。
+  - 檢驗：`evaluate_series`（整段、開發期、最近 12 個月、前瞻 2026-11-25 起、逐年、NW t、20 日區塊自助法）、`gates`（門檻 1～6）、`bh_q`（門檻 7）、`finalize`。
+    `phase_row(Rk, res, k)`＋`attach_phases`：每日研究的換股日平移資料包（cli 的 on_bundle）。
+  - 費氏：`fib_scan`（只用當時資料定義高低點；事件＝反彈第一次碰到各位置，結果＝先回前高／先破底／250 日內都沒有）、`fib_table`（附隨機漫步基準：先回前高機率≈位置）、
+    `fib_cluster`（反彈高點在費氏位置 ±0.025 的次數 vs 左右等寬窗平均）、`fib_factor`（中線 IC 與扣掉一年新高、相對強度後的部分 IC）、`fib_now`。
+  - 真實 ETF：`etf_compare`（研究資料包 ETF_TR：國內股票型與 L 結尾槓桿 ETF 和 0050 同期間比較；真實 00631L＋200 日線、模擬 B7 與真實的差距）。B7／R4＝2×0050−年 2.5%。
+  - 理論：`theories`（T1～T4 固定權重在市值前 300 大選 8 檔；T5～T7 0050 擇時）。
+* `cli.py research`：`res["beat0050"] = beat0050.summary(R, res)`，有平移資料時 `attach_phases`。
+* App：模型驗證「贏 0050 研究（v3.23）」（`beat0050_html`）、資金配置頁提示（`beat_alloc_html`）、盤勢儀表板「🧭 觀察重點」的加權指數費氏位置（`fib_panel_html`）。
+

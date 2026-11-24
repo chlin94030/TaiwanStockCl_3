@@ -123,7 +123,7 @@ def test_v321_docs_app():
     assert 'res["shock"] = shock.summary(B)' in cli
     doc = (ROOT / "docs" / "v3.21_protocol.md").read_text(encoding="utf-8")
     assert "照實註明" in doc and "輝達特有報酬" in doc
-    assert '__version__ = "3.21.0"' in (ROOT / "kosto" / "__init__.py").read_text(encoding="utf-8")
+    assert '__version__ = "3.2' in (ROOT / "kosto" / "__init__.py").read_text(encoding="utf-8")
 
 
 def test_app_has_no_duplicate_functions():
