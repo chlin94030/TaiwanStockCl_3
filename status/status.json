@@ -7,19 +7,19 @@
   "misc": 1.0
  },
  "blocked": {},
- "checked_at": "2026-11-24 09:44:39+08:00",
+ "checked_at": "2026-11-24 23:57:17+08:00",
  "percent": 1.0,
  "complete": true,
  "stage": "done",
  "latest": {
-  "price": "2026-11-23",
-  "institutional": "2026-11-23",
-  "margin": "2026-11-23",
-  "valuation": "2026-11-23"
+  "price": "2026-11-24",
+  "institutional": "2026-11-24",
+  "margin": "2026-11-24",
+  "valuation": "2026-11-24"
  },
  "research": {
-  "last_date": "2026-11-23",
-  "built": "2026-11-24T09:33:31+08:00",
+  "last_date": "2026-11-24",
+  "built": "2026-11-24T23:48:24+08:00",
   "synthetic": false
  }
 }
