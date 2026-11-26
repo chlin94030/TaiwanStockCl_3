@@ -871,3 +871,20 @@ v1.9 改為每個交易日 **21:40 一次更新全部**（融資融券約 21:00�
 * `cli.py research`：`res["beat0050"] = beat0050.summary(R, res)`，有平移資料時 `attach_phases`。
 * App：模型驗證「贏 0050 研究（v3.23）」（`beat0050_html`）、資金配置頁提示（`beat_alloc_html`）、盤勢儀表板「🧭 觀察重點」的加權指數費氏位置（`fib_panel_html`）。
 
+## v3.24 外資、主動式 ETF、籌碼擁擠、關稅情境（docs/v3.24_protocol.md；主模型不變）
+* `kosto/crowd.py`：`crowd_sets`（每個換股日成交金額前 300 大裡「投信 60 日累計買超（占股本）」最高 10%）、
+  `event_study`（0050 單日 ≤ −3%／≥ +3% 的日子，擁擠 − 其他：當天、之後 5／20 日；分 2019–2025 與 2026）、`baseline`（所有交易日的平均差）、
+  `latest_crowded`、`summary`（cli 存 `res["crowd"]`）。
+* `kosto/watch.py`：W11（不新買擁擠前 10%）、W12（只在急跌狀態不新買）；`crowd_mask`；前瞻起點 2026-11-27。
+* `kosto/impact.py`：事件組 `tariff`（2019-05-06、2019-08-02、2025-04-07、2025-08-01、2026-11-25）、`ai_down` 加 2026-11-25；
+  情境 `tariff_301`（301 提案、232 晶片、200% 說法、AI 疑慮；各細族群受影響深淺與時程）。
+* App：盤勢儀表板「🧭 觀察重點」的「🧾 外資賣現股、買主動式 ETF：怎麼看」（`etf_flow_html`：溢價／折價套利、11/24～25 數字、投信足跡 `trust_footprint`、要盯的訊號、擁擠研究 `crowd_html`）；
+  模型驗證「籌碼擁擠研究（v3.24）」；產業鏈地圖「⚡ 消息衝擊評估」第一個情境為關稅。
+
+## v3.25 總檢視：即時最值得買、研究時間預算（docs/v3.25_notes.md；選股模型不變）
+* App：`best_now(h)`（模型名單 × 證交所即時報價 → `plan.price_fit` 價格適合度；能買的排前面、同類依模型排名）、`best_now_html`、
+  `best_now_section`（今日選股頁最上方，盤中每 30 秒 `st.fragment`）、總覽一行版；`ref_flags`（投信擁擠、輝達連動高、關稅受影響深，只提醒）；
+  `regime_line`（v2.0 修正期資金規則）。
+* `cli.py research`：`room(need, what)` 時間預算（`research.time_budget_min` 預設 120 分，或環境變數 `KOSTO_RESEARCH_BUDGET_MIN`）；
+  超過時略過選用研究、記在 `res["skipped"]`，今日選股頁註明。核心名單一定先算完。
+* 總覽「現在盤勢」標籤：成交金額前 300 大（原誤標為市值）。

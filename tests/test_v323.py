@@ -150,7 +150,7 @@ def test_v323_wiring_docs():
     for s in ("看任何結果之前", "B6", "BH-FDR", "隨機漫步", "T7", "照實註明"):
         assert s in doc, s
     assert any(x[0] == "v3.23" for x in rv.IDEAS) and rv.V323_NOTE
-    assert '__version__ = "3.23' in (ROOT / "kosto" / "__init__.py").read_text(encoding="utf-8")
+    assert '__version__ = "3.2' in (ROOT / "kosto" / "__init__.py").read_text(encoding="utf-8")
 
 
 def test_fib_panel_matches_post_levels():

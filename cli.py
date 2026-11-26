@@ -109,12 +109,24 @@ def cmd_research(a, cfg):
     if prev.get("champions"):
         log("使用自動晉級後的模型：" + "；".join(f"{h} {T.describe(p)}" for h, p in prev["champions"].items()))
     R = Research(B, cfg_eff, log=log)
+    t0 = time.time()
+    budget = float(os.environ.get("KOSTO_RESEARCH_BUDGET_MIN") or cfg["research"].get("time_budget_min", 140))
+
+    def room(need: float, what: str) -> bool:
+        """v3.25 時間預算：GitHub 研究工作 180 分鐘就會被中止（名單就不會更新）。核心名單一定先算完；
+        選用研究（換股日平移、贏 0050、擁擠、消息、觀察名單…）在剩餘時間不夠時略過，記在紀錄裡。"""
+        used = (time.time() - t0) / 60
+        if used + need <= budget:
+            return True
+        log(f"⏱ 時間預算（{budget:.0f} 分）不足，已用 {used:.0f} 分 → 略過：{what}")
+        res.setdefault("skipped", []).append(what)
+        return False
     hz = a.horizons.split(",") if a.horizons else list(HORIZON_KEYS)
     res = R.run_all(hz, quick=a.quick, progress=log, prev_pools=prev.get("pools"))
     auto = dict(prev)
     beat_rows = []
     if (not a.quick and cfg["research"].get("phase_check", True) and not B.meta.get("synthetic")
-            and (Path(cfg["data"]["dir"]) / "raw" / "price").is_dir()):
+            and (Path(cfg["data"]["dir"]) / "raw" / "price").is_dir() and room(35, "換股日敏感度＋冠軍／挑戰者")):
         from kosto.phases import phase_check
         rows = []
         log("冠軍／挑戰者比較：目前資料包…")
@@ -127,11 +139,12 @@ def cmd_research(a, cfg):
 
         def on_bundle(Rk, k):
             rows.extend(T.evaluate(Rk, res, cfg_eff, k, observe=prev.get("observe")))
-            try:                                                             # v3.23 贏 0050 候選：五種換股日（門檻 6）
-                from kosto import beat0050
-                beat_rows.append(beat0050.phase_row(Rk, res, k))
-            except Exception as e:  # noqa: BLE001
-                log(f"贏 0050 候選（平移 {k} 天）略過：{e}")
+            if room(25, f"贏 0050 候選（平移 {k} 天）"):
+                try:                                                         # v3.23 贏 0050 候選：五種換股日（門檻 6）
+                    from kosto import beat0050
+                    beat_rows.append(beat0050.phase_row(Rk, res, k))
+                except Exception as e:  # noqa: BLE001
+                    log(f"贏 0050 候選（平移 {k} 天）略過：{e}")
         res["phases"] = phase_check(cfg_eff, res, log=log, on_bundle=on_bundle, books=books)
         try:                                                                     # v3.20 五種換股日共識組合
             from kosto.phases import consensus
@@ -149,6 +162,8 @@ def cmd_research(a, cfg):
                     log((f"★ {x['h']} 自動換上新模型（明天起生效）：" if ev == "promote" else f"☆ {x['h']} ") + x["text"])
     res["auto"] = T.log_picks(auto, res)
     try:                                                              # v3.23 報酬與回撤都勝過 0050 的組合、費氏回撤、知名理論、重疊
+        if not room(12, "贏 0050 研究"):
+            raise RuntimeError("時間預算不足")
         from kosto import beat0050
         res["beat0050"] = beat0050.summary(R, res)
         if beat_rows:
@@ -181,6 +196,8 @@ def cmd_research(a, cfg):
     except Exception as e:  # noqa: BLE001
         log(f"異常診斷略過：{e}")
     try:                                                              # v3.16 盤前日報的歷史驗證模型（隔天清晨 cli morning 使用）
+        if not room(4, "盤前日報模型"):
+            raise RuntimeError("時間預算不足")
         from kosto import morning
         res["morning_model"] = morning.fit(B, res=res)
         mm = res["morning_model"]
@@ -192,6 +209,8 @@ def cmd_research(a, cfg):
     except Exception as e:  # noqa: BLE001
         log(f"盤前日報模型略過：{e}")
     try:                                                              # v3.21 重大消息衝擊：輝達連動排名、黃仁勳事件區間、消息日研究
+        if not room(4, "消息衝擊研究"):
+            raise RuntimeError("時間預算不足")
         from kosto import shock
         res["shock"] = shock.summary(B)
         sl = res["shock"].get("study") or {}
@@ -205,12 +224,24 @@ def cmd_research(a, cfg):
     except Exception as e:  # noqa: BLE001
         log(f"連動因子監控略過：{e}")
     try:
+        if not room(12, "觀察名單前瞻追蹤"):
+            raise RuntimeError("時間預算不足")
         from kosto import watch
         res["watch"] = watch.evaluate(R, res)                        # v3.12 觀察名單前瞻追蹤（影子模型；不影響選股）
         for x in res["watch"]["errors"]:
             log(f"觀察名單：{x}")
     except Exception as e:  # noqa: BLE001
         log(f"觀察名單前瞻追蹤略過：{e}")
+    try:                                                              # v3.24 籌碼擁擠（主動式 ETF／投信重倉股在大跌日）
+        if not room(3, "擁擠研究"):
+            raise RuntimeError("時間預算不足")
+        from kosto import crowd
+        res["crowd"] = crowd.summary(R, res)
+        dn = [x for x in (res["crowd"].get("down") or {}).get("summary") or [] if x.get("n")]
+        if dn:
+            log(f"擁擠股在 0050 大跌日（{dn[0]['n']} 天）：當天 {dn[0]['d0']:+.2%}、之後 5 日 {dn[0]['d5']:+.2%}、20 日 {dn[0]['d20']:+.2%}（擁擠 − 其他）")
+    except Exception as e:  # noqa: BLE001
+        log(f"擁擠研究略過：{e}")
     log("資料狀態：" + res["data_status"]["text"])
     comparison = None
     if a.compare:

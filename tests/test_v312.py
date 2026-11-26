@@ -68,8 +68,9 @@ def test_watch_variants_on_synthetic(tmp_path):
     res = {"protocol": {"last_date": str(B.sig_dates[-1].date())},
            "horizons": {h: {"chosen_pool": {"rule": rule, "size": size}} for h in ("short", "mid", "long")}}
     o = W.evaluate(R, res, since=str(B.sig_dates[-30].date()), need=10)
-    assert o["rows"] and all(r["days"] > 0 for r in o["rows"])
-    assert {r["key"] for r in o["rows"]} <= {"W1", "W2", "W3", "W4", "W5", "W6", "W7"}
+    own = {it["key"] for it in W.ITEMS if it.get("since")}                     # v3.21／v3.24 起的候選有自己的前瞻起點（之後才算）
+    assert o["rows"] and all(r["days"] > 0 for r in o["rows"] if r["key"] not in own)
+    assert {r["key"] for r in o["rows"]} <= {"W1", "W2", "W3", "W4", "W5", "W6", "W7", "W11", "W12"}
 
 
 def test_schedule_cache_key_includes_overlay():

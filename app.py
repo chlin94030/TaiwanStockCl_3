@@ -1421,7 +1421,10 @@ def correction_banner():
 
 
 def picks_status_banner():
-    """v2.1：17:20 初版／21:40 完整版的名單狀態。"""
+    """v2.1：17:20 初版／21:40 完整版的名單狀態。v3.25：時間預算不足而略過的選用研究（名單不受影響）。"""
+    sk = (RES or {}).get("skipped") or []
+    if sk:
+        st.caption("⏱ 昨晚研究時間不夠，略過：" + "、".join(sk) + "（名單照常產生；這些研究下一次有時間時補上）")
     ds = (RES or {}).get("data_status") or {}
     if not ds or ds.get("complete"):
         return
@@ -1455,6 +1458,10 @@ def page_picks():
                   ("最大回撤", ui.pct(ev.get("oos_mdd"), 1), f"Sharpe {ev.get('oos_sharpe', np.nan):.2f}")]
     items += [("策略", f"<span style='font-size:15px'>{HZ_STYLE[h]}</span>", HZ_SUB[h])]
     st.markdown(ui.cards(items), unsafe_allow_html=True)
+    try:
+        best_now_section(h)                                              # v3.25 ⚡ 現在最值得買（即時）
+    except Exception as e:  # noqa: BLE001
+        st.caption(f"即時名單略過：{e}")
     st.markdown(preopen_box(), unsafe_allow_html=True)
     its = pick_items(h, lt)
     now_set = [p["ticker"] for p in lt["picks"]]
@@ -1543,6 +1550,118 @@ def page_picks():
         stock_view(TIDX[sel], h, key=f"pv_{h}")
     st.caption("僅供研究參考，非投資建議；系統不會自動下單。回測以隔日開盤價成交並計入手續費、證交稅與滑價；"
                "價位計畫（買進區、追價上限、警戒價）為執行風控建議，未納入回測。")
+
+
+# ================================================================== v3.25 ⚡ 現在最值得買（即時）
+FIT_ORDER = {"dip": 0, "buy": 1, "buy_s": 2, "wait": 3, "lock": 4, "warn": 5, "none": 6}
+
+
+def ref_flags() -> dict:
+    """參考標記（研究中、不改名單）：投信擁擠（v3.24）、輝達特有連動最高 10%（v3.21）、關稅情境受影響深（v3.24 判斷）。"""
+    from kosto import impact as I
+    from kosto import supply as S
+    out = {}
+    for r in ((RES or {}).get("crowd") or {}).get("latest") or []:
+        out.setdefault(r["ticker"], []).append("投信擁擠")
+    st_ = (((RES or {}).get("shock") or {}).get("linkage") or {}).get("stocks") or []
+    if st_:
+        cut = np.nanquantile([x["beta_idio"] for x in st_], 0.9)
+        for x in st_:
+            if x["beta_idio"] >= cut:
+                out.setdefault(x["ticker"], []).append("輝達連動高")
+    sc = I.SCEN_BY_ID.get("tariff_301")
+    deep = {g for g, d, *_ in (sc or {}).get("impacts", []) if d <= -2}
+    if deep:
+        for t in TIDX:
+            if deep & set(S.groups_of(t)):
+                out.setdefault(t, []).append("關稅受影響深")
+    return out
+
+
+def best_now(h: str) -> dict:
+    """模型名單（排名＝已回測）× 即時價位（價格適合度＝參考）：誰現在可以買、誰要等。
+    盤中與盤後用證交所報價（約 5 秒延遲）；其他時間用最近收盤。不改名單、不改排名。"""
+    lt = latest(h)
+    its = pick_items(h, lt)
+    if not its:
+        return {}
+    tks = [it["t"] for it in its]
+    q, live = None, False
+    if market_phase() in ("盤前試撮", "盤中", "盤後"):
+        try:
+            q, _ = quotes_for(tks)
+            if len(q) and "date" in q:
+                q = q[q["date"].astype(str) > RDAY.strftime("%Y%m%d")]
+            live = bool(len(q))
+        except Exception:  # noqa: BLE001
+            q = None
+    fl = ref_flags()
+    rows = []
+    for it in its:
+        t = it["t"]
+        row = q.loc[t].to_dict() if q is not None and len(q) and t in q.index else None
+        bq = IDY.best_quote(row, None, it["close"], it["ch"], RDAY)
+        pl = it["pl"]
+        if pl is not None and bq["live"] and ui.ok(bq.get("prev")):
+            pl = planlib.rebase(pl, bq["prev"])
+        code, fit_txt, col = planlib.price_fit(bq["px"], pl, bq["px"] if bq.get("lock") == "up" else np.nan)
+        base = code if code != "buy_s" else "buy"
+        rows.append({"n": it["n"], "t": t, "w": it.get("w"), "px": bq["px"], "chg": bq["chg"], "lock": bq.get("lock"), "code": code,
+                     "fit": fit_txt, "col": col, "advice": planlib.entry_advice(base, pl), "kept": it["kept"], "flags": fl.get(t, [])})
+    rows.sort(key=lambda r: (FIT_ORDER.get(r["code"], 9) > 2, r["n"]))
+    return {"rows": rows, "live": live, "date": lt["date"], "h": h}
+
+
+def regime_line() -> str:
+    """今天的資金比例（v2.0 修正期規則，已回測）＋急跌狀態（v3.17）。"""
+    from kosto import market as mklib
+    try:
+        _, _, sto = insight_frame(BID)
+        al = mklib.allocation("穩健型", sto or {})
+        txt = (f"穩健型今天：ETF（0050 等）<b>{al['etf']:.0%}</b>＋模型個股 <b>{1 - al['etf']:.0%}</b>"
+               f"（止穩訊號 {(sto or {}).get('score', '–')}/8；修正期且止穩 ≤2 分時 ETF 自動多 20 個百分點）")
+    except Exception:  # noqa: BLE001
+        txt = ""
+    if crash_mode_now():
+        txt += "｜🚨 急跌中：新資金分批、標「急跌風險高」的先不買"
+    return txt
+
+
+def best_now_html(b: dict, top: int = 8, compact: bool = False) -> str:
+    if not b or not b.get("rows"):
+        return "<div class='kq-muted'>今天沒有名單（等每日研究更新）。</div>"
+    rows = b["rows"][:top]
+    act = [r for r in rows if r["code"] in ("dip", "buy", "buy_s")]
+    nm = lambda t: f"{t} {ui.esc(NAMES[TIDX[t]])}" if t in TIDX else t                 # noqa: E731
+    src = "證交所即時（約 5 秒延遲）" if b.get("live") else f"{RDAY:%m/%d} 收盤（非交易時間）"
+    first = ("、".join(f"<b>{nm(r['t'])}</b>（第 {r['n']} 名・{ui.esc(r['fit'])}）" for r in act[:4]) if act else
+             "目前沒有在買進區的名單股（都偏高或漲停）→ 掛買進區等拉回，或先放 0050")
+    if compact:
+        return (f"<div class='kq-panel' style='margin:4px 0 10px'>⚡ <b>現在最值得買</b>（中線名單 × 即時價位｜{src}）：{first}。"
+                f"<a href='./picks' target='_self'>看完整名單與價位 →</a></div>")
+    h = f"<div class='kq-muted' style='margin-bottom:4px'>{src}｜名單日 {ui.esc(b['date'])}｜{regime_line()}</div>"
+    h += f"<div class='kq-panel' style='margin-bottom:6px'>👉 <b>先買</b>：{first}</div>"
+    trs = []
+    for r in rows:
+        tags = "".join(ui.tag(x, "") for x in r["flags"])
+        trs.append([f"<b>{r['n']}</b>", stock_cell(r["t"]) if r["t"] in TIDX else r["t"], f"{r['w'] * 100:.1f}%" if r.get("w") else "–",
+                    f"{ui.price(r['px'])} {ui.chg(r['chg'])}", f"<b style='color:{r['col']}'>{ui.esc(r['fit'])}</b>", ui.esc(r["advice"]),
+                    ("續抱" if r["kept"] else "新進") + (" " + tags if tags else "")])
+    h += ui.table(["排名", "股票", "資金比重", "現價", "價格適合度", "現在怎麼做", "標記"], trs, left=(1, 5, 6))
+    h += ("<div class='kq-muted'>排名與資金比重＝模型（已回測，2021 起五種換股日）；價格適合度與做法＝價位尺（執行參考，未納入回測）；"
+          "標記＝研究中的風險（投信擁擠、輝達連動高、關稅受影響深），只提醒、不改名單。"
+          "為什麼不在盤中改排名：v1.7 測過「收盤前就進場」比隔天開盤差，模型照收盤資料、隔天開盤執行。</div>")
+    return h
+
+
+def best_now_section(h: str):
+    auto = st.toggle("盤中每 30 秒自動更新", value=market_phase() in ("盤中", "盤前試撮"), key=f"best_auto_{h}")
+
+    @st.fragment(run_every=30 if auto else None)
+    def body():
+        st.markdown(ui.section(f"⚡ 現在最值得買（{HZ[h]}，即時）", "模型排名 × 即時價位：誰現在可以買、誰要等"), unsafe_allow_html=True)
+        st.markdown(best_now_html(best_now(h)), unsafe_allow_html=True)
+    body()
 
 
 # ================================================================== page: 盤中監控
@@ -3449,6 +3568,83 @@ def beat0050_html() -> str:
     return h
 
 
+# ================================================================== v3.24 外資賣現股、買主動式 ETF；籌碼擁擠
+def crowd_html() -> str:
+    """v3.24 每日研究：投信擁擠股（主動式 ETF／基金重倉）在大跌日、大漲日與之後的表現；W11、W12 影子模型。"""
+    cr = (RES or {}).get("crowd") or {}
+    if not cr or not (cr.get("down") or {}).get("summary"):
+        return ("<div class='kq-muted'>擁擠研究（投信 60 日累計買超最高 10% 的股票在 0050 單日 ≤ −3% 的日子怎麼走）由下一次每日研究產出"
+                "（docs/v3.24_protocol.md）。</div>")
+    h = ""
+    for key, lab in (("down", "0050 單日 ≤ −3%"), ("up", "0050 單日 ≥ +3%")):
+        sm = (cr.get(key) or {}).get("summary") or []
+        if sm:
+            h += f"<div class='kq-muted' style='margin:6px 0 2px'><b>{lab} 的日子</b>：擁擠前 10% − 其他（成交金額前 300 大、等權）</div>"
+            h += ui.table(["期間", "天數", "當天", "之後 5 日", "之後 20 日", "當天擁擠股較差的比例"],
+                          [[ui.esc(r["period"]), str(r.get("n", 0)), ui.pct(r.get("d0"), 2, color=True), ui.pct(r.get("d5"), 2, color=True),
+                            ui.pct(r.get("d20"), 2, color=True), ui.pct(r.get("d0_neg"), 0, sign=False)] for r in sm], left=(0,))
+    bs = cr.get("base") or {}
+    if bs.get("days"):
+        h += (f"<div class='kq-muted'>對照：所有交易日平均差 {ui.pct(bs.get('mean'), 3, color=True)}／日（約年化 {ui.pct(bs.get('ann'), 1, color=True)}）。"
+              "大跌日的差明顯比平常負、而且之後 5～20 日還繼續落後，才代表「擁擠股會被連續倒貨」。</div>")
+    lt = cr.get("latest") or []
+    if lt:
+        h += ("<div class='kq-muted' style='margin:6px 0 2px'><b>目前擁擠前 15 名</b>（投信 60 日累計買超占股本；不是賣出建議，是「基金買回時最可能被賣」的名單）</div>"
+              + ui.table(["股票", "族群", "百分位"], [[f"{ui.esc(r['ticker'])} {ui.esc(r['name'])}", ui.esc(r.get("group", "")), f"{r['pct']:.0%}"]
+                                                 for r in lt], left=(0, 1)))
+    wr = cr.get("watch") or []
+    if wr:
+        h += ("<div class='kq-muted' style='margin:6px 0 2px'><b>影子模型</b>（開發期差異只當參考；2026-11-27 起前瞻滿 120 日才判定）</div>"
+              + ui.table(["", "期間", "開發期超額差", "開發期回撤差", "前瞻天數", "狀態"],
+                         [[f"<b>{r['key']}</b> {ui.esc(r['name'])}", HZ.get(r["h"], r["h"]), ui.pct(r.get("dev_d_excess"), 1, color=True),
+                           ui.pct(r.get("dev_d_mdd"), 1, color=True), str(r.get("days", 0)), ui.esc(r.get("status_zh", ""))] for r in wr], left=(0, 5)))
+    if cr.get("errors"):
+        h += f"<div class='kq-muted'>{ui.esc('；'.join(cr['errors']))}</div>"
+    return h
+
+
+def trust_footprint(n: int = 10):
+    """最近一個交易日投信買超／賣超前 n 名（張）：主動式 ETF 申購（投信買）或買回（投信賣）的足跡。"""
+    if "Q_TR" not in B.a or "q_days" not in B.meta:
+        return None
+    tr = pd.DataFrame(np.asarray(B.a["Q_TR"], float), index=pd.DatetimeIndex(B.meta["q_days"]), columns=list(B.tickers))
+    last = tr.iloc[-1].dropna()
+    if not len(last) or not last.abs().sum():
+        return None
+    cl = pd.DataFrame(np.asarray(B.a["Q_C"], float), index=tr.index, columns=tr.columns).iloc[-1] if "Q_C" in B.a else None
+    val = last * (cl.reindex(last.index) if cl is not None else np.nan) * 1000 / 1e8
+    top = last.sort_values(ascending=False)
+    return tr.index[-1], top.head(n), top.tail(n)[::-1], val
+
+
+def etf_flow_html() -> str:
+    """盤勢儀表板：外資賣現股、買主動式 ETF——兩個方向的 ETF 套利、11/24～25 的數字、投信足跡、要盯的訊號、擁擠研究。"""
+    from kosto import review as rv
+    h = ui.section("🧾 外資賣現股、買主動式 ETF：怎麼看（v3.24）", "ETF 套利怎麼把買盤／賣壓帶到現貨；資料：公開新聞＋每日研究")
+    h += f"<div class='kq-panel' style='margin-bottom:6px'>{ui.esc(rv.V324_NOTE)}</div>"
+    h += ui.table(["兩個方向", "什麼時候發生", "套利者怎麼做", "對現股"],
+                  [["溢價套利", "ETF 市價 > 淨值（大家搶買）", "用淨值申購新單位 → 在市場賣出 ETF（賺溢價）", "基金拿到現金要<b>買</b>持股 → 支撐"],
+                   ["折價套利", "ETF 市價 < 淨值（大家搶賣）", "買進便宜的 ETF → 同時放空期貨／現股避險 → 申請買回", "基金要<b>賣</b>持股付現金 → 賣壓"]],
+                  left=(0, 1, 2, 3))
+    h += ("<div class='kq-muted'>例子：00981A 淨值 21.54、市價 22.04（溢價 2.3%）。券商申購 500 張（約 1,077 萬元），同一天在市場賣出 500 張（約 1,102 萬元），"
+          "扣申購費 0.1%、交易稅 0.1% 約賺 2%；基金多了 1,077 萬元現金，隔天要買進台積電、聯發科、奇鋐……等持股。</div>")
+    h += "<div class='kq-muted' style='margin:8px 0 2px'><b>11/24～25 的數字</b></div>" + ui.table(
+        ["項目", "數字", "出處"], [[ui.esc(a), ui.esc(b), ui.esc(c)] for a, b, c in rv.V324_FACTS], left=(0, 1, 2))
+    fp = trust_footprint()
+    if fp:
+        d, buy, sell, val = fp
+        f = lambda s: "、".join(f"{ui.esc(NAMES[TIDX[t]]) if t in TIDX else t} {v:+,.0f} 張" for t, v in s.items() if abs(v) > 0)   # noqa: E731
+        h += (f"<div class='kq-muted' style='margin:6px 0'><b>投信足跡（{d:%m/%d}）</b>：買超前 10＝{f(buy)}；賣超前 10＝{f(sell)}。"
+              "投信由「買超重倉股」轉成「賣超重倉股」，通常代表主動式 ETF／基金開始被買回。</div>")
+    h += ui.bullets(["主動式 ETF 收盤<b>折價</b>、而且受益權單位數<b>減少</b>（買回）→ 基金要賣股票（看投信投顧公會或發行商網站的每日申贖）",
+                     "投信對 AI 重倉股（奇鋐、健策、旺矽、台光電、金像電、貿聯、信驊、智邦、創意、欣興、南電）由買轉賣",
+                     "外資台指期淨空單（105,709 口）是增加還是回補；外資連續賣超何時停止",
+                     "融資維持率與斷頭（11/24 起門檻 120%）；融資餘額有沒有明顯下降（籌碼清洗）",
+                     "外資在主動式 ETF 是溢價時買（看好或代客買）還是折價時買（套利、之後可能買回）"])
+    h += crowd_html()
+    return h
+
+
 def fib_panel_html() -> str:
     """盤勢儀表板：加權指數目前的費氏回撤位置（只顯示），附每日研究對費氏回撤的檢驗結論。"""
     if "Q_TAIEX" not in B.a or "q_days" not in B.meta:
@@ -4449,6 +4645,10 @@ def page_insight():
             st.markdown(fib_panel_html(), unsafe_allow_html=True)            # v3.23 費氏回撤位置＋歷史檢驗
         except Exception:  # noqa: BLE001
             pass
+        try:
+            st.markdown(etf_flow_html(), unsafe_allow_html=True)             # v3.24 外資賣現股、買主動式 ETF；擁擠研究
+        except Exception:  # noqa: BLE001
+            pass
         st.markdown(ui.section("重大事件與即時消息", "事件的歷史參考、可靠的即時消息來源、最新頭條（10 分鐘更新）"), unsafe_allow_html=True)
         st.markdown(nv_event_html(), unsafe_allow_html=True)
         n1, n2 = st.columns(2)
@@ -5212,6 +5412,10 @@ def page_validate():
     st.markdown(diagnostics_html(), unsafe_allow_html=True)
     forward_panel()
     replay_section()
+    st.markdown(ui.section("籌碼擁擠研究（v3.24）", "主動式 ETF／投信重倉股在大跌日、大漲日與之後的表現；影子模型 W11、W12；預先宣告：docs/v3.24_protocol.md"),
+                unsafe_allow_html=True)
+    with st.expander("展開 v3.24 結果", expanded=False):
+        st.markdown(crowd_html(), unsafe_allow_html=True)
     st.markdown(ui.section("贏 0050 研究（v3.23）", "報酬與回撤都勝過 0050 的組合、為何難贏 0050、短中長線重疊、費氏回撤、知名理論；預先宣告：docs/v3.23_protocol.md"),
                 unsafe_allow_html=True)
     with st.expander("展開 v3.23 結果", expanded=True):
@@ -6334,7 +6538,8 @@ def hcard(n: int, title: str, body: str, go: str = "") -> str:
 
 
 def home_live_strip():
-    """v3.22 總覽最上方「現在盤勢」：加權、櫃買、前 300 大漲跌家數、最強／最弱細族群、那指期、重大消息提醒（盤中每 30 秒）。"""
+    """v3.22 總覽最上方「現在盤勢」：加權、櫃買、成交金額前 300 大漲跌家數、最強／最弱細族群、那指期、重大消息提醒（盤中每 30 秒）。
+    v3.25：加一行「⚡ 現在最值得買」（中線名單 × 即時價位）。"""
     from kosto import live as LV
     live_on = market_phase() in ("盤中", "盤前試撮")
 
@@ -6343,7 +6548,7 @@ def home_live_strip():
         cap = np.nan_to_num(np.asarray(B.a["CAP"][-1], float)) if "CAP" in B.a else np.zeros(len(B.tickers))
         top = [B.tickers[j] for j in np.argsort(-cap)[:300]]
         q, label, is_live = live_today(top)
-        br = {**LV.breadth(q), "label": f"市值前 {len(top)} 大"}
+        br = {**LV.breadth(q), "label": f"成交金額前 {len(top)} 大"}
         try:
             gl, _, _, _ = chain_live_data()
         except Exception:  # noqa: BLE001
@@ -6372,6 +6577,10 @@ def home_live_strip():
             extra.append("<span class='kq-item'><a href='./insight?tab=news' target='_self'>📰 重大消息衝擊</a>｜"
                          "<a href='./chain' target='_self'>⚡ 族群即時</a></span>")
         st.markdown(LV.strip_html(idx, otc, br, gl, extra, label + ("｜每 30 秒更新" if live_on else "")), unsafe_allow_html=True)
+        try:
+            st.markdown(best_now_html(best_now("mid"), compact=True), unsafe_allow_html=True)     # v3.25
+        except Exception:  # noqa: BLE001
+            pass
     body()
 
 

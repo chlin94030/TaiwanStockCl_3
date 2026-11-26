@@ -42,7 +42,12 @@ ITEMS = [
      "why": "v3.21 E2：與 W8 相反方向（消息反應會延續），兩個一起測，由資料決定方向"},
     {"key": "W10", "since": "2026-11-25", "hz": ("short", "mid", "long"), "kind": "balanced", "name": "不新買輝達特有連動最高的 10%",
      "why": "v3.21 E3：降低單一公司消息（如黃仁勳去留）的集中風險；風險型"},
+    {"key": "W11", "since": "2026-11-27", "hz": ("short", "mid", "long"), "kind": "balanced", "name": "不新買投信擁擠最高的 10%",
+     "why": "v3.24：投信 60 日累計買超（占股本）最高 10%＝主動式 ETF／基金擁擠；大量買回時基金會賣這些股票"},
+    {"key": "W12", "since": "2026-11-27", "hz": ("short", "mid", "long"), "kind": "balanced", "name": "急跌時才不新買投信擁擠最高的 10%",
+     "why": "v3.24：同 W11，但只在急跌狀態（0050 近 20 日 ≤ −8% 或距 120 日高 ≥ 12%）避開"},
 ]
+CROWD = "c_trust60"                                                    # v3.24 擁擠度：投信 60 日累計買超（占股本）
 MOM_GROUP = ("t_rs120", "t_mom120x20", "t_high252", "t_mom60", "t_high20", "t_rmom240")    # v3.18 動能群
 REBOUND = (("t_mom20", -1), ("t_high60", -1), ("f_rev_rel", 1), ("c_trust20", -1))
 SPLIT = {"enabled": True, "to": "t_mom_secrel", "from": ["t_rs120", "t_mom120x20"], "share": 0.5}
@@ -122,6 +127,14 @@ def variant(R, key: str, h: str, rule: str, size: int, v, W: list, spec):
                 w2[m] *= (1 - np.abs(w2[Mi]).sum()) / o
             return w2.astype(np.float32)
         return [half(w) if (w is not None and off[i]) else w for i, w in enumerate(W)], spec
+    if key in ("W11", "W12"):
+        nn = crowd_mask(R, rule, size)
+        if nn is None:
+            return None
+        if key == "W12":
+            panic = R.panic_signals(PANIC)
+            nn = nn & np.asarray(panic, bool)[:, None]
+        return W, dataclasses.replace(spec, no_new=nn)
     if key in ("W8", "W9", "W10"):
         arr = news_arrays(R.B)
         if arr is None:
@@ -159,6 +172,23 @@ def variant(R, key: str, h: str, rule: str, size: int, v, W: list, spec):
         return [None if w is None else ((0.85 * _norm(w) + 0.15 * e).astype(np.float32) if panic[i] else w)
                 for i, w in enumerate(W)], spec
     raise KeyError(key)
+
+
+def crowd_mask(R, rule: str, size: int, q: float = 0.9, factor: str = CROWD):
+    """v3.24：每個換股日，母池內「投信 60 日累計買超（占股本）」最高 10% 的股票（只用當天以前的資料；缺值不算）。"""
+    F = list(R.B.factors)
+    if factor not in F:
+        return None
+    U = R.B.a["U"]
+    j = F.index(factor)
+    view = R.view(rule, size)
+    nn = np.zeros((len(view.members), U.shape[1]), bool)
+    for i, m in enumerate(view.members):
+        u = np.asarray(U[i, m, j], float)
+        ok = u > 0
+        if ok.sum() >= 20:
+            nn[i, m[ok & (u >= np.quantile(u[ok], q))]] = True
+    return nn
 
 
 _NEWS: dict = {}
